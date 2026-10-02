@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod git_bin;
+pub mod history;
 pub mod refs;
 pub mod repo;
 pub mod types;
