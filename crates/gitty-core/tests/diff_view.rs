@@ -121,3 +121,43 @@ proptest! {
         prop_assert_eq!(seen_new + hidden, n.len());
     }
 }
+
+fn change_shape(v: &DiffView) -> Vec<(Option<u32>, Option<u32>)> {
+    use gitty_core::diff::view::SplitRow;
+    v.split_rows(0..v.split_row_count())
+        .iter()
+        .filter_map(|r| match r {
+            SplitRow::Change { old, new, .. } => Some((*old, *new)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn split_rows_follow_pairing() {
+    let (_, _, mut v) = mk("a\nfoo(a, b);\nbar();\nz\n", "a\n// new comment\nfoo(a, b, c);\nbaz();\nbar(1);\nz\n");
+    v.expand(Expand::WholeFile);
+    v.set_pairing(0, &[Some(1), Some(3)]);
+    assert_eq!(change_shape(&v), vec![(None, Some(1)), (Some(1), Some(2)), (None, Some(3)), (Some(2), Some(4))]);
+    // context rows are shared: a and z
+    assert_eq!(v.split_row_count(), 2 + 4);
+}
+
+#[test]
+fn split_rows_positional_without_pairing() {
+    let (_, _, mut v) = mk("x\na\nb\ny\n", "x\nA\nB\nC\ny\n");
+    v.expand(Expand::WholeFile);
+    assert_eq!(change_shape(&v), vec![(Some(1), Some(1)), (Some(2), Some(2)), (None, Some(3))]);
+}
+
+#[test]
+fn split_gaps_match_unified() {
+    let old = numbered(100);
+    let new = old.replace("line 50\n", "line fifty\n");
+    let (_, _, mut v) = mk(&old, &new);
+    use gitty_core::diff::view::SplitRow;
+    assert!(matches!(v.split_rows(0..1)[0], SplitRow::Gap { hidden: 46, .. }));
+    assert_eq!(v.split_row_count(), v.row_count() - 1); // del+add collapse into one row
+    v.expand(Expand::Up(0));
+    assert!(matches!(v.split_rows(0..1)[0], SplitRow::Gap { hidden: 26, .. }));
+}

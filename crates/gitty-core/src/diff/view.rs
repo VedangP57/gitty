@@ -24,6 +24,15 @@ pub enum Row {
     Add { new: u32, change: usize },
 }
 
+/// A row of the side-by-side view: context and gaps span both sides; change rows hold an
+/// optional old line (left) and an optional new line (right).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitRow {
+    Gap { gap: usize, hidden: u32, header: String, can_up: bool, can_down: bool },
+    Context { old: u32, new: u32 },
+    Change { old: Option<u32>, new: Option<u32>, change: usize },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expand {
     /// Reveal more lines above the following hunk.
@@ -84,7 +93,25 @@ enum Item {
     Change(usize),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum SplitSeg {
+    Ctx { old: u32, new: u32 },
+    GapRow { gap: usize },
+    Change { change: usize },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SplitSegment {
+    start: usize,
+    len: u32,
+    seg: SplitSeg,
+}
+
 pub struct DiffView {
+    split_segments: Vec<SplitSegment>,
+    split_total: usize,
+    /// Per change: (old line, new line) rows, absolute 0-based indices.
+    split_change_rows: Vec<Vec<(Option<u32>, Option<u32>)>>,
     gaps: Vec<Gap>,
     changes: Vec<(Range<u32>, Range<u32>)>,
     items: Vec<Item>,
@@ -126,7 +153,19 @@ impl DiffView {
         // can change with expansion, so compute lazily per rebuild from cached Text-free data
         // by scanning the old text once per gap now (bounded).
         let funcnames = gaps.iter().map(|_| String::new()).collect();
-        let mut v = DiffView { gaps, changes, items, segments: Vec::new(), total: 0, headers: Vec::new(), funcnames };
+        let split_change_rows = changes.iter().map(|(o, n)| split_rows_for(o, n, None)).collect();
+        let mut v = DiffView {
+            split_segments: Vec::new(),
+            split_total: 0,
+            split_change_rows,
+            gaps,
+            changes,
+            items,
+            segments: Vec::new(),
+            total: 0,
+            headers: Vec::new(),
+            funcnames,
+        };
         v.compute_funcnames(old);
         v.rebuild();
         v
@@ -217,6 +256,86 @@ impl DiffView {
             }
             self.headers[gap] = h;
         }
+        self.rebuild_split();
+    }
+
+    fn rebuild_split(&mut self) {
+        self.split_segments.clear();
+        let mut row = 0usize;
+        let mut push = |segs: &mut Vec<SplitSegment>, len: u32, seg: SplitSeg| {
+            if len > 0 {
+                segs.push(SplitSegment { start: row, len, seg });
+                row += len as usize;
+            }
+        };
+        for it in &self.items {
+            match *it {
+                Item::Gap(gi) => {
+                    let g = &self.gaps[gi];
+                    push(&mut self.split_segments, g.top, SplitSeg::Ctx { old: g.old, new: g.new });
+                    if g.hidden() > 0 {
+                        push(&mut self.split_segments, 1, SplitSeg::GapRow { gap: gi });
+                    }
+                    let skip = g.len - g.bottom;
+                    push(&mut self.split_segments, g.bottom, SplitSeg::Ctx { old: g.old + skip, new: g.new + skip });
+                }
+                Item::Change(ci) => {
+                    let n = self.split_change_rows[ci].len() as u32;
+                    push(&mut self.split_segments, n, SplitSeg::Change { change: ci });
+                }
+            }
+        }
+        self.split_total = row;
+    }
+
+    /// Pairs deleted and added lines of change block `change` (relative indices, as produced by
+    /// intraline pairing) so the split view puts modified lines side by side.
+    pub fn set_pairing(&mut self, change: usize, pair_of_del: &[Option<u32>]) {
+        let Some((o, n)) = self.changes.get(change) else { return };
+        self.split_change_rows[change] = split_rows_for(o, n, Some(pair_of_del));
+        self.rebuild_split();
+    }
+
+    pub fn split_row_count(&self) -> usize {
+        self.split_total
+    }
+
+    pub fn split_row(&self, i: usize) -> SplitRow {
+        let si = self.split_segments.partition_point(|s| s.start <= i) - 1;
+        let s = &self.split_segments[si];
+        let k = (i - s.start) as u32;
+        match s.seg {
+            SplitSeg::Ctx { old, new } => SplitRow::Context { old: old + k, new: new + k },
+            SplitSeg::Change { change } => {
+                let (old, new) = self.split_change_rows[change][k as usize];
+                SplitRow::Change { old, new, change }
+            }
+            SplitSeg::GapRow { gap } => {
+                let g = &self.gaps[gap];
+                SplitRow::Gap {
+                    gap,
+                    hidden: g.hidden(),
+                    header: self.headers[gap].clone(),
+                    can_up: !g.trailing,
+                    can_down: !g.leading,
+                }
+            }
+        }
+    }
+
+    pub fn split_rows(&self, r: Range<usize>) -> Vec<SplitRow> {
+        let end = r.end.min(self.split_total);
+        (r.start.min(end)..end).map(|i| self.split_row(i)).collect()
+    }
+
+    /// Split-view row of each Gap row (for navigation).
+    pub fn split_gap_rows(&self) -> Vec<usize> {
+        self.split_segments.iter().filter(|s| matches!(s.seg, SplitSeg::GapRow { .. })).map(|s| s.start).collect()
+    }
+
+    /// First split row of each change block.
+    pub fn split_hunk_starts(&self) -> Vec<usize> {
+        self.split_segments.iter().filter(|s| matches!(s.seg, SplitSeg::Change { .. })).map(|s| s.start).collect()
     }
 
     pub fn row_count(&self) -> usize {
@@ -316,4 +435,46 @@ impl DiffView {
     pub fn changes(&self) -> &[(Range<u32>, Range<u32>)] {
         &self.changes
     }
+}
+
+/// Rows for one change block. With pairing, paired lines share a row and unpaired lines get an
+/// empty opposite cell, preserving order on both sides; without, lines are zipped by position.
+fn split_rows_for(old: &Range<u32>, new: &Range<u32>, pairing: Option<&[Option<u32>]>) -> Vec<(Option<u32>, Option<u32>)> {
+    let (d, a) = (old.len() as u32, new.len() as u32);
+    let mut rows = Vec::with_capacity(d.max(a) as usize);
+    match pairing {
+        None => {
+            for i in 0..d.max(a) {
+                rows.push(((i < d).then(|| old.start + i), (i < a).then(|| new.start + i)));
+            }
+        }
+        Some(p) => {
+            let (mut di, mut ai) = (0u32, 0u32);
+            for (pd, pa) in p.iter().enumerate().filter_map(|(i, x)| x.map(|j| (i as u32, j))) {
+                if pd < di || pa < ai || pa >= a {
+                    continue; // not monotone; ignore
+                }
+                while di < pd {
+                    rows.push((Some(old.start + di), None));
+                    di += 1;
+                }
+                while ai < pa {
+                    rows.push((None, Some(new.start + ai)));
+                    ai += 1;
+                }
+                rows.push((Some(old.start + pd), Some(new.start + pa)));
+                di = pd + 1;
+                ai = pa + 1;
+            }
+            while di < d {
+                rows.push((Some(old.start + di), None));
+                di += 1;
+            }
+            while ai < a {
+                rows.push((None, Some(new.start + ai)));
+                ai += 1;
+            }
+        }
+    }
+    rows
 }
