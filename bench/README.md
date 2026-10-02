@@ -35,3 +35,5 @@ Notes:
 | Repo | files | change blocks | p50 / file | p99 / file | max | Budget |
 |---|---|---|---|---|---|---|
 | git-cg | 1,108 | 7,586 | **0.18–0.22 ms** | **6.2–6.9 ms** | 13–15 ms | p50 < 1 ms, p99 < 10 ms ✅ |
+After the M2a review fix (no manual trim, lazy pairing): p50 0.21–0.25 ms, p99 6.4–9.4 ms. The probe still
+computes intraline for every block, which is the worst case.

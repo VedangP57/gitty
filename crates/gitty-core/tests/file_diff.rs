@@ -20,9 +20,10 @@ fn diff_of_modified_file() {
     assert_eq!(d.changes.len(), 1);
     let hl = d.intraline(0);
     assert_eq!(hl.pair_of_del, vec![Some(0)]);
-    let v = d.view();
+    let mut v = d.view();
     assert_eq!(v.row_count(), 4);
-    assert_eq!(v.split_row_count(), 3); // pairing applied
+    d.apply_pairing(&mut v, 0..1);
+    assert_eq!(v.split_row_count(), 3); // paired del+add share a row
 }
 
 #[test]
@@ -69,4 +70,27 @@ fn whitespace_mode_hides_indent_change() {
     let opts = DiffOptions { ws: gitty_core::diff::ops::WsMode::IgnoreAll, ..Default::default() };
     let d = FileDiff::from_bytes("a.rs", None, b"x\n  y\n".to_vec(), b"x\n    y\n".to_vec(), 0o100644, 0o100644, opts);
     assert_eq!((d.added, d.removed), (0, 0));
+}
+
+/// Review finding: building split pairing for every change block was O(blocks²) and eager.
+#[test]
+fn pairing_many_blocks_is_linear_and_lazy() {
+    let mut old = String::new();
+    let mut new = String::new();
+    for i in 0..30_000 {
+        old.push_str(&format!("line {i}\n"));
+        new.push_str(&if i % 3 == 1 { format!("line {i} changed\n") } else { format!("line {i}\n") });
+    }
+    let d = FileDiff::from_bytes("big.txt", None, old.into_bytes(), new.into_bytes(), 0o100644, 0o100644, DiffOptions::default());
+    assert!(d.is_text(), "{:?}", d.class);
+    assert_eq!(d.changes.len(), 10_000);
+    let t = std::time::Instant::now();
+    let mut v = d.view();
+    assert!(t.elapsed().as_millis() < 200, "view() took {:?}", t.elapsed());
+    assert!(!d.is_paired(0), "view() must not compute intraline eagerly");
+    let t = std::time::Instant::now();
+    d.apply_pairing(&mut v, 0..d.changes.len());
+    assert!(t.elapsed().as_millis() < 3_000, "apply_pairing over all blocks took {:?}", t.elapsed());
+    assert!(d.is_paired(9_999));
+    assert_eq!(v.split_row_count(), v.row_count() - 10_000);
 }

@@ -290,9 +290,21 @@ impl DiffView {
     /// Pairs deleted and added lines of change block `change` (relative indices, as produced by
     /// intraline pairing) so the split view puts modified lines side by side.
     pub fn set_pairing(&mut self, change: usize, pair_of_del: &[Option<u32>]) {
-        let Some((o, n)) = self.changes.get(change) else { return };
-        self.split_change_rows[change] = split_rows_for(o, n, Some(pair_of_del));
-        self.rebuild_split();
+        self.set_pairings([(change, pair_of_del)]);
+    }
+
+    /// Applies pairing for many change blocks with a single split-layout rebuild.
+    pub fn set_pairings<'p>(&mut self, pairings: impl IntoIterator<Item = (usize, &'p [Option<u32>])>) {
+        let mut any = false;
+        for (change, pair_of_del) in pairings {
+            if let Some((o, n)) = self.changes.get(change) {
+                self.split_change_rows[change] = split_rows_for(o, n, Some(pair_of_del));
+                any = true;
+            }
+        }
+        if any {
+            self.rebuild_split();
+        }
     }
 
     pub fn split_row_count(&self) -> usize {

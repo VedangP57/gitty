@@ -120,14 +120,23 @@ impl FileDiff {
         })
     }
 
-    /// A fresh view with default context and line pairing applied for the split layout.
+    /// A fresh view with default context. Split-view pairing is applied lazily, per visible
+    /// change block, with [`FileDiff::apply_pairing`].
     pub fn view(&self) -> DiffView {
-        let mut v = DiffView::new(&self.ops, &self.old, &self.new);
-        for c in 0..self.changes.len() {
-            let pairing = self.intraline(c).pair_of_del.clone();
-            v.set_pairing(c, &pairing);
-        }
-        v
+        DiffView::new(&self.ops, &self.old, &self.new)
+    }
+
+    /// Whether intraline (and so pairing) for `change` has been computed.
+    pub fn is_paired(&self, change: usize) -> bool {
+        self.intraline.get(change).is_some_and(|c| c.get().is_some())
+    }
+
+    /// Computes intraline for `changes` (typically the blocks near the viewport) and applies
+    /// their line pairing to `view` in one rebuild.
+    pub fn apply_pairing(&self, view: &mut DiffView, changes: Range<usize>) {
+        let end = changes.end.min(self.changes.len());
+        let start = changes.start.min(end);
+        view.set_pairings((start..end).map(|c| (c, self.intraline(c).pair_of_del.as_slice())));
     }
 
     pub fn is_text(&self) -> bool {

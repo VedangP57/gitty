@@ -30,26 +30,14 @@ pub enum Op {
     Change { old: Range<u32>, new: Range<u32> },
 }
 
-/// Lines kept outside the trimmed prefix/suffix so the indent heuristic still sees context.
-const TRIM_MARGIN: u32 = 3;
-
 pub fn compute_ops(old: &Text, new: &Text, alg: DiffAlgorithm, ws: WsMode) -> Vec<Op> {
     let (no, nn) = (old.len(), new.len());
-    let mut p = 0;
-    while p < no && p < nn && old.raw_line(p) == new.raw_line(p) {
-        p += 1;
-    }
-    if p == no && p == nn {
+    if no == nn && old.bytes() == new.bytes() {
         return if no == 0 { vec![] } else { vec![Op::Equal { old: 0, new: 0, len: no }] };
     }
-    let mut s = 0;
-    while s < no - p && s < nn - p && old.raw_line(no - 1 - s) == new.raw_line(nn - 1 - s) {
-        s += 1;
-    }
-    let p = p.saturating_sub(TRIM_MARGIN);
-    let s = s.saturating_sub(TRIM_MARGIN);
-    let (om, nm) = (p..no - s, p..nn - s);
-
+    // No manual prefix/suffix trim: imara strips common ends itself after interning, and a trim
+    // window would stop the indent heuristic from sliding hunks the way git does.
+    let (p, om, nm) = (0u32, 0..no, 0..nn);
     let hunks: Vec<(Range<u32>, Range<u32>)> = match ws {
         WsMode::Show => {
             let o: Vec<&[u8]> = om.clone().map(|i| old.raw_line(i)).collect();
