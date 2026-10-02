@@ -1,0 +1,38 @@
+name = "tokyo-night"
+kind = "dark"
+
+[palette]
+bg = "#1a1b26"
+panel = "#16161e"
+fg = "#c0caf5"
+muted = "#565f89"
+accent = "#7aa2f7"
+border = "#3b4261"
+red = "#f7768e"
+green = "#9ece6a"
+yellow = "#e0af68"
+blue = "#7aa2f7"
+magenta = "#bb9af7"
+cyan = "#7dcfff"
+orange = "#ff9e64"
+
+[syntax]
+keyword = { fg = "#bb9af7", italic = true }
+string = "#9ece6a"
+comment = { fg = "#565f89", italic = true }
+function = "#7aa2f7"
+type = "#2ac3de"
+constant = "#ff9e64"
+number = "#ff9e64"
+operator = "#89ddff"
+variable = "fg"
+property = "#73daca"
+punctuation = "#a9b1d6"
+attribute = "#e0af68"
+tag = "#f7768e"
+label = "#7aa2f7"
+module = "#7dcfff"
+constructor = "#2ac3de"
+macro = "#7dcfff"
+escape = "#89ddff"
+embedded = "fg"

@@ -2,3 +2,4 @@
 
 pub mod text;
 pub mod dates;
+pub mod theme;

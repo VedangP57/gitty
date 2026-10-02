@@ -1,0 +1,48 @@
+# GitHub Light (Primer), with GitHub's own diff row and word colours.
+name = "github-light"
+kind = "light"
+
+[palette]
+bg = "#ffffff"
+panel = "#f6f8fa"
+fg = "#1f2328"
+muted = "#656d76"
+accent = "#0969da"
+border = "#d0d7de"
+red = "#cf222e"
+green = "#1a7f37"
+yellow = "#9a6700"
+blue = "#0969da"
+magenta = "#8250df"
+cyan = "#1b7c83"
+orange = "#bc4c00"
+
+[diff]
+add_bg = "#e6ffec"
+add_emph = "#abf2bc"
+add_gutter = "#ccffd8"
+del_bg = "#ffebe9"
+del_emph = "#ffcecb"
+del_gutter = "#ffd7d5"
+hunk_bg = "#ddf4ff"
+
+[syntax]
+keyword = "#cf222e"
+string = "#0a3069"
+comment = { fg = "#6e7781", italic = true }
+function = "#8250df"
+type = "#953800"
+constant = "#0550ae"
+number = "#0550ae"
+operator = "#cf222e"
+variable = "fg"
+property = "#0550ae"
+punctuation = "fg"
+attribute = "#0550ae"
+tag = "#116329"
+label = "#0550ae"
+module = "#953800"
+constructor = "#8250df"
+macro = "#8250df"
+escape = "#0550ae"
+embedded = "fg"
