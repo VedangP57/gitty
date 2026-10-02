@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/gitty-core", "crates/gitty"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.dependencies]
+gix = { version = "0.88", features = ["anyhow"] }
+anyhow = "1"
+thiserror = "2"
+smallvec = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+debug = 1
