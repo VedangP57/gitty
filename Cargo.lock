@@ -814,11 +814,13 @@ dependencies = [
  "crossterm",
  "gitty-core",
  "insta",
+ "libc",
  "ratatui",
  "serde",
  "signal-hook 0.3.18",
  "tempfile",
  "toml",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

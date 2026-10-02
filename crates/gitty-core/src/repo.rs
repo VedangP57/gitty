@@ -72,6 +72,13 @@ impl Handle {
         &self.owner
     }
 
+    /// Pays the one-time cost of the first tree diff (attribute stack, pack indices) by diffing
+    /// HEAD against its parent. Best effort: errors and an unborn HEAD are ignored.
+    pub fn warm(&self) {
+        let Ok(id) = self.repo.head_id() else { return };
+        let _ = self.commit_files(from_oid(&id.detach()), true);
+    }
+
     /// The commit's parents as git sees them: none for a shallow boundary commit.
     pub(crate) fn parents_of(&self, c: &gix::Commit<'_>) -> smallvec::SmallVec<[gix::ObjectId; 2]> {
         if self.shallow.contains(&c.id) {
