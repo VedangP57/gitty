@@ -482,7 +482,7 @@ The kernel cold start (~0.9 s to the first rows) is covered by drawing the layou
 
 ## 13. Errors
 - **Error types:**
-  - `thiserror` types per module in gitty-core; gix errors are converted at the boundary.
+  - gitty-core's public API returns `anyhow::Result`. Typed, downcastable errors (`GitError` for CLI failures) are defined with `thiserror`. gix 0.88's `Exn` errors convert cleanly only into anyhow.
   - `anyhow` in the binary.
 - **Bad repo data** never panics.
 - **Panics:** the panic hook restores the terminal, then prints.
