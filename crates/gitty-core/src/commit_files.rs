@@ -69,8 +69,8 @@ impl Handle {
     }
 
     fn first_parent_tree<'r>(&'r self, c: &gix::Commit<'r>) -> anyhow::Result<gix::Tree<'r>> {
-        Ok(match c.parent_ids().next() {
-            Some(p) => self.gix().find_commit(p.detach())?.tree()?,
+        Ok(match self.parents_of(c).first() {
+            Some(p) => self.gix().find_commit(*p)?.tree()?,
             None => self.gix().empty_tree(),
         })
     }
@@ -83,7 +83,12 @@ impl Handle {
             o.track_path();
             o.track_rewrites(if detect_renames { Some(Default::default()) } else { None });
         });
-        plat.for_each_to_obtain_tree(new, |ch| {
+        let mut cache_slot = self.tree_diff_cache.borrow_mut();
+        if cache_slot.is_none() {
+            *cache_slot = Some(self.gix().diff_resource_cache_for_tree_diff()?);
+        }
+        let cache = cache_slot.as_mut().expect("just set");
+        let res = plat.for_each_to_obtain_tree_with_cache(new, cache, |ch| {
             if ch.entry_mode().is_tree() {
                 return Ok::<_, gix::Exn>(gix::object::tree::diff::Action::Continue(()));
             }
@@ -138,7 +143,9 @@ impl Handle {
             };
             out.push(fc);
             Ok(gix::object::tree::diff::Action::Continue(()))
-        })?;
+        });
+        cache.clear_resource_cache_keep_allocation();
+        res?;
         out.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
         Ok(out)
     }

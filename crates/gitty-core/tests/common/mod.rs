@@ -65,3 +65,34 @@ impl Fixture {
 pub fn path_of(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap()
 }
+
+impl Fixture {
+    /// Shallow clone (`--depth`) of this repo into a sibling directory, returned as a Fixture-like path.
+    pub fn shallow_clone(&self, depth: u32) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", self.path().display());
+        let out = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["clone", "-q", "--no-local", &format!("--depth={depth}"), &url])
+            .arg(dir.path().join("repo"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        dir
+    }
+    /// Writes a raw commit object (bypassing validation) and points `branch` at it.
+    pub fn raw_commit(&self, tree: &str, parent: &str, committer_line: &str, branch: &str) -> String {
+        let body = format!("tree {tree}\nparent {parent}\nauthor A <a@a> 1700000000 +0000\n{committer_line}\n\nraw commit\n");
+        let mut c = Command::new("git");
+        c.current_dir(self.path()).args(["hash-object", "-t", "commit", "--literally", "-w", "--stdin"]);
+        c.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        let id = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        self.git(&["update-ref", &format!("refs/heads/{branch}"), &id]);
+        id
+    }
+}

@@ -26,7 +26,7 @@ impl Handle {
         if local == upstream {
             return Ok(AheadBehind::default());
         }
-        if let Some(g) = self.gix().commit_graph_if_enabled()? {
+        if let Some(g) = self.commit_graph() {
             if let (Some(pa), Some(pb)) = (g.lookup(&to_oid(local)), g.lookup(&to_oid(upstream))) {
                 let generation_of = |p: gix::commitgraph::Position| g.commit_at(p).generation();
                 if generation_of(pa) > 0 && generation_of(pb) > 0 {

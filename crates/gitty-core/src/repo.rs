@@ -42,7 +42,15 @@ impl Repo {
     pub fn handle(&self) -> Handle {
         let mut repo = self.inner.ts.to_thread_local();
         repo.object_cache_size_if_unset(16 * 1024 * 1024);
-        Handle { repo, owner: self.clone() }
+        // Shallow boundary commits have parents that are not in the object database; treat
+        // them as roots, as git does. A broken `shallow` file is treated as "not shallow".
+        let shallow = repo
+            .shallow_commits()
+            .ok()
+            .flatten()
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        Handle { repo, owner: self.clone(), shallow, tree_diff_cache: std::cell::RefCell::new(None) }
     }
 }
 
@@ -50,6 +58,9 @@ impl Repo {
 pub struct Handle {
     pub(crate) repo: gix::Repository,
     pub(crate) owner: Repo,
+    pub(crate) shallow: std::collections::HashSet<gix::ObjectId>,
+    /// Reused across tree diffs: building it costs ~10 ms (attribute stack) on large repos.
+    pub(crate) tree_diff_cache: std::cell::RefCell<Option<gix::diff::blob::Platform>>,
 }
 
 impl Handle {
@@ -59,6 +70,23 @@ impl Handle {
     }
     pub fn owner(&self) -> &Repo {
         &self.owner
+    }
+
+    /// The commit's parents as git sees them: none for a shallow boundary commit.
+    pub(crate) fn parents_of(&self, c: &gix::Commit<'_>) -> smallvec::SmallVec<[gix::ObjectId; 2]> {
+        if self.shallow.contains(&c.id) {
+            return smallvec::SmallVec::new();
+        }
+        c.parent_ids().map(|p| p.detach()).collect()
+    }
+
+    /// The commit-graph, if enabled and readable. A corrupt graph is ignored (git warns and
+    /// walks without it).
+    pub(crate) fn commit_graph(&self) -> Option<gix::commitgraph::Graph> {
+        if !self.shallow.is_empty() {
+            return None;
+        }
+        self.gix().commit_graph_if_enabled().ok().flatten()
     }
 }
 

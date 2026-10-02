@@ -85,7 +85,7 @@ pub struct Walker {
 impl Handle {
     /// Start a commit-time-ordered walk from `tips`. Uses the commit-graph when enabled.
     pub fn walker(&self, tips: &[CommitId]) -> anyhow::Result<Walker> {
-        let graph = self.gix().commit_graph_if_enabled()?.map(Arc::new);
+        let graph = self.commit_graph().map(Arc::new);
         let n = graph.as_ref().map(|g| g.num_commits() as usize).unwrap_or(0);
         let mut w = Walker {
             graph,
@@ -132,8 +132,9 @@ impl Walker {
             return Ok(());
         }
         let commit = h.gix().find_commit(id)?;
-        let time = commit.committer()?.time()?.seconds;
-        let parents = commit.parent_ids().map(|p| p.detach()).collect();
+        // A malformed or missing committer date sorts as time 0 (git does the same).
+        let time = commit.committer().ok().and_then(|c| c.time().ok()).map_or(0, |t| t.seconds);
+        let parents = h.parents_of(&commit);
         self.seq += 1;
         self.heap.push(Item { time, seq: self.seq, node: Node::Odb { id, parents } });
         Ok(())
@@ -181,9 +182,10 @@ pub struct CommitDetail {
     pub committer: Signature,
 }
 
-fn sig(s: gix::actor::SignatureRef<'_>) -> anyhow::Result<Signature> {
-    let t = s.time()?;
-    Ok(Signature { name: s.name.to_string(), email: s.email.to_string(), time: t.seconds, offset_secs: t.offset })
+fn sig(s: Result<gix::actor::SignatureRef<'_>, impl std::fmt::Debug>) -> Signature {
+    let Ok(s) = s else { return Signature::default() };
+    let t = s.time().unwrap_or_default();
+    Signature { name: s.name.to_string(), email: s.email.to_string(), time: t.seconds, offset_secs: t.offset }
 }
 
 /// Splits a commit message into (summary line, body), trimming blank lines around both.
@@ -215,9 +217,9 @@ impl Handle {
         let c = self.gix().find_commit(to_oid(id))?;
         let msg = c.message_raw_sloppy().to_string();
         let (summary, body) = split_message(&msg);
-        let author = sig(c.author()?)?;
-        let committer = sig(c.committer()?)?;
-        let parents = c.parent_ids().map(|p| from_oid(&p)).collect();
+        let author = sig(c.author());
+        let committer = sig(c.committer());
+        let parents = self.parents_of(&c).iter().map(|p| from_oid(p)).collect();
         let row = CommitRow {
             id,
             parents,
