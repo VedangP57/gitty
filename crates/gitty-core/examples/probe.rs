@@ -91,7 +91,35 @@ fn main() -> anyhow::Result<()> {
             let ab = h.ahead_behind(l, u)?;
             println!("ab {}...{}: ahead={} behind={} {:.2}ms", a[3], a[4], ab.ahead.len(), ab.behind.len(), ms(t));
         }
-        _ => anyhow::bail!("usage: probe walk|rows|files|ab|abrefs <repo> ..."),
+        "diffs" => {
+            let n: usize = a.get(3).and_then(|s| s.parse().ok()).unwrap_or(300);
+            let mut w = h.walker(&refs.tips(HistoryScope::HeadAndUpstream))?;
+            let mut hist = w.new_history();
+            w.step(&h, &mut hist, n)?;
+            let (mut times, mut lines, mut changes) = (vec![], 0u64, 0usize);
+            let t_all = Instant::now();
+            for id in hist.ids(0..hist.len()) {
+                for fc in h.commit_files(id, false)? {
+                    let t = Instant::now();
+                    let d = h.file_diff(&fc, gitty_core::diff::DiffOptions::default())?;
+                    for c in 0..d.changes.len() {
+                        std::hint::black_box(d.intraline(c));
+                    }
+                    let v = d.view();
+                    std::hint::black_box(v.rows(0..v.row_count().min(80)));
+                    times.push(ms(t));
+                    lines += (d.added + d.removed) as u64;
+                    changes += d.changes.len();
+                }
+            }
+            times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let pct = |p: usize| times[(times.len() * p / 100).min(times.len() - 1)];
+            println!(
+                "diffs files={} changes={changes} lines={lines} p50={:.3}ms p99={:.3}ms max={:.2}ms total={:.0}ms",
+                times.len(), pct(50), pct(99), times.last().unwrap(), ms(t_all)
+            );
+        }
+        _ => anyhow::bail!("usage: probe walk|rows|files|diffs|ab|abrefs <repo> ..."),
     }
     Ok(())
 }

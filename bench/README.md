@@ -34,3 +34,14 @@ Notes:
 | commit file list, 300 commits (warm) | p50 **0.05–0.17 ms**, p99 1.0–2.6 ms | p50 0.13 ms, p99 1.4 ms |
 | first call on a fresh handle | ~0.66 s cold (attribute stack + pack index). The UI warms this on a worker at startup | — |
 | first 500 / full walk (branch+upstream) | 26 ms / 250 ms | — |
+||||||| 9ec5470
+## Diff engine — 2026-10-02 (M2a), load average ~25
+
+`probe diffs <repo> 300`: for every file of the first 300 commits on HEAD, this loads blobs, diffs them
+(Myers + indent heuristic), computes intraline for every change block, and builds the view.
+
+| Repo | files | change blocks | p50 / file | p99 / file | max | Budget |
+|---|---|---|---|---|---|---|
+| git-cg | 1,108 | 7,586 | **0.18–0.22 ms** | **6.2–6.9 ms** | 13–15 ms | p50 < 1 ms, p99 < 10 ms ✅ |
+After the M2a review fix (no manual trim, lazy pairing): p50 0.21–0.25 ms, p99 6.4–9.4 ms. The probe still
+computes intraline for every block, which is the worst case.

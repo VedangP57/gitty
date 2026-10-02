@@ -2,6 +2,7 @@
 
 pub mod ahead_behind;
 pub mod commit_files;
+pub mod diff;
 pub mod diff_lines;
 pub mod error;
 pub mod git_bin;

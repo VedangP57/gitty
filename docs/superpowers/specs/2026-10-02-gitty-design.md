@@ -198,7 +198,7 @@ FileDiff {
 ### 6.2 Algorithm
 - Default is Myers plus the indent heuristic, for parity with git and Desktop.
 - Honour `diff.algorithm`, `diff.indentHeuristic` and per-driver algorithm. Histogram is available.
-- Use a byte-level prefix/suffix trim before interning, keeping a 3-line margin.
+- No manual prefix/suffix trim. imara strips common ends after interning, and a trim window stops the indent heuristic from sliding hunks the way git does. The review measured this as parity loss.
 
 ### 6.3 Context expansion
 - **Per gap:**
@@ -216,13 +216,13 @@ For each Change block with D deleted and A added lines:
    - whitespace runs
    - single punctuation characters
 3. **Pairing:**
-   - If D×A ≤ 4096: greedy monotone pairing. Scan at most 32 candidates and accept the first with distance ≤0.6 (delta's formula: changed / (changed + 2×equal) over token widths). A cheap prefilter runs first.
+   - If D×A ≤ 4096: greedy monotone pairing. Scan at most 32 unpaired candidates and pick the closest with distance ≤0.6 (ties → earliest) (delta's formula: changed / (changed + 2×equal) over token widths). A cheap prefilter runs first.
    - If D×A is larger: positional pairing when D == A, still subject to the distance check.
 4. **Emphasis ranges:**
    - Come from the token Myers diff.
    - Ranges separated only by whitespace are merged.
    - Emphasis covering only leading or trailing whitespace is dropped.
-5. **When computed:** lazily for the viewport ± 2 screens, under the job's generation.
+5. **When computed:** lazily for the viewport ± 2 screens, under the job's generation. `FileDiff::apply_pairing(view, blocks)` computes it and applies split pairing in one rebuild.
 
 ### 6.5 Split view
 - Rows come from the same pairing. A paired (deletion, addition) shares a row, and unpaired lines get an empty opposite cell. Order is preserved.
