@@ -1,7 +1,7 @@
 //! `~/.config/gitty/config.toml` (lenient: unknown keys and bad values warn and fall back to
 //! defaults) and per-repo UI state under `~/.local/state/gitty/repos/`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gitty_core::diff::ops::{DiffAlgorithm, WsMode};
 use serde::{Deserialize, Serialize};
@@ -221,6 +221,7 @@ pub mod paths {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use gitty_core::diff::ops::{DiffAlgorithm, WsMode};
 
     fn load_str(s: &str) -> (Config, Vec<String>) {
