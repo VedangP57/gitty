@@ -216,7 +216,7 @@ For each Change block with D deleted and A added lines:
    - whitespace runs
    - single punctuation characters
 3. **Pairing:**
-   - If D×A ≤ 4096: greedy monotone pairing. Scan at most 32 candidates and accept the first with distance ≤0.6 (delta's formula: changed / (changed + 2×equal) over token widths). A cheap prefilter runs first.
+   - If D×A ≤ 4096: greedy monotone pairing. Scan at most 32 unpaired candidates and pick the closest with distance ≤0.6 (ties → earliest) (delta's formula: changed / (changed + 2×equal) over token widths). A cheap prefilter runs first.
    - If D×A is larger: positional pairing when D == A, still subject to the distance check.
 4. **Emphasis ranges:**
    - Come from the token Myers diff.
