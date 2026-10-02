@@ -12,3 +12,8 @@ smallvec.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+criterion = "0.8"
+
+[[bench]]
+name = "core"
+harness = false
