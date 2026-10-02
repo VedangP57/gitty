@@ -26,3 +26,12 @@ Notes:
 - **Cold page cache:** the first run after other I/O spends ~0.8–1.0 s in `refs()` on the kernel. That is 945 refs, each peeled and with a header lookup. The UI has to draw its layout first and stream rows in after (spec §8). A later optimisation is to skip `find_header` for refs that packed-refs records as peeled.
 - **Repos without a commit-graph:** the walk falls back to ODB decoding (git/git: 1.4 s for a full all-refs walk). gitty writes a commit-graph automatically on large repos (M5 auto-tuning).
 - **Line stats p99:** this is driven by commits that touch many files. Stats are computed only for visible files, on workers.
+
+## Diff engine — 2026-10-02 (M2a), load average ~25
+
+`probe diffs <repo> 300`: for every file of the first 300 commits on HEAD, this loads blobs, diffs them
+(Myers + indent heuristic), computes intraline for every change block, and builds the view.
+
+| Repo | files | change blocks | p50 / file | p99 / file | max | Budget |
+|---|---|---|---|---|---|---|
+| git-cg | 1,108 | 7,586 | **0.18–0.22 ms** | **6.2–6.9 ms** | 13–15 ms | p50 < 1 ms, p99 < 10 ms ✅ |

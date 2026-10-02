@@ -103,7 +103,6 @@ enum SplitSeg {
 #[derive(Debug, Clone, Copy)]
 struct SplitSegment {
     start: usize,
-    len: u32,
     seg: SplitSeg,
 }
 
@@ -264,7 +263,7 @@ impl DiffView {
         let mut row = 0usize;
         let mut push = |segs: &mut Vec<SplitSegment>, len: u32, seg: SplitSeg| {
             if len > 0 {
-                segs.push(SplitSegment { start: row, len, seg });
+                segs.push(SplitSegment { start: row, seg });
                 row += len as usize;
             }
         };

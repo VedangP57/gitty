@@ -149,7 +149,7 @@ pub fn block_highlights(dels: &[&[u8]], adds: &[&[u8]]) -> BlockHighlights {
         hi == 0 || lo as f32 / hi as f32 >= 0.2
     };
     let mut scratch = Scratch::new();
-    let mut accept = |h: &mut BlockHighlights, i: usize, j: usize, pd: PairDiff| {
+    let accept = |h: &mut BlockHighlights, i: usize, j: usize, pd: PairDiff| {
         h.pair_of_del[i] = Some(j as u32);
         h.pair_of_add[j] = Some(i as u32);
         h.del_emph[i] = emphasis(dels[i], &dt[i], &pd.removed);
