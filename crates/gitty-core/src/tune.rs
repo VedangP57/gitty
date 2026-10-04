@@ -59,7 +59,7 @@ pub fn plan(h: &Handle, history_len: usize, th: Thresholds) -> Vec<Action> {
     if history_len >= th.commits {
         let head = h.repo.head_id().ok().map(|id| id.detach());
         let in_graph = match (h.commit_graph(), head) {
-            (Some(g), Some(id)) => g.lookup(&id).is_some(),
+            (Some(g), Some(id)) => g.lookup(id).is_some(),
             (_, None) => true,
             (None, Some(_)) => false,
         };
