@@ -57,7 +57,8 @@ pub fn draw(app: &App, buf: &mut Buffer, r: Rect) {
     let who_room = right.saturating_sub(x).saturating_sub(tail_w).max(8) as usize;
     x = text(buf, x, y, right, &truncate_end(&who, who_room), base);
     x = spans(buf, x, y, right, &[dot, (&sha, base.fg(ui.accent))]);
-    if app.stats_done && app.files.as_ref().is_some_and(|f| !f.is_empty()) {
+    let all_known = app.stats.iter().all(Option::is_some);
+    if app.stats_done && all_known && app.files.as_ref().is_some_and(|f| !f.is_empty()) {
         let a = format!("+{added}");
         let d = format!(" −{removed}");
         x = spans(buf, x, y, right, &[dot, (&a, base.fg(ui.status_added)), (&d, base.fg(ui.status_deleted))]);

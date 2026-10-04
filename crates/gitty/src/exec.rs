@@ -7,7 +7,9 @@ use gitty_core::Handle;
 
 use crate::msg::{DiffKey, Gens, Msg, Request};
 
-/// History entries appended per write-lock hold.
+/// History entries appended per write-lock hold; the first chunk is small so the first screen
+/// of rows appears quickly even without a commit-graph.
+const WALK_FIRST_CHUNK: usize = 256;
 const WALK_CHUNK: usize = 4096;
 /// Line stats are sent in batches of this many files; staleness is checked as often.
 const STATS_CHUNK: usize = 32;
@@ -40,16 +42,19 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             };
             let history = Arc::new(RwLock::new(walker.new_history()));
             sink(Msg::HistoryStarted { session, history: history.clone() });
+            let mut len = 0;
             loop {
-                let len = history.read().unwrap_or_else(PoisonError::into_inner).len();
                 if !Gens::is(&gens.session, session) {
                     return done(sink, len);
                 }
-                let more = {
-                    let mut out = history.write().unwrap_or_else(PoisonError::into_inner);
-                    walker.step(h, &mut out, WALK_CHUNK)
-                };
-                let len = history.read().unwrap_or_else(PoisonError::into_inner).len();
+                // walk into a private chunk; hold the lock only to publish it
+                let mut chunk = walker.new_history();
+                let more = walker.step(h, &mut chunk, if len == 0 { WALK_FIRST_CHUNK } else { WALK_CHUNK });
+                {
+                    let mut shared = history.write().unwrap_or_else(PoisonError::into_inner);
+                    shared.append(&mut chunk);
+                    len = shared.len();
+                }
                 match more {
                     Ok(true) => sink(Msg::HistoryProgress { session, len, done: false }),
                     Ok(false) => return done(sink, len),
@@ -92,7 +97,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 if stale() {
                     return;
                 }
-                let stats = chunk.iter().map(|f| h.line_stats(f).unwrap_or_default()).collect();
+                let stats = chunk.iter().map(|f| h.line_stats(f).ok()).collect();
                 let done = start + chunk.len() == files.len();
                 sink(Msg::Stats { id, start, stats, done });
                 start += chunk.len();
@@ -108,7 +113,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let key = DiffKey::of(&file, opts, force_text);
             let diff = match h.file_diff(&file, opts) {
                 Ok(d) => Arc::new(if force_text { d.force_text() } else { d }),
-                Err(e) => return sink(error(format!("diffing {}", file.path), &e)),
+                Err(e) => return sink(Msg::DiffError { generation, key, detail: format!("{e:#}") }),
             };
             sink(Msg::Diff { generation, key: key.clone(), diff: diff.clone() });
             exec(h, Request::Intraline { generation, key, diff }, sink, gens);

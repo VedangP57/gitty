@@ -504,3 +504,19 @@ fn unborn_repo_renders_placeholder() {
     let s = text(&t.render(140, 30));
     assert!(s.contains("No commits yet"), "{s}");
 }
+
+#[test]
+fn missing_blob_shows_error_in_diff_pane() {
+    let f = Fixture::new();
+    f.write("a.txt", "one\n");
+    f.commit("one", NOW - DAY);
+    f.write("a.txt", "one\ntwo\n");
+    f.commit("two", NOW - HOUR);
+    let blob = f.git(&["rev-parse", "HEAD:a.txt"]);
+    std::fs::remove_file(f.path().join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+    let mut t = H::new(&f, "github-dark", (180, 30));
+    let s = text(&t.render(180, 30));
+    assert!(s.contains("Could not load this diff"), "{s}");
+    assert!(!s.contains("loading…"), "{s}");
+    assert!(!s.contains("+0 −0"), "unknown stats are not shown as zero:\n{s}");
+}

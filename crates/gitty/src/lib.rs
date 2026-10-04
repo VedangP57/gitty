@@ -9,3 +9,7 @@ pub mod msg;
 pub mod workers;
 pub mod ui;
 pub mod app;
+pub mod input;
+pub mod term;
+pub mod run;
+pub use run::run;

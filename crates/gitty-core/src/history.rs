@@ -24,6 +24,13 @@ pub struct History {
 }
 
 impl History {
+    /// Moves `other`'s entries (from the same walker) to the end of `self`, leaving it empty.
+    /// Lets a walker fill a private chunk and publish it under a lock in microseconds.
+    pub fn append(&mut self, other: &mut History) {
+        let base = self.overflow.len() as u32;
+        self.entries.extend(other.entries.drain(..).map(|e| if e & OVERFLOW_BIT != 0 { OVERFLOW_BIT | ((e & !OVERFLOW_BIT) + base) } else { e }));
+        self.overflow.append(&mut other.overflow);
+    }
     pub fn len(&self) -> usize {
         self.entries.len()
     }

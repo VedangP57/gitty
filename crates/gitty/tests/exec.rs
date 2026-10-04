@@ -129,7 +129,7 @@ fn files_then_stats() {
     assert_eq!(paths, ["a.txt", "c.bin"]);
     let stats: Vec<_> = msgs[1..]
         .iter()
-        .flat_map(|m| if let Msg::Stats { start, stats, .. } = m { stats.iter().enumerate().map(|(i, s)| (start + i, *s)).collect() } else { vec![] })
+        .flat_map(|m| if let Msg::Stats { start, stats, .. } = m { stats.iter().enumerate().map(|(i, s)| (start + i, s.unwrap())).collect() } else { vec![] })
         .collect();
     assert_eq!(stats.len(), 2);
     assert_eq!((stats[0].1.added, stats[0].1.removed), (2, 1));
@@ -272,4 +272,57 @@ fn workers_spawn_and_answer() {
         }
     }
     assert!(done);
+}
+
+/// Partial clones lack blobs: stats are unknown (None) and the diff reports an error.
+#[test]
+fn missing_blob_reports_unknown_stats_and_diff_error() {
+    let f = Fixture::new();
+    f.write("a.txt", "one\n");
+    f.commit("one", 1_700_000_000);
+    f.write("a.txt", "one\ntwo\n");
+    let c = f.commit("two", 1_700_000_100);
+    let blob = f.git(&["rev-parse", "HEAD:a.txt"]);
+    std::fs::remove_file(f.path().join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+    let msgs = run(&f, Request::Files { generation: 0, id: id(&c), prefetch: false });
+    let Msg::Files { files, .. } = &msgs[0] else { panic!("{msgs:?}") };
+    let Some(Msg::Stats { stats, .. }) = msgs.last() else { panic!("{msgs:?}") };
+    assert_eq!(stats[0], None);
+    let msgs = run(&f, Request::Diff { generation: 0, file: files[0].clone(), opts: DiffOptions::default(), force_text: false });
+    assert!(matches!(&msgs[..], [Msg::DiffError { .. }]), "{msgs:?}");
+}
+
+/// The UI thread reads the shared history while the walker runs; it must never wait long.
+#[test]
+fn walk_never_starves_readers() {
+    let f = Fixture::new();
+    many_commits(&f, 30_000);
+    let gens = Gens::default();
+    let h = Repo::open(f.path()).unwrap().handle();
+    let tips = tips(&f);
+    let worst = Arc::new(std::sync::Mutex::new(Duration::ZERO));
+    let mut reader = None;
+    exec(&h, Request::Walk { session: 0, tips }, &mut |m| {
+        if let Msg::HistoryStarted { history, .. } = m {
+            let worst = worst.clone();
+            reader = Some(std::thread::spawn(move || {
+                let end = std::time::Instant::now() + Duration::from_millis(300);
+                while std::time::Instant::now() < end {
+                    let t = std::time::Instant::now();
+                    let n = history.read().unwrap().len();
+                    let waited = t.elapsed();
+                    let mut w = worst.lock().unwrap();
+                    *w = (*w).max(waited);
+                    drop(w);
+                    if n >= 30_000 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+            }));
+        }
+    }, &gens);
+    reader.unwrap().join().unwrap();
+    let w = *worst.lock().unwrap();
+    assert!(w < Duration::from_millis(5), "a reader waited {w:?} for the history lock");
 }

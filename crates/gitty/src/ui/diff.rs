@@ -187,6 +187,18 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let split = app.split_active();
     let loading = app.diff_loading();
     let wanted_path = app.current_file().map(|f| f.path.clone());
+    if let Some(err) = app.wanted_diff_error().map(str::to_string) {
+        title(app, buf, r, wanted_path.as_deref().unwrap_or("Diff"), focused, "");
+        let first = err.lines().next().unwrap_or("").to_string();
+        if r.height > 2 {
+            text(buf, r.x + 2, r.y + 2, r.right(), "Could not load this diff", base.fg(ui.error).add_modifier(Modifier::BOLD));
+        }
+        if r.height > 3 {
+            text(buf, r.x + 2, r.y + 3, r.right(), &first, base.fg(ui.muted));
+        }
+        app.hits.diff_rows = None;
+        return;
+    }
     let Some(d) = app.diff.as_ref() else {
         title(app, buf, r, wanted_path.as_deref().unwrap_or("Diff"), focused, if loading { "  loading…" } else { "" });
         app.hits.diff_rows = None;

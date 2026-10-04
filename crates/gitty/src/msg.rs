@@ -77,9 +77,11 @@ pub enum Msg {
     Detail { generation: u64, detail: CommitDetail },
     Files { generation: u64, id: CommitId, files: Arc<Vec<FileChange>>, prefetch: bool },
     /// Stats for `files[start..start + stats.len()]` of commit `id`.
-    Stats { id: CommitId, start: usize, stats: Vec<LineStats>, done: bool },
+    /// `None` where a blob could not be read (e.g. a partial clone).
+    Stats { id: CommitId, start: usize, stats: Vec<Option<LineStats>>, done: bool },
     Diff { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
     IntralineDone { key: DiffKey },
+    DiffError { generation: u64, key: DiffKey, detail: String },
     Error { what: String, detail: String },
 }
 
@@ -96,6 +98,7 @@ impl std::fmt::Debug for Msg {
             Msg::Stats { id, start, stats, done } => write!(f, "Stats {{ id: {id:?}, start: {start}, n: {}, done: {done} }}", stats.len()),
             Msg::Diff { generation, key, .. } => write!(f, "Diff {{ generation: {generation}, path: {} }}", key.path),
             Msg::IntralineDone { key } => write!(f, "IntralineDone {{ path: {} }}", key.path),
+            Msg::DiffError { key, detail, .. } => write!(f, "DiffError {{ {}: {detail} }}", key.path),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
     }

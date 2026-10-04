@@ -179,6 +179,7 @@ pub struct App {
     pub diff: Option<DiffState>,
     /// The diff the selection wants; differs from `diff.key` while loading.
     pub diff_wanted: Option<DiffKey>,
+    pub diff_error: Option<(DiffKey, String)>,
     diff_cache: Lru<DiffKey, Arc<gitty_core::diff::FileDiff>>,
     diff_deadline: Option<Instant>,
     last_diff_request: Option<Instant>,
@@ -251,6 +252,7 @@ impl App {
             prefetching: HashSet::new(),
             diff: None,
             diff_wanted: None,
+            diff_error: None,
             diff_cache: Lru::new(200),
             diff_deadline: None,
             last_diff_request: None,
@@ -287,8 +289,12 @@ impl App {
     pub fn current_file(&self) -> Option<&FileChange> {
         self.files.as_ref()?.get(self.file_sel)
     }
+    /// The error for the wanted diff, if loading it failed.
+    pub fn wanted_diff_error(&self) -> Option<&str> {
+        self.diff_error.as_ref().filter(|(k, _)| Some(k) == self.diff_wanted.as_ref()).map(|(_, e)| e.as_str())
+    }
     pub fn diff_loading(&self) -> bool {
-        self.diff_wanted.is_some() && self.diff.as_ref().map(|d| &d.key) != self.diff_wanted.as_ref()
+        self.wanted_diff_error().is_none() && self.diff_wanted.is_some() && self.diff.as_ref().map(|d| &d.key) != self.diff_wanted.as_ref()
     }
 
     // ---- layout ----
@@ -436,7 +442,7 @@ impl App {
                 if let Some(c) = self.file_cache.get(&id) {
                     for (i, s) in stats.iter().enumerate() {
                         if let Some(slot) = c.stats.get_mut(start + i) {
-                            *slot = Some(*s);
+                            *slot = *s;
                         }
                     }
                     c.done |= done;
@@ -444,7 +450,7 @@ impl App {
                 if self.files_id == Some(id) {
                     for (i, s) in stats.into_iter().enumerate() {
                         if let Some(slot) = self.stats.get_mut(start + i) {
-                            *slot = Some(s);
+                            *slot = s;
                         }
                     }
                     self.stats_done |= done;
@@ -459,6 +465,11 @@ impl App {
             Msg::IntralineDone { key } => {
                 if let Some(d) = self.diff.as_mut().filter(|d| d.key == key) {
                     d.apply_ready_pairing();
+                }
+            }
+            Msg::DiffError { generation, key, detail } => {
+                if generation == self.file_gen && Some(&key) == self.diff_wanted.as_ref() {
+                    self.diff_error = Some((key, detail));
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
