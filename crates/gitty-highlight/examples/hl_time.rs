@@ -10,7 +10,9 @@ fn main() {
     for path in std::env::args().skip(1) {
         let bytes = std::fs::read(&path).expect("read");
         let first = bytes.split(|&b| b == b'\n').next().unwrap_or(&[]);
-        let lang = detect(&path, first).map_or("none".into(), |l| format!("{} ({:?})", l.name(), l.engine()));
+        let lang = detect(&path, first).map_or("none".into(), |l| {
+            format!("{} ({:?})", l.name(), l.engine())
+        });
         let lines = bytes.iter().filter(|&&b| b == b'\n').count();
         let t = Instant::now();
         let spans = h.highlight(&path, &bytes, &|| false);
@@ -23,6 +25,10 @@ fn main() {
             })
             .min()
             .unwrap();
-        println!("{path}: {lang}, {lines} lines, {} KiB, spans: {}, first {cold:.1?}, warm {warm:.1?}", bytes.len() / 1024, spans.is_some());
+        println!(
+            "{path}: {lang}, {lines} lines, {} KiB, spans: {}, first {cold:.1?}, warm {warm:.1?}",
+            bytes.len() / 1024,
+            spans.is_some()
+        );
     }
 }

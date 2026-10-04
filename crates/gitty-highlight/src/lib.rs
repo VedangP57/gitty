@@ -5,6 +5,7 @@
 //! [`CAPTURES`], never colours, so a theme switch needs no re-highlighting.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
@@ -99,6 +100,8 @@ pub const MAX_LINES: usize = 50_000;
 /// Lines longer than this get no syntax colour.
 pub const MAX_LINE_BYTES: usize = 1000;
 const BUDGET: Duration = Duration::from_secs(2);
+/// syntect cannot be interrupted inside a line, so files with a line this long get no colour.
+const MAX_SYNTECT_LINE: usize = 8 * MAX_LINE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -641,7 +644,7 @@ impl Highlighter {
         &mut self,
         path: &str,
         src: &[u8],
-        cancel: &dyn Fn() -> bool,
+        cancel: &(dyn Fn() -> bool + Sync),
     ) -> Option<Highlights> {
         if src.len() > MAX_BYTES || src.iter().filter(|&&b| b == b'\n').count() >= MAX_LINES {
             return None;
@@ -657,21 +660,50 @@ impl Highlighter {
         }
     }
 
-    fn tree_sitter(&mut self, t: Ts, src: &[u8], cancel: &dyn Fn() -> bool) -> Option<Highlights> {
+    fn tree_sitter(
+        &mut self,
+        t: Ts,
+        src: &[u8],
+        cancel: &(dyn Fn() -> bool + Sync),
+    ) -> Option<Highlights> {
         let config = t.config()?;
         let started = Instant::now();
+        // The parse runs inside `highlight` before the first event, so a watcher thread turns
+        // cancel and the budget into tree-sitter's cancellation flag.
+        let flag = AtomicUsize::new(0);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let watcher = scope.spawn(|| {
+                while !done.load(Ordering::Acquire) {
+                    if cancel() || started.elapsed() > BUDGET {
+                        flag.store(1, Ordering::Release);
+                        return;
+                    }
+                    std::thread::park_timeout(Duration::from_millis(2));
+                }
+            });
+            let r = self.tree_sitter_events(config, src, &flag);
+            done.store(true, Ordering::Release);
+            watcher.thread().unpark();
+            r
+        })
+    }
+
+    fn tree_sitter_events(
+        &mut self,
+        config: &'static HighlightConfiguration,
+        src: &[u8],
+        flag: &AtomicUsize,
+    ) -> Option<Highlights> {
         let events = self
             .ts
-            .highlight(config, src, None, |name| {
+            .highlight(config, src, Some(flag), |name| {
                 Ts::by_name(name).and_then(Ts::config)
             })
             .ok()?;
         let mut b = Builder::new(src);
         let mut stack: Vec<u8> = Vec::new();
-        for (n, ev) in events.enumerate() {
-            if n % 1024 == 0 && (cancel() || started.elapsed() > BUDGET) {
-                return None;
-            }
+        for ev in events {
             match ev.ok()? {
                 HighlightEvent::HighlightStart(h) => {
                     stack.push(TS_NAMES.get(h.0).map_or(VAR, |x| x.1))
@@ -690,8 +722,11 @@ impl Highlighter {
     }
 }
 
-fn syntect(i: usize, src: &[u8], cancel: &dyn Fn() -> bool) -> Option<Highlights> {
+fn syntect(i: usize, src: &[u8], cancel: &(dyn Fn() -> bool + Sync)) -> Option<Highlights> {
     let text = std::str::from_utf8(src).ok()?;
+    if text.split('\n').any(|l| l.len() > MAX_SYNTECT_LINE) {
+        return None;
+    }
     let set = syntaxes();
     let syntax = set.syntaxes().get(i)?;
     let started = Instant::now();
@@ -699,8 +734,8 @@ fn syntect(i: usize, src: &[u8], cancel: &dyn Fn() -> bool) -> Option<Highlights
     let mut stack = ScopeStack::new();
     let mut b = Builder::new(src);
     let mut offset = 0usize;
-    for (n, line) in text.split_inclusive('\n').enumerate() {
-        if n % 64 == 0 && (cancel() || started.elapsed() > BUDGET) {
+    for line in text.split_inclusive('\n') {
+        if cancel() || started.elapsed() > BUDGET {
             return None;
         }
         let ops = state.parse_line(line, set).ok()?;

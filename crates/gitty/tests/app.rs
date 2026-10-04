@@ -764,3 +764,18 @@ fn split_cursor_stays_on_content_when_pairing_arrives() {
     assert!(matches!(d.vrow(d.cursor, true), Some(VRow::Split(gitty_core::diff::view::SplitRow::Context { new: 5, .. }))), "cursor stays on tail 3");
     assert_eq!(d.cursor - d.scroll, tail - 1, "and at the same screen offset");
 }
+
+#[test]
+fn forced_large_text_is_not_highlighted() {
+    let f = Fixture::new();
+    f.write("min.js", "var a = 1;\n");
+    f.commit("one", 1_700_000_000);
+    f.write("min.js", format!("var a = [{}];\n", "1,".repeat(4000)));
+    f.commit("two", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.force_show();
+    t.pump();
+    assert!(t.app.diff.as_ref().unwrap().key.force_text);
+    assert!(t.highlights.is_empty(), "{:?}", t.highlights);
+}

@@ -192,3 +192,41 @@ fn invalid_utf8_and_binaryish_input_do_not_panic() {
     let _ = Highlighter::new().highlight("a.rs", &src, &|| false);
     let _ = Highlighter::new().highlight("a.rb", &src, &|| false);
 }
+
+#[test]
+fn cancel_interrupts_a_long_tree_sitter_parse() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    // ~650 KB of minified JS on one line (a full debug-build run stays inside the 2 s budget)
+    let src = "var a=[1,{b:2,c:function(d){return d*3}}];".repeat(15_000);
+    let mut h = Highlighter::new();
+    let t = Instant::now();
+    assert!(h.highlight("min.js", src.as_bytes(), &|| false).is_some());
+    let full = t.elapsed();
+    // false for the check before parsing, true from then on
+    let calls = AtomicUsize::new(0);
+    let cancel = || calls.fetch_add(1, Ordering::SeqCst) > 0;
+    let t = Instant::now();
+    assert!(h.highlight("min.js", src.as_bytes(), &cancel).is_none());
+    let cancelled = t.elapsed();
+    assert!(
+        cancelled < full / 4 + Duration::from_millis(20),
+        "cancelled after {cancelled:?}, full run {full:?}"
+    );
+}
+
+#[test]
+fn syntect_skips_files_with_huge_lines() {
+    let src = format!("# t\n{}\n", "word ".repeat(10_000));
+    let start = std::time::Instant::now();
+    assert!(
+        Highlighter::new()
+            .highlight("a.md", src.as_bytes(), &|| false)
+            .is_none()
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(200),
+        "took {:?}",
+        start.elapsed()
+    );
+}

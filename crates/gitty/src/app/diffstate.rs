@@ -269,6 +269,26 @@ impl DiffState {
         }
     }
 
+    /// How many rows a wrapped page of `lines` screen lines moves from `from` in direction
+    /// `dir`: as many as fit together on screen, at least one.
+    pub fn rows_in_lines(&self, from: usize, lines: usize, dir: i64, split: bool, wrap: Option<Wrap>) -> usize {
+        let n = self.rows(split);
+        let (mut used, mut k) = (0, 0);
+        loop {
+            let next = if dir < 0 { from.checked_sub(k + 1) } else { Some(from + k + 1).filter(|&i| i < n) };
+            let Some(i) = next else { break };
+            used += self.row_lines(i, split, wrap);
+            if used > lines && k > 0 {
+                break;
+            }
+            k += 1;
+            if used >= lines {
+                break;
+            }
+        }
+        k.max(1)
+    }
+
     /// Keeps all of the cursor's row inside a `height`-line window starting at row `scroll`.
     pub fn ensure_visible(&mut self, height: usize, split: bool, wrap: Option<Wrap>) {
         let h = height.max(1);

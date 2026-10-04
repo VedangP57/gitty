@@ -710,7 +710,8 @@ impl App {
         }
         let width = u32::from(self.panes().diff?.width);
         let gutter = digits(self.diff.as_ref().map_or(1, |d| d.diff.old.len().max(d.diff.new.len()))) as u32 + 2;
-        let text = |w: u32, gutters: u32| w.saturating_sub(gutters * gutter + 1).max(1);
+        // `ui::diff` draws gutters, then the +/- marker and one space, then the text
+        let text = |w: u32, gutters: u32| w.saturating_sub(gutters * gutter + 2).max(1);
         let tab = self.config.tab_size;
         Some(if self.split_active() {
             let left = width.saturating_sub(1) / 2;
@@ -809,6 +810,10 @@ impl App {
         let Some(d) = self.diff.as_ref().filter(|d| d.diff.is_text()) else { return };
         let (fd, (old, new)) = (d.diff.clone(), Self::hl_keys(&d.key));
         let old = old.filter(|_| fd.removed > 0 || self.ws != WsMode::Show);
+        // spec §7: files past the large-text thresholds stay uncoloured even when shown
+        if d.key.force_text && (is_large(&fd.old) || is_large(&fd.new)) {
+            return;
+        }
         for (key, text) in [(old, &fd.old), (new, &fd.new)] {
             let Some(key) = key else { continue };
             if text.is_empty() || self.hl_cache.contains(&key) || !self.hl_pending.insert(key.clone()) {
@@ -857,6 +862,11 @@ impl App {
         self.osc_out.push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
         self.toast = Some(Toast { what: format!("Copied {text}"), detail: String::new(), error: false });
     }
+}
+
+fn is_large(t: &gitty_core::diff::text::Text) -> bool {
+    use gitty_core::diff::classify::{LARGE_TEXT, LONG_LINE};
+    t.bytes().len() as u64 > LARGE_TEXT || (0..t.len()).any(|i| t.line(i).len() > LONG_LINE as usize)
 }
 
 pub fn digits(n: u32) -> usize {

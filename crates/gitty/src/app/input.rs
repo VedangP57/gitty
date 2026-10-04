@@ -217,8 +217,14 @@ impl App {
             }
             Focus::Diff => {
                 let split = self.split_active();
-                let cap = self.diff_capacity();
+                let (cap, wrap) = (self.diff_capacity(), self.diff_wrap());
                 if let Some(d) = self.diff.as_mut() {
+                    // wrapped rows are taller than one line: page by what fits on screen
+                    let m = match (wrap, m) {
+                        (Some(_), Move::Page(n)) => Move::Step(n.signum() * d.rows_in_lines(d.cursor, cap, n, split, wrap) as i64),
+                        (Some(_), Move::Half(n)) => Move::Step(n.signum() * d.rows_in_lines(d.cursor, (cap / 2).max(1), n, split, wrap) as i64),
+                        _ => m,
+                    };
                     d.cursor = target(d.cursor, d.rows(split), cap, m);
                 }
                 self.ensure_diff_visible();
