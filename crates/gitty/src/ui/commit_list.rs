@@ -21,7 +21,7 @@ fn group(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -120,7 +120,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                 text(buf, rx, y, right, &date, base.fg(ui.muted));
                 rx = rx.saturating_sub(1);
             }
-            if avail >= MIN_SUMMARY / 2 + width(&ini) + 1 {
+            if avail > MIN_SUMMARY / 2 + width(&ini) {
                 rx = rx.saturating_sub(width(&ini));
                 text(buf, rx, y, right, &ini, ini_st);
                 rx = rx.saturating_sub(1);

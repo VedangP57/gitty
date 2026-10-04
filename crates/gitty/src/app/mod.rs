@@ -96,11 +96,10 @@ impl<K: Hash + Eq + Clone, V> Lru<K, V> {
     }
     pub fn insert(&mut self, k: K, v: V) {
         self.tick += 1;
-        if self.map.len() >= self.cap && !self.map.contains_key(&k) {
-            if let Some(old) = self.map.iter().min_by_key(|(_, e)| e.1).map(|(k, _)| k.clone()) {
+        if self.map.len() >= self.cap && !self.map.contains_key(&k)
+            && let Some(old) = self.map.iter().min_by_key(|(_, e)| e.1).map(|(k, _)| k.clone()) {
                 self.map.remove(&old);
             }
-        }
         self.map.insert(k, (v, self.tick));
     }
 }
@@ -741,11 +740,10 @@ impl App {
     // ---- persistence and output ----
 
     pub fn save_state(&mut self) {
-        if let Some(p) = &self.state_path {
-            if let Err(e) = self.ui_state.save(p) {
+        if let Some(p) = &self.state_path
+            && let Err(e) = self.ui_state.save(p) {
                 self.toast = Some(Toast { what: "saving UI state".into(), detail: e.to_string(), error: true });
             }
-        }
     }
 
     pub fn copy(&mut self, text: &str) {

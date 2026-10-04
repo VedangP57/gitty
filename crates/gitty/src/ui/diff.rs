@@ -164,7 +164,7 @@ impl Ctx<'_> {
     }
 }
 
-fn emph_of<'a>(fd: &'a FileDiff, change: usize, line: u32, del: bool) -> &'a [Range<u32>] {
+fn emph_of(fd: &FileDiff, change: usize, line: u32, del: bool) -> &[Range<u32>] {
     let Some(h) = fd.intraline_ready(change) else { return &[] };
     let Some((o, n)) = fd.changes.get(change) else { return &[] };
     let (v, start) = if del { (&h.del_emph, o.start) } else { (&h.add_emph, n.start) };

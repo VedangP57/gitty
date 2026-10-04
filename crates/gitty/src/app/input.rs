@@ -160,11 +160,10 @@ impl App {
                     KeyCode::Enter => {
                         if let Some(name) = names.get(sel) {
                             self.config.theme = name.clone();
-                            if let Some(p) = &self.config_path {
-                                if let Err(e) = Config::save_theme(p, name) {
+                            if let Some(p) = &self.config_path
+                                && let Err(e) = Config::save_theme(p, name) {
                                     self.toast = Some(Toast { what: "saving theme".into(), detail: e.to_string(), error: true });
                                 }
-                            }
                         }
                         return;
                     }

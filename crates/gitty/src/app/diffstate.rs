@@ -62,11 +62,10 @@ impl DiffState {
         if i >= self.rows(split) {
             return None;
         }
-        if let Some(h) = &self.first_header {
-            if i == 0 {
+        if let Some(h) = &self.first_header
+            && i == 0 {
                 return Some(VRow::Header(h.clone()));
             }
-        }
         let j = i - self.offset();
         Some(if split { VRow::Split(self.view.split_row(j)) } else { VRow::Row(self.view.row(j)) })
     }

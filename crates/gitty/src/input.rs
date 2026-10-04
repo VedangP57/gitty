@@ -24,14 +24,12 @@ pub fn coalesce(evs: Vec<Event>) -> Vec<InputEvent> {
         if matches!(ev, Event::Resize(..)) && Some(i) != last_resize {
             continue;
         }
-        if let (Some(prev), true) = (out.last_mut(), is_wheel(&ev)) {
-            if let (Event::Mouse(a), Event::Mouse(b)) = (&prev.ev, &ev) {
-                if a.kind == b.kind && a.column == b.column && a.row == b.row {
+        if let (Some(prev), true) = (out.last_mut(), is_wheel(&ev))
+            && let (Event::Mouse(a), Event::Mouse(b)) = (&prev.ev, &ev)
+                && a.kind == b.kind && a.column == b.column && a.row == b.row {
                     prev.repeat = prev.repeat.saturating_add(1);
                     continue;
                 }
-            }
-        }
         out.push(InputEvent { ev, repeat: 1 });
     }
     out
