@@ -1,5 +1,6 @@
 ---
 source: crates/gitty/tests/render.rs
+assertion_line: 200
 expression: digest(&b)
 ---
  0 7:0969da/f6f8fa 12:1f2328/f6f8fa 4:9a6700/f6f8fa 3:1b7c83/f6f8fa 129:1f2328/f6f8fa 11:656d76/f6f8fa 2:1f2328/f6f8fa 11:0969da/f6f8fa 1:1f2328/f6f8fa
@@ -8,7 +9,7 @@ expression: digest(&b)
  3 1:1f2328/c9def7 1:9a6700/c9def7 49:1f2328/c9def7 2:cf222e/c9def7 1:1f2328/c9def7 2:656d76/c9def7 1:1f2328/c9def7 123:d0d7de/ffffff
  4 30:1f2328/ffffff 13:0969da/d3e4f8 1:1f2328/ffffff 6:9a6700/ede4d1 1:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 2:656d76/ffffff 1:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 10:1f2328/ffffff 7:656d76/ffffff 68:1f2328/ffffff
  5 47:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 6:656d76/ffffff 1:1f2328/ffffff 1:d0d7de/ffffff 1:1f2328/ededee 1:9a6700/ededee 28:1f2328/ededee 2:1a7f37/ededee 1:1f2328/ededee 2:cf222e/ededee 1:1f2328/ededee 1:d0d7de/ffffff 85:656d76/ddf4ff
- 6 57:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 7:656d76/ffffff 78:1f2328/ffffff
+ 6 57:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 7:656d76/ffffff 2:1f2328/ffffff 5:cf222e/ffffff 71:1f2328/ffffff
  7 57:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 6:407657/ccffd8 1:407657/e6ffec 78:1f2328/e6ffec
  8 57:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 6:407657/ccffd8 1:407657/e6ffec 78:1f2328/e6ffec
  9 57:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 85:1f2328/ffffff

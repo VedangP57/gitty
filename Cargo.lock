@@ -845,6 +845,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "gitty-core",
+ "gitty-highlight",
  "insta",
  "libc",
  "ratatui",

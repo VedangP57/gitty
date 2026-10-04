@@ -1,5 +1,6 @@
 //! Worker-side execution of [`Request`]s. The same function backs the thread pools and the tests.
 
+use std::cell::RefCell;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::UNIX_EPOCH;
 
@@ -13,6 +14,10 @@ const WALK_FIRST_CHUNK: usize = 256;
 const WALK_CHUNK: usize = 4096;
 /// Line stats are sent in batches of this many files; staleness is checked as often.
 const STATS_CHUNK: usize = 32;
+
+thread_local! {
+    static HIGHLIGHTER: RefCell<gitty_highlight::Highlighter> = RefCell::new(gitty_highlight::Highlighter::new());
+}
 
 fn error(what: impl Into<String>, e: &anyhow::Error) -> Msg {
     Msg::Error { what: what.into(), detail: format!("{e:#}") }
@@ -130,6 +135,12 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 diff.intraline(c);
             }
             sink(Msg::IntralineDone { key });
+        }
+        Request::Highlight { generation, key, text } => {
+            let stale = || !Gens::is(&gens.file, generation);
+            let spans = HIGHLIGHTER.with_borrow_mut(|hl| hl.highlight(&key.path, text.bytes(), &stale));
+            let cancelled = spans.is_none() && stale();
+            sink(Msg::Highlighted { key, spans: spans.map(Arc::new), cancelled });
         }
     }
 }

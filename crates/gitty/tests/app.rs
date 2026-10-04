@@ -10,7 +10,7 @@ use gitty::app::diffstate::{DiffState, VRow};
 use gitty::app::{App, AppInit, Focus};
 use gitty::config::{Config, UiState};
 use gitty::exec::exec;
-use gitty::msg::{DiffKey, Gens, Msg, Request};
+use gitty::msg::{DiffKey, Gens, HlKey, Msg, Request};
 use gitty::theme::{ColorDepth, Registry};
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::Row;
@@ -24,6 +24,8 @@ struct H {
     h: Handle,
     gens: Arc<Gens>,
     clock: Instant,
+    /// Every highlight request executed so far.
+    highlights: Vec<HlKey>,
 }
 
 impl H {
@@ -50,11 +52,14 @@ impl H {
             clock,
             size: (140, 40),
         });
-        H { app, h: repo.handle(), gens, clock }
+        H { app, h: repo.handle(), gens, clock, highlights: Vec::new() }
     }
     fn exec_all(&mut self, reqs: Vec<Request>) -> Vec<Msg> {
         let mut out = Vec::new();
         for r in reqs {
+            if let Request::Highlight { key, .. } = &r {
+                self.highlights.push(key.clone());
+            }
             exec(&self.h, r, &mut |m| out.push(m), &self.gens);
         }
         out
@@ -665,4 +670,72 @@ fn double_scope_toggle_keeps_target() {
     t.pump();
     assert_eq!(t.selected_id(), target);
     assert_eq!(t.app.selected, 280);
+}
+
+fn rust_pair(f: &Fixture) {
+    f.write("src/lib.rs", "fn a() {}\n");
+    f.commit("one", 1_700_000_000);
+    f.write("src/lib.rs", "fn a() {}\nfn b() {}\n");
+    f.commit("two", 1_700_000_100);
+}
+
+#[test]
+fn highlight_requested_once_per_blob_and_cached() {
+    let f = Fixture::new();
+    rust_pair(&f);
+    let mut t = H::new(&f);
+    t.pump();
+    let d = t.app.diff.as_ref().unwrap().key.clone();
+    let new = HlKey { blob: d.new.unwrap(), path: "src/lib.rs".into() };
+    assert_eq!(t.highlights, vec![new.clone()], "new side only: nothing was removed");
+    let (old, hl) = t.app.diff_highlights();
+    assert!(old.is_none());
+    assert!(hl.unwrap().line(1).iter().any(|s| gitty_highlight::CAPTURES[s.cap as usize] == "keyword"));
+    t.ch('j');
+    t.pump();
+    t.ch('k');
+    t.pump();
+    assert_eq!(t.highlights.iter().filter(|k| **k == new).count(), 1, "cache hit on return");
+    assert!(t.app.diff_highlights().1.is_some());
+}
+
+#[test]
+fn cancelled_or_foreign_highlights_are_not_used() {
+    let f = Fixture::new();
+    rust_pair(&f);
+    let mut t = H::new(&f);
+    // run everything except highlight requests, which go stale before they execute
+    let mut held = Vec::new();
+    for _ in 0..200 {
+        let reqs = t.app.take_requests();
+        let (hl, rest): (Vec<_>, Vec<_>) = reqs.into_iter().partition(|r| matches!(r, Request::Highlight { .. }));
+        held.extend(hl);
+        if rest.is_empty() {
+            match t.app.next_deadline() {
+                Some(d) => t.app.tick(d + Duration::from_millis(1)),
+                None => break,
+            }
+        }
+        for m in t.exec_all(rest) {
+            t.app.handle_msg(m);
+        }
+    }
+    assert_eq!(held.len(), 1);
+    let Request::Highlight { key, .. } = &held[0] else { unreachable!() };
+    let key = key.clone();
+    let foreign = HlKey { blob: gitty_core::commit_files::BlobId([7; 20]), path: key.path.clone() };
+    let spans = Some(Arc::new(gitty_highlight::Highlighter::new().highlight("x.rs", b"fn x() {}", &|| false).unwrap()));
+    t.app.handle_msg(Msg::Highlighted { key: foreign, spans, cancelled: false });
+    assert!(t.app.diff_highlights().1.is_none(), "another blob's spans never apply");
+    Gens::bump(&t.gens.file);
+    for m in t.exec_all(held) {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.diff_highlights().1.is_none());
+    t.ch('j');
+    t.pump();
+    t.ch('k');
+    t.pump();
+    assert!(t.highlights.contains(&key), "a cancelled highlight is requested again");
+    assert!(t.app.diff_highlights().1.is_some());
 }

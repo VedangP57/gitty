@@ -15,12 +15,13 @@ use gitty_core::commit_files::{FileChange, LineStats};
 use gitty_core::diff::DiffOptions;
 use gitty_core::diff::ops::WsMode;
 use gitty_core::history::{CommitDetail, CommitRow};
+use gitty_highlight::Highlights;
 use gitty_core::refs::{HistoryScope, RefsSnapshot};
 use ratatui::layout::Rect;
 
 use crate::config::{Config, Density, UiState};
 use crate::dates::{DateMode, next_threshold};
-use crate::msg::{DiffKey, Gens, Msg, Request, SharedHistory};
+use crate::msg::{DiffKey, Gens, HlKey, Msg, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
 use crate::ui::layout::{self, LayoutInput, Mode, Panes, Sep};
 use diffstate::DiffState;
@@ -186,6 +187,9 @@ pub struct App {
     last_diff_request: Option<Instant>,
     file_gen: u64,
     force_text: bool,
+    /// Syntax spans by blob; None = no colour (unknown language, over the limits).
+    hl_cache: Lru<HlKey, Option<Arc<Highlights>>>,
+    hl_pending: HashSet<HlKey>,
 
     pub date_mode: DateMode,
     pub density: Density,
@@ -256,6 +260,8 @@ impl App {
             diff_wanted: None,
             diff_error: None,
             diff_cache: Lru::new(200),
+            hl_cache: Lru::new(64),
+            hl_pending: HashSet::new(),
             diff_deadline: None,
             last_diff_request: None,
             file_gen: 0,
@@ -484,6 +490,12 @@ impl App {
             Msg::DiffError { generation, key, detail } => {
                 if generation == self.file_gen && Some(&key) == self.diff_wanted.as_ref() {
                     self.diff_error = Some((key, detail));
+                }
+            }
+            Msg::Highlighted { key, spans, cancelled } => {
+                self.hl_pending.remove(&key);
+                if !cancelled {
+                    self.hl_cache.insert(key, spans);
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
@@ -725,6 +737,8 @@ impl App {
 
     fn schedule_diff(&mut self) {
         self.file_gen = Gens::bump(&self.gens.file);
+        // the bump cancels in-flight highlights; their replies only clear pending entries
+        self.hl_pending.clear();
         self.diff_wanted = self.current_file().map(|f| DiffKey::of(f, self.diff_opts(), self.force_text));
         let idle = self.last_diff_request.is_none_or(|t| self.clock.saturating_duration_since(t) >= IDLE_BEFORE_LEADING_EDGE);
         self.last_diff_request = Some(self.clock);
@@ -742,6 +756,7 @@ impl App {
         let key = DiffKey::of(&file, opts, self.force_text);
         self.diff_wanted = Some(key.clone());
         if self.diff.as_ref().is_some_and(|d| d.key == key) {
+            self.request_highlights();
             return;
         }
         if let Some(d) = self.diff_cache.get(&key).cloned() {
@@ -757,6 +772,35 @@ impl App {
             self.outbox.push(Request::Intraline { generation: self.file_gen, key: key.clone(), diff: diff.clone() });
         }
         self.diff = Some(DiffState::new(key, diff));
+        self.request_highlights();
+    }
+
+    fn hl_keys(key: &DiffKey) -> (Option<HlKey>, Option<HlKey>) {
+        let old_path = key.old_path.as_ref().unwrap_or(&key.path);
+        (key.old.map(|blob| HlKey { blob, path: old_path.clone() }), key.new.map(|blob| HlKey { blob, path: key.path.clone() }))
+    }
+
+    /// Highlights the new side, and the old side when its lines are shown (deletions, or
+    /// context that may differ under a whitespace mode).
+    fn request_highlights(&mut self) {
+        let Some(d) = self.diff.as_ref().filter(|d| d.diff.is_text()) else { return };
+        let (fd, (old, new)) = (d.diff.clone(), Self::hl_keys(&d.key));
+        let old = old.filter(|_| fd.removed > 0 || self.ws != WsMode::Show);
+        for (key, text) in [(old, &fd.old), (new, &fd.new)] {
+            let Some(key) = key else { continue };
+            if text.is_empty() || self.hl_cache.contains(&key) || !self.hl_pending.insert(key.clone()) {
+                continue;
+            }
+            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text: text.clone() });
+        }
+    }
+
+    /// Syntax spans for the installed diff's (old, new) sides, when ready.
+    pub fn diff_highlights(&mut self) -> (Option<Arc<Highlights>>, Option<Arc<Highlights>>) {
+        let Some(d) = &self.diff else { return (None, None) };
+        let (old, new) = Self::hl_keys(&d.key);
+        let mut get = |k: Option<HlKey>| k.and_then(|k| self.hl_cache.get(&k).cloned().flatten());
+        (get(old), get(new))
     }
 
     /// Re-requests the current file's diff with new options (whitespace mode, force text).

@@ -7,6 +7,7 @@ use gitty_core::diff::FileDiff;
 use gitty_core::diff::classify::{FileClass, LargeReason};
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::{Row, SplitRow};
+use gitty_highlight::{CAPTURES, Highlights, Span};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -95,6 +96,8 @@ struct Line<'a> {
     kind: Kind,
     bytes: Option<&'a [u8]>,
     emph: &'a [Range<u32>],
+    /// Syntax spans for `bytes`.
+    syn: &'a [Span],
     no_eol: bool,
 }
 
@@ -104,6 +107,8 @@ struct Ctx<'a> {
     hscroll: u32,
     tab: u8,
     cursor_bg: Option<Color>,
+    /// Theme style per capture id, background removed (the diff's background always shows).
+    syntax: Vec<Option<Style>>,
     scratch: Vec<Glyph>,
 }
 
@@ -132,16 +137,21 @@ impl Ctx<'_> {
         let tx = text(buf, gx, y, max_x, marker, st.marker).saturating_add(1);
         let Some(bytes) = l.bytes else { return };
         layout(bytes, self.tab, &mut self.scratch);
-        let emph = l.emph;
+        let (emph, syn, syntax) = (l.emph, l.syn, &self.syntax);
         let (ts, es) = (st.text, st.emph);
         let ctrl = ts.fg(self.theme.ui.muted);
         let end = glyphs(buf, tx, y, max_x, self.hscroll, &self.scratch, |g| {
-            if emph.iter().any(|r| r.contains(&g.byte)) {
+            let base = if emph.iter().any(|r| r.contains(&g.byte)) {
                 es
             } else if g.ctrl {
-                ctrl
+                return ctrl;
             } else {
                 ts
+            };
+            let i = syn.partition_point(|s| s.end <= g.byte);
+            match syn.get(i).filter(|s| s.start <= g.byte).and_then(|s| syntax.get(s.cap as usize).copied().flatten()) {
+                Some(cap) => base.patch(cap),
+                None => base,
             }
         });
         if l.no_eol && end > tx.saturating_sub(1) {
@@ -171,8 +181,12 @@ fn emph_of(fd: &FileDiff, change: usize, line: u32, del: bool) -> &[Range<u32>] 
     v.get((line - start) as usize).map_or(&[], |r| r.as_slice())
 }
 
-fn old_line(fd: &FileDiff, i: u32) -> Line<'_> {
-    Line { numbers: [Some(i), None], n_numbers: 1, kind: Kind::Ctx, bytes: Some(fd.old.line(i)), emph: &[], no_eol: false }
+fn old_line<'a>(fd: &'a FileDiff, i: u32, syn: &'a [Span]) -> Line<'a> {
+    Line { numbers: [Some(i), None], n_numbers: 1, kind: Kind::Ctx, bytes: Some(fd.old.line(i)), emph: &[], syn, no_eol: false }
+}
+
+fn syn_line(h: Option<&Highlights>, i: u32) -> &[Span] {
+    h.map_or(&[], |h| h.line(i))
 }
 
 pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
@@ -249,6 +263,8 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         app.hits.diff_first = 0;
         return;
     }
+    let (old_hl, new_hl) = app.diff_highlights();
+    let (old_hl, new_hl) = (old_hl.as_deref(), new_hl.as_deref());
     let d = app.diff.as_mut().expect("checked above");
     let rows = d.rows(split);
     d.scroll = d.scroll.min(rows.saturating_sub(1));
@@ -260,6 +276,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         hscroll: u32::from(d.hscroll),
         tab: app.config.tab_size,
         cursor_bg: focused.then_some(theme.diff.cursor),
+        syntax: CAPTURES.iter().map(|c| theme.syntax.get(*c).map(|s| Style { bg: None, ..*s })).collect(),
         scratch: Vec::new(),
     };
     let (x, right) = (body.x, body.right());
@@ -292,15 +309,15 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                     cx.gap(buf, x, y, right, Some((x, can_up)), Some((x + digits + 2, can_down)), &label_gap(hidden, &header));
                 }
                 Row::Context { old, new } => {
-                    let l = Line { numbers: [Some(old), Some(new)], n_numbers: 2, kind: Kind::Ctx, bytes: Some(fd.new.line(new)), emph: &[], no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
+                    let l = Line { numbers: [Some(old), Some(new)], n_numbers: 2, kind: Kind::Ctx, bytes: Some(fd.new.line(new)), emph: &[], syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
                 }
                 Row::Del { old, change } => {
-                    let l = Line { numbers: [Some(old), None], n_numbers: 2, kind: Kind::Del, bytes: Some(fd.old.line(old)), emph: emph_of(&fd, change, old, true), no_eol: old + 1 == fd.old.len() && fd.old.no_eol() };
+                    let l = Line { numbers: [Some(old), None], n_numbers: 2, kind: Kind::Del, bytes: Some(fd.old.line(old)), emph: emph_of(&fd, change, old, true), syn: syn_line(old_hl, old), no_eol: old + 1 == fd.old.len() && fd.old.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
                 }
                 Row::Add { new, change } => {
-                    let l = Line { numbers: [None, Some(new)], n_numbers: 2, kind: Kind::Add, bytes: Some(fd.new.line(new)), emph: emph_of(&fd, change, new, false), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
+                    let l = Line { numbers: [None, Some(new)], n_numbers: 2, kind: Kind::Add, bytes: Some(fd.new.line(new)), emph: emph_of(&fd, change, new, false), syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
                 }
             },
@@ -316,21 +333,27 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                         divider(buf);
                     }
                     SplitRow::Context { old, new } => {
-                        let l = Line { kind: Kind::Ctx, ..old_line(&fd, old) };
+                        // without old-side spans, the new side's fit when the line is identical
+                        let syn = match old_hl {
+                            Some(h) => h.line(old),
+                            None if fd.old.line(old) == fd.new.line(new) => syn_line(new_hl, new),
+                            None => &[],
+                        };
+                        let l = old_line(&fd, old, syn);
                         cx.line(buf, x, y, mid, &l, cursor);
-                        let r = Line { numbers: [Some(new), None], n_numbers: 1, kind: Kind::Ctx, bytes: Some(fd.new.line(new)), emph: &[], no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
+                        let r = Line { numbers: [Some(new), None], n_numbers: 1, kind: Kind::Ctx, bytes: Some(fd.new.line(new)), emph: &[], syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
                         cx.line(buf, mid + 1, y, right, &r, cursor);
                         divider(buf);
                     }
                     SplitRow::Change { old, new, change } => {
                         let left = match old {
-                            Some(o) => Line { kind: Kind::Del, emph: emph_of(&fd, change, o, true), no_eol: o + 1 == fd.old.len() && fd.old.no_eol(), ..old_line(&fd, o) },
-                            None => Line { numbers: [None, None], n_numbers: 1, kind: Kind::Filler, bytes: None, emph: &[], no_eol: false },
+                            Some(o) => Line { kind: Kind::Del, emph: emph_of(&fd, change, o, true), no_eol: o + 1 == fd.old.len() && fd.old.no_eol(), ..old_line(&fd, o, syn_line(old_hl, o)) },
+                            None => Line { numbers: [None, None], n_numbers: 1, kind: Kind::Filler, bytes: None, emph: &[], syn: &[], no_eol: false },
                         };
                         cx.line(buf, x, y, mid, &left, cursor);
                         let rt = match new {
-                            Some(n) => Line { numbers: [Some(n), None], n_numbers: 1, kind: Kind::Add, bytes: Some(fd.new.line(n)), emph: emph_of(&fd, change, n, false), no_eol: n + 1 == fd.new.len() && fd.new.no_eol() },
-                            None => Line { numbers: [None, None], n_numbers: 1, kind: Kind::Filler, bytes: None, emph: &[], no_eol: false },
+                            Some(n) => Line { numbers: [Some(n), None], n_numbers: 1, kind: Kind::Add, bytes: Some(fd.new.line(n)), emph: emph_of(&fd, change, n, false), syn: syn_line(new_hl, n), no_eol: n + 1 == fd.new.len() && fd.new.no_eol() },
+                            None => Line { numbers: [None, None], n_numbers: 1, kind: Kind::Filler, bytes: None, emph: &[], syn: &[], no_eol: false },
                         };
                         cx.line(buf, mid + 1, y, right, &rt, cursor);
                         divider(buf);

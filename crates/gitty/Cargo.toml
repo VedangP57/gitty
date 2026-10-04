@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 gitty-core = { path = "../gitty-core" }
+gitty-highlight = { path = "../gitty-highlight" }
 anyhow.workspace = true
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "underline-color", "layout-cache"] }
 crossterm = "0.29"

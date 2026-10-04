@@ -530,3 +530,28 @@ fn files_error_rendered() {
     let s = text(&t.render(180, 30));
     assert!(s.contains("Could not list files"), "{s}");
 }
+
+#[test]
+fn syntax_colours_keep_diff_backgrounds_and_follow_theme() {
+    let f = Fixture::new();
+    f.write("src/lib.rs", "fn a() {}\n");
+    f.commit("one", NOW - DAY);
+    f.write("src/lib.rs", "fn a() {}\nfn b() {}\n");
+    f.commit("two", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (180, 30));
+    let b = t.render(180, 30);
+    let kw = t.app.theme.syntax["keyword"].fg.unwrap();
+    let (x, y) = find(&b, "fn b").unwrap();
+    assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw, t.app.theme.diff.add_bg), "added keyword");
+    let (x, y) = find(&b, "fn a").unwrap();
+    assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw, t.app.theme.ui.bg), "context keyword");
+
+    let light = t.app.registry.resolve("github-light", ColorDepth::True, None).unwrap();
+    let kw2 = light.syntax["keyword"].fg.unwrap();
+    assert_ne!(kw, kw2);
+    t.app.theme = light;
+    assert!(t.app.take_requests().is_empty(), "no recompute on theme switch");
+    let b = t.render(180, 30);
+    let (x, y) = find(&b, "fn b").unwrap();
+    assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw2, t.app.theme.diff.add_bg));
+}
