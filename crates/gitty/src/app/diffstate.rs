@@ -1,0 +1,261 @@
+//! Display state of one file's diff: the expandable view plus cursor, scroll and horizontal
+//! scroll. Rows are addressed in "virtual" space: a synthesised hunk header (when the first
+//! hunk has no gap row above it) is row 0 and shifts the view's rows by one.
+
+use std::sync::Arc;
+
+use gitty_core::diff::FileDiff;
+use gitty_core::diff::view::{DiffView, Expand, Row, SplitRow};
+
+use crate::msg::DiffKey;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VRow {
+    Header(String),
+    Row(Row),
+    Split(SplitRow),
+}
+
+pub struct DiffState {
+    pub key: DiffKey,
+    pub diff: Arc<FileDiff>,
+    pub view: DiffView,
+    pub cursor: usize,
+    pub scroll: usize,
+    pub hscroll: u16,
+    /// Header for the first hunk when no gap row precedes it.
+    pub first_header: Option<String>,
+    /// Every change block's pairing has been applied to the split layout.
+    pub paired_all: bool,
+}
+
+/// The content a row stands for, used to keep the cursor on the same line across rebuilds.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    old: Option<u32>,
+    new: Option<u32>,
+}
+
+impl DiffState {
+    pub fn new(key: DiffKey, diff: Arc<FileDiff>) -> DiffState {
+        let view = diff.view();
+        let mut s = DiffState { key, diff, view, cursor: 0, scroll: 0, hscroll: 0, first_header: None, paired_all: false };
+        s.apply_ready_pairing();
+        s.refresh_header();
+        s
+    }
+
+    fn view_rows(&self, split: bool) -> usize {
+        if split { self.view.split_row_count() } else { self.view.row_count() }
+    }
+
+    fn offset(&self) -> usize {
+        usize::from(self.first_header.is_some())
+    }
+
+    pub fn rows(&self, split: bool) -> usize {
+        let n = self.view_rows(split);
+        if n == 0 { 0 } else { n + self.offset() }
+    }
+
+    pub fn vrow(&self, i: usize, split: bool) -> Option<VRow> {
+        if i >= self.rows(split) {
+            return None;
+        }
+        if let Some(h) = &self.first_header {
+            if i == 0 {
+                return Some(VRow::Header(h.clone()));
+            }
+        }
+        let j = i - self.offset();
+        Some(if split { VRow::Split(self.view.split_row(j)) } else { VRow::Row(self.view.row(j)) })
+    }
+
+    fn refresh_header(&mut self) {
+        self.first_header = None;
+        if self.view.row_count() == 0 || matches!(self.view.row(0), Row::Gap { .. }) {
+            return;
+        }
+        let (mut ol, mut nl) = (0u32, 0u32);
+        for i in 0..self.view.row_count() {
+            match self.view.row(i) {
+                Row::Gap { .. } => break,
+                Row::Context { .. } => {
+                    ol += 1;
+                    nl += 1;
+                }
+                Row::Del { .. } => ol += 1,
+                Row::Add { .. } => nl += 1,
+            }
+        }
+        let start = |n: u32| u32::from(n > 0);
+        self.first_header = Some(format!("@@ -{},{ol} +{},{nl} @@", start(ol), start(nl)));
+    }
+
+    fn anchor(&self, i: usize, split: bool) -> Option<Anchor> {
+        match self.vrow(i, split)? {
+            VRow::Header(_) => None,
+            VRow::Row(r) => match r {
+                Row::Gap { .. } => None,
+                Row::Context { old, new } => Some(Anchor { old: Some(old), new: Some(new) }),
+                Row::Del { old, .. } => Some(Anchor { old: Some(old), new: None }),
+                Row::Add { new, .. } => Some(Anchor { old: None, new: Some(new) }),
+            },
+            VRow::Split(r) => match r {
+                SplitRow::Gap { .. } => None,
+                SplitRow::Context { old, new } => Some(Anchor { old: Some(old), new: Some(new) }),
+                SplitRow::Change { old, new, .. } => Some(Anchor { old, new }),
+            },
+        }
+    }
+
+    /// First row at or after the anchored content.
+    fn find(&self, a: Anchor, split: bool) -> usize {
+        let n = self.rows(split);
+        for i in 0..n {
+            let Some(b) = self.anchor(i, split) else { continue };
+            let reached = match ((a.new, b.new), (a.old, b.old)) {
+                ((Some(an), Some(bn)), _) => bn >= an,
+                (_, (Some(ao), Some(bo))) => bo >= ao,
+                _ => continue,
+            };
+            if reached {
+                return i;
+            }
+        }
+        n.saturating_sub(1)
+    }
+
+    fn clamp(&mut self, split: bool) {
+        let n = self.rows(split);
+        self.cursor = self.cursor.min(n.saturating_sub(1));
+        self.scroll = self.scroll.min(n.saturating_sub(1));
+    }
+
+    fn gap_at(&self, i: usize, split: bool) -> Option<usize> {
+        match self.vrow(i, split)? {
+            VRow::Row(Row::Gap { gap, .. }) | VRow::Split(SplitRow::Gap { gap, .. }) => Some(gap),
+            _ => None,
+        }
+    }
+
+    /// Expands the view and keeps the cursor on the content it was on.
+    pub fn expand(&mut self, e: Expand, split: bool) {
+        let anchor = self.anchor(self.cursor, split);
+        let on_gap = self.gap_at(self.cursor, split);
+        self.view.expand(e);
+        self.refresh_header();
+        // on a gap or header row the cursor keeps its position
+        if let (Some(a), None) = (anchor, on_gap) {
+            self.cursor = self.find(a, split);
+        }
+        self.clamp(split);
+    }
+
+    /// `e`: on a gap row, reveal all of it; otherwise grow the nearest gap toward the cursor.
+    pub fn expand_near_cursor(&mut self, split: bool) {
+        let n = self.rows(split);
+        let nearest = (0..n).filter_map(|i| self.gap_at(i, split).map(|g| (i, g))).min_by_key(|&(i, _)| i.abs_diff(self.cursor));
+        let Some((row, gap)) = nearest else { return };
+        let e = match row.cmp(&self.cursor) {
+            std::cmp::Ordering::Equal => Expand::All(gap),
+            std::cmp::Ordering::Less => Expand::Up(gap),
+            std::cmp::Ordering::Greater => Expand::Down(gap),
+        };
+        self.expand(e, split);
+    }
+
+    /// `E`: whole file ↔ default context.
+    pub fn toggle_whole_file(&mut self, split: bool) {
+        let e = if self.view.is_fully_expanded() { Expand::Collapse } else { Expand::WholeFile };
+        self.expand(e, split);
+    }
+
+    /// Moves the cursor to the next (`dir > 0`) or previous hunk start and scrolls it near the top.
+    pub fn next_hunk(&mut self, split: bool, dir: i32) {
+        let off = self.offset();
+        let starts: Vec<usize> = if split { self.view.split_hunk_starts() } else { self.view.hunk_starts() }.into_iter().map(|s| s + off).collect();
+        let target = if dir > 0 {
+            starts.iter().copied().find(|&s| s > self.cursor).or(starts.last().copied())
+        } else {
+            starts.iter().rev().copied().find(|&s| s < self.cursor).or(starts.first().copied())
+        };
+        if let Some(t) = target {
+            self.cursor = t;
+            self.scroll = t.saturating_sub(3);
+        }
+    }
+
+    /// Re-expresses the cursor in the other layout's row space (unified ↔ split).
+    pub fn remap_cursor(&mut self, from_split: bool, to_split: bool) {
+        if from_split == to_split {
+            return;
+        }
+        if let Some(a) = self.anchor(self.cursor, from_split) {
+            self.cursor = self.find(a, to_split);
+        }
+        self.clamp(to_split);
+    }
+
+    /// Applies split-view pairing for every change block whose intraline is computed.
+    pub fn apply_ready_pairing(&mut self) {
+        if self.paired_all {
+            return;
+        }
+        let d = self.diff.clone();
+        let n = d.changes.len();
+        let ready: Vec<usize> = (0..n).filter(|&c| d.intraline_ready(c).is_some()).collect();
+        self.paired_all = ready.len() == n;
+        if !ready.is_empty() {
+            self.view.set_pairings(ready.iter().filter_map(|&c| d.intraline_ready(c).map(|h| (c, h.pair_of_del.as_slice()))));
+        }
+    }
+
+    /// Keeps the cursor inside `[scroll, scroll + height)`.
+    pub fn ensure_visible(&mut self, height: usize) {
+        let h = height.max(1);
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        } else if self.cursor >= self.scroll + h {
+            self.scroll = self.cursor + 1 - h;
+        }
+    }
+}
+
+/// A fixed line above the diff rows (rename, mode change, line endings, bidi warning).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Banner {
+    pub text: String,
+    pub warn: bool,
+}
+
+fn eol_name(e: gitty_core::diff::text::EolStyle) -> &'static str {
+    use gitty_core::diff::text::EolStyle;
+    match e {
+        EolStyle::None => "none",
+        EolStyle::Lf => "LF",
+        EolStyle::Crlf => "CRLF",
+        EolStyle::Mixed => "mixed",
+    }
+}
+
+impl DiffState {
+    pub fn banners(&self) -> Vec<Banner> {
+        let d = &self.diff;
+        let mut out = Vec::new();
+        if let Some(old) = &d.old_path {
+            out.push(Banner { text: format!("Renamed from {old}"), warn: false });
+        }
+        let (om, nm) = d.modes();
+        if om != 0 && nm != 0 && om != nm {
+            out.push(Banner { text: format!("Mode changed {om:o} → {nm:o}"), warn: false });
+        }
+        if let Some((a, b)) = d.eol_change {
+            out.push(Banner { text: format!("Line endings changed {} → {}", eol_name(a), eol_name(b)), warn: false });
+        }
+        if d.bidi_warning {
+            out.push(Banner { text: "⚠ Changed lines contain bidirectional Unicode control characters".into(), warn: true });
+        }
+        out
+    }
+}
