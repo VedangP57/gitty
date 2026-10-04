@@ -20,7 +20,7 @@ use crate::theme::{ColorDepth, Registry};
 use crate::workers::Workers;
 use crate::{input, term, ui};
 
-const USAGE: &str = "usage: gitty [--theme NAME] [PATH]\n\nA fast terminal git client. Press ? inside for keys.";
+const USAGE: &str = "usage: gitty [--theme NAME] [PATH]\n       gitty untune [PATH]   undo the config gitty set on a large repo\n\nA fast terminal git client. Press ? inside for keys.";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 const OUTPUT_BUFFER: usize = 256 * 1024;
 
@@ -64,7 +64,23 @@ fn epoch() -> i64 {
 }
 
 /// Runs gitty; returns the process exit code.
+/// `gitty untune [PATH]`: unsets the config keys auto-tuning set, and nothing else.
+fn untune(args: &[String]) -> anyhow::Result<i32> {
+    let path = args.first().map_or(".", String::as_str);
+    let repo = Repo::open(path)?;
+    let keys = gitty_core::tune::untune(&gitty_core::git_cli::GitCli::new(&repo))?;
+    if keys.is_empty() {
+        println!("gitty untune: nothing to undo (gitty has not tuned this repository)");
+    } else {
+        println!("gitty untune: unset {}", keys.join(", "));
+    }
+    Ok(0)
+}
+
 pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
+    if args.first().map(String::as_str) == Some("untune") {
+        return untune(&args[1..]);
+    }
     let args = match parse(args) {
         Ok(a) => a,
         Err(code) => return Ok(code),

@@ -1537,3 +1537,50 @@ fn needs_auth_stops_auto_fetch_until_a_manual_fetch_works() {
     assert_eq!(t.app.needs_auth, None);
     assert!(t.app.auto_fetch_deadline().is_some());
 }
+
+// ---- auto-tuning ----
+
+fn many_commits_fixture() -> Fixture {
+    let f = Fixture::new();
+    for i in 0..3 {
+        f.write("a.txt", format!("{i}\n"));
+        f.commit(&format!("c{i}"), 1_700_000_000 + i);
+    }
+    f
+}
+
+#[test]
+fn large_history_gets_a_commit_graph_and_one_notice() {
+    let f = many_commits_fixture();
+    let mut t = H::new(&f);
+    // only the commit-graph: fsmonitor would start a daemon for this temp repo
+    t.app.tune_thresholds = gitty_core::tune::Thresholds { commits: 2, index_entries: usize::MAX };
+    t.pump();
+    let graph = f.path().join(".git/objects/info");
+    assert!(graph.join("commit-graph").exists() || graph.join("commit-graphs").exists());
+    assert!(toast_text(&t).contains("commit-graph") && toast_text(&t).contains("gitty untune"), "{}", toast_text(&t));
+}
+
+#[test]
+fn auto_tune_off_changes_nothing() {
+    let f = many_commits_fixture();
+    let mut t = H::new(&f);
+    t.app.config.auto_tune = false;
+    t.app.tune_thresholds = gitty_core::tune::Thresholds { commits: 2, index_entries: usize::MAX };
+    t.pump();
+    assert!(!f.path().join(".git/objects/info/commit-graph").exists());
+    assert!(t.app.toast.is_none());
+}
+
+#[test]
+fn untune_subcommand_reverts_what_gitty_set() {
+    let f = many_commits_fixture();
+    f.git(&["config", "core.untrackedCache", "true"]);
+    f.git(&["config", "--add", "gitty.tuned", "core.untrackedCache"]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_gitty")).args(["untune", f.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("core.untrackedCache"));
+    assert!(std::process::Command::new("git").current_dir(f.path()).args(["config", "core.untrackedCache"]).output().unwrap().stdout.is_empty());
+    let again = std::process::Command::new(env!("CARGO_BIN_EXE_gitty")).args(["untune", f.path().to_str().unwrap()]).output().unwrap();
+    assert!(String::from_utf8_lossy(&again.stdout).contains("nothing to undo"));
+}

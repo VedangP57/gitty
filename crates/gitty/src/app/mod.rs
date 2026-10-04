@@ -236,6 +236,10 @@ pub struct App {
     /// A remote whose credentials auto-fetch could not supply; auto-fetch is off until a manual
     /// fetch succeeds.
     pub needs_auth: Option<String>,
+    /// When a repository counts as large enough to tune (lowered in tests).
+    pub tune_thresholds: gitty_core::tune::Thresholds,
+    last_tune: Option<Instant>,
+    tune_announced: bool,
 }
 
 impl App {
@@ -316,6 +320,9 @@ impl App {
             asks: Default::default(),
             last_fetch: i.clock,
             needs_auth: None,
+            tune_thresholds: gitty_core::tune::Thresholds::DEFAULT,
+            last_tune: None,
+            tune_announced: false,
         };
         app.request_status();
         app
@@ -456,8 +463,12 @@ impl App {
                     return;
                 }
                 let old = self.history_len;
+                let finished = done && !self.history_done;
                 self.history_len = len;
                 self.history_done = done;
+                if finished {
+                    self.request_tune();
+                }
                 if let Some(want) = self.reselect {
                     let found = self.history.as_ref().and_then(|h| {
                         let h = h.read().unwrap_or_else(PoisonError::into_inner);
@@ -558,7 +569,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
-            Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) => {}
+            Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
         }
     }
 

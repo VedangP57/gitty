@@ -225,6 +225,7 @@ impl App {
     pub(super) fn commit_done(&mut self, op: &WriteOp, result: &Result<Option<String>, String>) -> bool {
         match (op, result) {
             (WriteOp::Commit { .. }, Ok(head)) => {
+                self.request_tune();
                 let committed = head.clone().map(|head| Committed { head, seen: false });
                 self.changes.commit = CommitBox { committed, ..CommitBox::default() };
                 if self.focus == Focus::Commit {

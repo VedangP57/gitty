@@ -198,6 +198,14 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             sink(Msg::WriteDone { op, result });
         }
         Request::Net { op, mode, background } => crate::netjob::run(h, op, mode, background, sink),
+        Request::Tune { history_len, th } => {
+            let actions = gitty_core::tune::plan(h, history_len, th);
+            let (applied, error) = match gitty_core::tune::apply(&gitty_core::git_cli::GitCli::new(h.owner()), &actions) {
+                Ok(done) => (done, None),
+                Err(e) => (Vec::new(), Some(format!("{e:#}"))),
+            };
+            sink(Msg::Tuned { applied, error });
+        }
         Request::HeadMessage => {
             let result = gitty_core::git_cli::GitCli::new(h.owner()).head_message().map_err(|e| format!("{e:#}"));
             sink(Msg::HeadMessage { result });

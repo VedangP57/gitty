@@ -6,11 +6,14 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use gitty_core::net::{Cancel, Mode, Outcome};
+use gitty_core::tune::Action;
 
 use super::{App, Overlay, Toast};
 use crate::askpass::{Ask, AskKind, Secret};
 use crate::editor::Editor;
 use crate::msg::{Msg, NetOp, Request};
+
+const TUNE_EVERY: Duration = Duration::from_secs(600);
 
 /// The running network job.
 #[derive(Debug, Clone)]
@@ -87,6 +90,7 @@ impl App {
                 }
             }
             Msg::NetDone { op, background, outcome } => self.net_done(op, background, outcome),
+            Msg::Tuned { applied, error } => self.tuned(applied, error),
             Msg::Ask(a) => {
                 self.asks.push_back(a);
                 self.next_ask();
@@ -103,6 +107,8 @@ impl App {
         if matches!(op, NetOp::Fetch | NetOp::Pull) && matches!(outcome, Outcome::Ok { .. }) {
             self.last_fetch = self.clock;
             self.needs_auth = None;
+            // new commits may be missing from the commit-graph
+            self.request_tune();
         }
         self.outbox.push(Request::Refs);
         self.request_status();
@@ -161,6 +167,34 @@ impl App {
             self.net = Some(NetJob { op: NetOp::Fetch, label: "Fetching".into(), fraction: None, cancel: None, background: true, remote: None });
             self.outbox.push(Request::Net { op: NetOp::Fetch, mode: Mode::Background, background: true });
         }
+    }
+
+    /// Checks (and applies) auto-tuning, at most every 10 minutes: after the first full walk and
+    /// after fetches, pulls and commits.
+    pub fn request_tune(&mut self) {
+        if !self.config.auto_tune || self.history_len == 0 || self.last_tune.is_some_and(|t| self.clock.saturating_duration_since(t) < TUNE_EVERY) {
+            return;
+        }
+        self.last_tune = Some(self.clock);
+        self.outbox.push(Request::Tune { history_len: self.history_len, th: self.tune_thresholds });
+    }
+
+    /// One notice per session, and again whenever gitty changes the repo's config.
+    fn tuned(&mut self, applied: Vec<Action>, error: Option<String>) {
+        if let Some(detail) = error {
+            if !self.tune_announced {
+                self.tune_announced = true;
+                self.toast = Some(Toast { what: "Auto-tuning this repository failed".into(), detail, error: true });
+            }
+            return;
+        }
+        let config = applied.iter().any(|a| *a != Action::CommitGraph);
+        if applied.is_empty() || (self.tune_announced && !config) {
+            return;
+        }
+        self.tune_announced = true;
+        let list = applied.iter().map(|a| a.describe()).collect::<Vec<_>>().join(", ");
+        self.toast = Some(Toast { what: format!("Tuned this large repository ({list}) · `gitty untune` undoes it"), detail: String::new(), error: false });
     }
 
     /// Opens the next queued prompt when nothing else is on screen.

@@ -23,6 +23,7 @@ pub struct Workers {
     highlighters: Pool,
     writer: Pool,
     net: Pool,
+    maintenance: Pool,
 }
 
 fn next(high: &Receiver<Request>, low: &Receiver<Request>) -> Option<Request> {
@@ -101,6 +102,8 @@ impl Workers {
             writer: pool("writer", 1, false, &repo, &gens, &tx),
             // one network job at a time, like Desktop
             net: pool("net", 1, false, &repo, &gens, &tx),
+            // commit-graph writes can take seconds on huge repos: never on the writer
+            maintenance: pool("maintenance", 1, false, &repo, &gens, &tx),
         }
     }
 
@@ -111,6 +114,7 @@ impl Workers {
             Request::Highlight { .. } => &self.highlighters,
             Request::Write(_) => &self.writer,
             Request::Net { .. } => &self.net,
+            Request::Tune { .. } => &self.maintenance,
             _ => &self.readers,
         };
         let q = if req.is_background() { &pool.low } else { &pool.high };

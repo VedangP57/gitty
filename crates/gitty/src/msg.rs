@@ -140,6 +140,8 @@ pub enum Request {
     HeadMessage,
     /// A network job, on the single network thread. `background` jobs (auto-fetch) report quietly.
     Net { op: NetOp, mode: gitty_core::net::Mode, background: bool },
+    /// Auto-tuning check (and apply) on the maintenance thread.
+    Tune { history_len: usize, th: gitty_core::tune::Thresholds },
 }
 
 /// What the user asked the network thread to do.
@@ -209,6 +211,8 @@ pub enum Msg {
     NetDone { op: NetOp, background: bool, outcome: gitty_core::net::Outcome },
     /// git or ssh asks for a username, password, passphrase or yes/no through the trampoline.
     Ask(crate::askpass::Ask),
+    /// What auto-tuning applied (empty when nothing was needed).
+    Tuned { applied: Vec<gitty_core::tune::Action>, error: Option<String> },
     /// A status run was slow enough that refreshing the index is worth a try.
     StatusSlow,
     HeadMessage { result: Result<String, String> },
@@ -246,6 +250,7 @@ impl std::fmt::Debug for Msg {
             Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
             Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
             Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),
+            Msg::Tuned { applied, error } => write!(f, "Tuned {{ {applied:?}, error: {} }}", error.is_some()),
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
