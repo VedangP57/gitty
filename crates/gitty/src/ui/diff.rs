@@ -15,7 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use super::commit_list::title;
 use super::paint::{fill, glyphs, spans, text, width};
 use crate::app::diffstate::VRow;
-use crate::app::{App, Focus, digits};
+use crate::app::{App, Focus, Tab, digits};
 use crate::text::{Glyph, layout, layout_until, wrap_starts};
 use crate::theme::Theme;
 
@@ -99,6 +99,13 @@ struct Line<'a> {
     /// Syntax spans for `bytes`.
     syn: &'a [Span],
     no_eol: bool,
+}
+
+/// ✓ in the first gutter column of a line whose change is staged (Changes tab).
+fn check(buf: &mut Buffer, t: &Theme, gx: u16, y: u16, max_x: u16) {
+    if gx < max_x {
+        buf[(gx, y)].set_symbol("✓").set_style(Style::new().fg(t.ui.accent).add_modifier(Modifier::BOLD));
+    }
 }
 
 struct Ctx<'a> {
@@ -274,6 +281,10 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         text(buf, r.x + 1, y, r.right(), &b.text, st);
         y += 1;
     }
+    if let Some(n) = app.changes_notice().filter(|_| y < r.bottom()) {
+        text(buf, r.x + 1, y, r.right(), &n, base.fg(ui.warning));
+        y += 1;
+    }
     let body = Rect::new(r.x, y, r.width, r.bottom().saturating_sub(y));
     app.hits.diff_rows = Some(body);
     if body.height == 0 {
@@ -292,6 +303,9 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let rows = d.rows(split);
     d.scroll = d.scroll.min(rows.saturating_sub(1));
     let d = app.diff.as_ref().expect("checked above");
+    let view = if app.tab == Tab::Changes { app.changes.current.as_ref() } else { None };
+    let staged = |line: u32, old: bool| view.is_some_and(|v| v.is_staged(line, old));
+    let range = view.and(app.changes.visual).map(|a| a.min(d.cursor)..=a.max(d.cursor));
     let digits = digits(fd.old.len().max(fd.new.len())) as u16;
     let mut cx = Ctx {
         theme: &theme,
@@ -320,7 +334,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     while screen_rows.len() < usize::from(body.height) {
         let k = screen_rows.len() as u16;
         let y = body.y + k;
-        let cursor = vi == d.cursor;
+        let cursor = vi == d.cursor || range.as_ref().is_some_and(|r| r.contains(&vi));
         let Some(vr) = d.vrow(vi, split) else { break };
         cx.lines = (d.row_lines(vi, split, wrap) as u16).clamp(1, body.height - k);
         screen_rows.extend(std::iter::repeat_n(vi, usize::from(cx.lines)));
@@ -345,10 +359,16 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                 Row::Del { old, change } => {
                     let l = Line { numbers: [Some(old), None], n_numbers: 2, kind: Kind::Del, bytes: Some(fd.old.line(old)), emph: emph_of(&fd, change, old, true), syn: syn_line(old_hl, old), no_eol: old + 1 == fd.old.len() && fd.old.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
+                    if staged(old, true) {
+                        check(buf, &theme, x, y, right);
+                    }
                 }
                 Row::Add { new, change } => {
                     let l = Line { numbers: [None, Some(new)], n_numbers: 2, kind: Kind::Add, bytes: Some(fd.new.line(new)), emph: emph_of(&fd, change, new, false), syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
+                    if staged(new, false) {
+                        check(buf, &theme, x, y, right);
+                    }
                 }
             },
             VRow::Split(row) => {
@@ -381,11 +401,17 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                             None => Line { numbers: [None, None], n_numbers: 1, kind: Kind::Filler, bytes: None, emph: &[], syn: &[], no_eol: false },
                         };
                         cx.line(buf, x, y, mid, &left, cursor);
+                        if old.is_some_and(|o| staged(o, true)) {
+                            check(buf, &theme, x, y, mid);
+                        }
                         let rt = match new {
                             Some(n) => Line { numbers: [Some(n), None], n_numbers: 1, kind: Kind::Add, bytes: Some(fd.new.line(n)), emph: emph_of(&fd, change, n, false), syn: syn_line(new_hl, n), no_eol: n + 1 == fd.new.len() && fd.new.no_eol() },
                             None => Line { numbers: [None, None], n_numbers: 1, kind: Kind::Filler, bytes: None, emph: &[], syn: &[], no_eol: false },
                         };
                         cx.line(buf, mid + 1, y, right, &rt, cursor);
+                        if new.is_some_and(|n| staged(n, false)) {
+                            check(buf, &theme, mid + 1, y, right);
+                        }
                         divider(buf);
                     }
                 }

@@ -87,3 +87,26 @@ Binary size (release, stripped): **24.4 MB** with all grammars, **5.6 MB** with
 `--no-default-features` (syntect fallback only). The largest grammars, as static libraries:
 Swift 4.2 MB, C++ 3.4 MB, TypeScript/TSX 3.0 MB, SQL 2.5 MB, Bash 1.5 MB, Rust 1.2 MB; the
 rest are under 1 MB each. Every grammar is a cargo feature of `gitty-highlight`.
+
+## Changes tab (M4) — 2026-10-04, release build, Apple Silicon, load average ~6.8
+
+`cargo run --release -p gitty --example changes -- <repo> <file>` works on a throwaway `--shared` clone:
+status (best/median of 10), a worktree save until the watcher fires and the status it triggers, and
+staging one line the way Space does (change diff load, then `SetStaged` → `git apply --cached`).
+
+| Operation | git (4,857 files) | gitty (109 files) | Budget |
+|---|---|---|---|
+| status, fresh checkout (racily clean index) | 142–154 ms | 9.4 ms | — |
+| status after gitty's index refresh | **18.5–19.4 ms** | 5.7–5.9 ms | < 50 ms ✅ |
+| save → watcher fired | 63–67 ms | 63–67 ms | — (50 ms quiet debounce) |
+| save → status on screen | **92–107 ms** | 73–94 ms | < 150 ms ✅ |
+| change diff load (HEAD → worktree + staged lines) | 0.7 ms | 0.2 ms | < 16 ms ✅ |
+| stage a line (patch + `git apply --cached`) | **11.7–12.0 ms** | 9.2–9.5 ms | < 50 ms ✅ |
+
+- **Fixed during measurement:** status runs with `GIT_OPTIONAL_LOCKS=0`, so git never saves the stat
+  data it refreshes. After a checkout every racily clean entry is re-hashed on every status (190 ms
+  on git/git, for ever, until some other git command writes the index). When a status takes over
+  100 ms, gitty now queues `git update-index -q --refresh` on the writer thread, at most once a
+  minute (`slow_status_refreshes_the_index_at_most_once_a_minute`).
+- Save → watcher is dominated by the 50 ms quiet window of the debouncer (FSEvents itself delivers in
+  ~10–15 ms); bursts such as a formatter rewriting many files still produce one status run.

@@ -6,10 +6,14 @@ pub mod diff;
 pub mod diff_lines;
 pub mod error;
 pub mod git_bin;
+pub mod git_cli;
 pub mod history;
 pub mod refs;
 pub mod repo;
+pub mod stage;
+pub mod status;
 pub mod types;
+pub mod watch;
 
 pub use error::GitError;
 pub use repo::{Handle, Repo};

@@ -94,6 +94,12 @@ impl H {
         self.pump();
         assert_eq!(self.app.diff.as_ref().map(|d| d.key.path.as_str()), Some(path));
     }
+    fn select_change(&mut self, path: &str) {
+        let i = self.app.changes.visible().iter().position(|&i| self.app.changes.entries()[i].path == path).unwrap_or_else(|| panic!("no {path}"));
+        self.app.select_change(i);
+        self.pump();
+        assert_eq!(self.app.diff.as_ref().map(|d| d.key.path.as_str()), Some(path));
+    }
     fn click(&mut self, x: u16, y: u16) {
         let m = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
         self.app.handle_mouse(m(MouseEventKind::Down(MouseButton::Left)));
@@ -647,4 +653,133 @@ fn wrap_paging_shows_every_row() {
     let rows = t.app.diff.as_ref().unwrap().rows(false);
     let missing: Vec<usize> = (0..rows).filter(|r| !seen.contains(r)).collect();
     assert!(missing.is_empty(), "PgDn skipped rows {missing:?}");
+}
+
+fn changes_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("src/main.rs", main_rs(0));
+    f.write("notes.txt", "a\nb\n");
+    f.commit("base", NOW - DAY);
+    f.write("src/main.rs", main_rs(1));
+    f.write("notes.txt", "a\nB\n");
+    f.write("new file.txt", "fresh\n");
+    // stage the first changed line of main.rs only
+    let staged = main_rs(0).replace("    step(5);\n", "    let total = compute(5, 7);\n");
+    let p = f.path().join("src/main.rs");
+    std::fs::write(&p, &staged).unwrap();
+    f.git(&["add", "src/main.rs"]);
+    std::fs::write(&p, main_rs(1)).unwrap();
+    f
+}
+
+#[test]
+fn changes_tab_snapshots() {
+    let f = changes_fixture();
+    for (w, focus_diff) in [(140u16, false), (100, false), (100, true)] {
+        let mut t = H::new(&f, "github-dark", (w, 30));
+        t.key(KeyCode::Char('1'));
+        t.select_change("src/main.rs");
+        if focus_diff {
+            t.key(KeyCode::Enter);
+        }
+        let s = text(&t.render(w, 30));
+        insta::assert_snapshot!(format!("changes_{w}_{}", if focus_diff { "diff" } else { "files" }), s);
+    }
+}
+
+#[test]
+fn staged_lines_show_a_check_mark() {
+    let f = changes_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("src/main.rs");
+    let b = t.render(140, 30);
+    let s = text(&b);
+    let line = |needle: &str| s.lines().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("{needle}:\n{s}")).to_string();
+    assert!(line("let total = compute(5, 7);").contains('✓'), "{s}");
+    assert!(!line("println!").contains('✓'));
+    assert!(line("[~]").contains("main.rs"), "partially staged file shows [~]");
+}
+
+#[test]
+fn clicks_toggle_checkboxes_and_gutter_lines() {
+    let f = changes_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "notes.txt").unwrap();
+    let _ = x;
+    t.click(t.app.hits.files_rows.unwrap().x + 1, y);
+    t.render(140, 30);
+    let e = t.app.changes.entries().iter().find(|e| e.path == "notes.txt").unwrap();
+    assert_eq!(e.check(), gitty_core::status::Check::Staged, "checkbox click stages the file");
+    // gutter click on the println line stages it
+    t.select_change("src/main.rs");
+    let b = t.render(140, 30);
+    let (_, y) = find(&b, "println!").unwrap();
+    let gx = t.app.hits.diff_old_gutter.0;
+    t.click(gx, y);
+    let b = t.render(140, 30);
+    let (_, y) = find(&b, "println!").unwrap();
+    let row: String = (0..140).map(|x| b[(x, y)].symbol().to_string()).collect();
+    assert!(row.contains('✓'), "{row}");
+    // header checkbox: toggle all
+    let r = t.app.hits.files_rows.unwrap();
+    t.click(r.x + 1, r.y - 1);
+    t.render(140, 30);
+    assert!(t.app.changes.entries().iter().all(|e| e.check() == gitty_core::status::Check::Staged));
+}
+
+fn type_str(t: &mut H, s: &str) {
+    for c in s.chars() {
+        t.key(KeyCode::Char(c));
+    }
+}
+
+#[test]
+fn commit_box_renders_fields_counter_and_button() {
+    let f = changes_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("src/main.rs");
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("Update main.rs"), "placeholder:\n{s}");
+    assert!(s.contains("Commit 1 file to main"), "{s}");
+    t.key(KeyCode::Char('c'));
+    let summary = "Compute the total once and print it after the loop!";
+    assert!(summary.chars().count() > 50 && summary.chars().count() <= 72);
+    type_str(&mut t, summary);
+    t.key(KeyCode::Tab);
+    type_str(&mut t, "Saves a pass.");
+    let b = t.render(140, 30);
+    insta::assert_snapshot!("changes_commit_box", text(&b));
+    // the counter turns yellow past 50
+    let (_, y) = find(&b, "Compute the total").unwrap();
+    let n = summary.chars().count().to_string();
+    let w = t.app.hits.files_rows.unwrap().width;
+    let row: String = (0..w).map(|x| b[(x, y)].symbol().to_string()).collect();
+    let at = row.rfind(&n).unwrap_or_else(|| panic!("counter {n} in {row:?}")) as u16;
+    assert_eq!(b[(at, y)].fg, t.app.theme.ui.warning);
+    // clicking the button commits
+    let (bx, by) = find(&b, "Commit 1 file to main").unwrap();
+    t.click(bx, by);
+    let s = text(&t.render(140, 30));
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), summary);
+    assert!(s.contains("Committed just now · [u] Undo"), "{s}");
+}
+
+#[test]
+fn amend_shows_a_warning_banner_and_clicking_a_field_focuses_it() {
+    let f = changes_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.key(KeyCode::Char('A'));
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("Amending the last commit"), "{s}");
+    assert!(s.contains("Amend last commit"), "{s}");
+    let (x, y) = find(&b, "Co-authors").unwrap();
+    t.click(x, y);
+    assert_eq!(t.app.focus, Focus::Commit);
+    assert_eq!(t.app.changes.commit.field, gitty::app::commit::Field::CoAuthors);
 }

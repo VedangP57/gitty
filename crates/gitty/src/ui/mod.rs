@@ -1,6 +1,7 @@
 //! Rendering. Every pane writes its visible rows straight into the frame buffer.
 
 pub mod bars;
+pub mod changes;
 pub mod commit_list;
 pub mod diff;
 pub mod file_list;
@@ -14,7 +15,7 @@ use ratatui::style::Style;
 
 use crate::app::{App, Tab};
 use layout::Sep;
-use paint::{centered, fill, text};
+use paint::{fill, text};
 
 pub fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
@@ -31,31 +32,32 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let panes = app.panes();
     bars::top(app, buf, panes.top);
     bars::bottom(app, buf, panes.bottom);
-    if app.tab == Tab::Changes {
-        let b = panes.body;
-        centered(buf, b, b.y + b.height / 3, "Changes", base.add_modifier(ratatui::style::Modifier::BOLD));
-        centered(buf, b, b.y + b.height / 3 + 1, "Staging and committing arrive in a later milestone (M4).", base.fg(ui.muted));
-    } else {
-        if let Some(r) = panes.history {
-            commit_list::draw(app, buf, r);
-        }
-        if let Some(r) = panes.header {
-            header::draw(app, buf, r);
-        }
-        if let Some(r) = panes.files {
+    if let Some(r) = panes.history {
+        commit_list::draw(app, buf, r);
+    }
+    if let Some(r) = panes.header {
+        header::draw(app, buf, r);
+    }
+    if let Some(r) = panes.files {
+        if app.tab == Tab::Changes {
+            changes::draw_files(app, buf, r);
+        } else {
             file_list::draw(app, buf, r);
         }
-        if let Some(r) = panes.diff {
-            diff::draw(app, buf, r);
+    }
+    if let Some(r) = panes.commit {
+        changes::draw_commit(app, buf, r);
+    }
+    if let Some(r) = panes.diff {
+        diff::draw(app, buf, r);
+    }
+    for (r, sep) in &panes.seps {
+        if *sep == Sep::FilesBelow {
+            continue;
         }
-        for (r, sep) in &panes.seps {
-            if *sep == Sep::FilesBelow {
-                continue;
-            }
-            for y in r.top()..r.bottom() {
-                for x in r.left()..r.right() {
-                    buf[(x, y)].set_symbol("│").set_style(base.fg(ui.border));
-                }
+        for y in r.top()..r.bottom() {
+            for x in r.left()..r.right() {
+                buf[(x, y)].set_symbol("│").set_style(base.fg(ui.border));
             }
         }
     }

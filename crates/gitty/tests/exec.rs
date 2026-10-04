@@ -360,3 +360,138 @@ fn highlight_returns_spans_and_honours_cancel() {
     let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key, text });
     assert!(matches!(&out[..], [Msg::Highlighted { spans: None, cancelled: true, .. }]), "{out:?}");
 }
+
+fn status_entry(f: &Fixture, path: &str) -> gitty_core::status::StatusEntry {
+    match &run(f, Request::Status { generation: 1 })[..] {
+        [Msg::Status { generation: 1, result: Ok(st) }] => st.entries.iter().find(|e| e.path == path).cloned().expect("entry"),
+        m => panic!("{m:?}"),
+    }
+}
+
+fn change_diff(f: &Fixture, path: &str) -> (gitty_core::status::StatusEntry, gitty::msg::DiffKey, Arc<gitty_core::diff::FileDiff>, gitty_core::stage::Texts, Option<Vec<bool>>, bool) {
+    let entry = status_entry(f, path);
+    match run(f, Request::ChangeDiff { generation: 3, entry, opts: DiffOptions::default(), force_text: false }).pop() {
+        Some(Msg::ChangeDiff { generation: 3, entry, key, diff, texts, staged, divergent }) => (entry, key, diff, texts, staged, divergent),
+        m => panic!("{m:?}"),
+    }
+}
+
+fn write(f: &Fixture, op: gitty::msg::WriteOp) -> (Result<Option<String>, String>, Vec<String>) {
+    let mut log = Vec::new();
+    let mut done = None;
+    for m in run(f, Request::Write(op)) {
+        match m {
+            Msg::WriteLog { line } => log.push(line),
+            Msg::WriteDone { result, .. } => done = Some(result),
+            m => panic!("{m:?}"),
+        }
+    }
+    (done.expect("WriteDone"), log)
+}
+
+#[test]
+fn change_diff_reports_staged_lines_and_set_staged_writes_them() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\nb\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nB\nc\n");
+    let (entry, key, diff, texts, staged, divergent) = change_diff(&f, "a.txt");
+    assert_eq!(staged, Some(vec![false, false, false]));
+    assert!(!divergent);
+    assert_eq!(key.new, Some(texts.wt_blob));
+    let flags = vec![false, false, true];
+    let (r, _) = write(&f, gitty::msg::WriteOp::SetStaged { entry, texts, diff, flags });
+    assert_eq!(r, Ok(None));
+    assert_eq!(f.git(&["show", ":a.txt"]), "a\nb\nc");
+    let (_, _, _, _, staged, _) = change_diff(&f, "a.txt");
+    assert_eq!(staged, Some(vec![false, false, true]));
+}
+
+#[test]
+fn commit_streams_hook_output_and_undo_returns_the_message() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let hook = f.path().join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\necho 'checking style' >&2\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.write("a.txt", "a\nb\n");
+    let (r, _) = write(&f, gitty::msg::WriteOp::StageAll);
+    assert_eq!(r, Ok(None));
+    let (r, log) = write(&f, gitty::msg::WriteOp::Commit { message: "Add b".into(), amend: false });
+    assert_eq!(r, Ok(Some(f.git(&["rev-parse", "HEAD"]))), "the new HEAD");
+    assert!(log.iter().any(|l| l.contains("checking style")), "{log:?}");
+    let (r, _) = write(&f, gitty::msg::WriteOp::UndoCommit);
+    assert_eq!(r, Ok(Some("Add b\n".into())));
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+}
+
+#[test]
+fn discards_copy_to_trash_and_refuse_changed_files() {
+    let trash = tempfile::tempdir().unwrap();
+    // SAFETY: tests in this binary that read GITTY_TRASH_DIR all set the same value
+    unsafe { std::env::set_var("GITTY_TRASH_DIR", trash.path()) };
+    let f = Fixture::new();
+    f.write("a.txt", "a\nb\n");
+    f.write("gone.txt", "g\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nB\n");
+    f.write("gone.txt", "edited\n");
+    f.write("new.txt", "fresh\n");
+    let stale = gitty_core::commit_files::BlobId::hash_of(b"something else");
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect: stale });
+    assert!(r.unwrap_err().contains("changed on disk"));
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nB\n");
+    let expect = gitty_core::commit_files::BlobId::hash_of(b"a\nB\n");
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect });
+    assert_eq!(r, Ok(None));
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nb\n");
+    let (r, _) = write(&f, gitty::msg::WriteOp::DiscardFiles { restore: vec!["gone.txt".into()], remove: vec!["new.txt".into()] });
+    assert_eq!(r, Ok(None));
+    assert_eq!(std::fs::read_to_string(f.path().join("gone.txt")).unwrap(), "g\n");
+    assert!(!f.path().join("new.txt").exists());
+    let saved: Vec<String> = std::fs::read_dir(trash.path()).unwrap().map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()).collect();
+    for want in ["a\nB\n", "edited\n", "fresh\n"] {
+        assert!(saved.iter().any(|s| s == want), "{want:?} not in trash: {saved:?}");
+    }
+}
+
+#[test]
+fn refresh_index_keeps_status_and_tolerates_changes() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.write("b.txt", "b\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "changed\n");
+    std::fs::remove_file(f.path().join("b.txt")).unwrap();
+    let before = f.git(&["status", "--porcelain"]);
+    let (r, _) = write(&f, gitty::msg::WriteOp::RefreshIndex);
+    assert_eq!(r, Ok(None));
+    assert_eq!(f.git(&["status", "--porcelain"]), before);
+}
+
+#[test]
+fn staging_every_line_refuses_a_worktree_saved_since_the_diff() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\nb\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nB\nb\n");
+    let (entry, _, diff, texts, staged, _) = change_diff(&f, "a.txt");
+    let flags = vec![true; staged.unwrap().len()];
+    f.write("a.txt", "a\nB\nb\nSECRET\n");
+    let (r, _) = write(&f, gitty::msg::WriteOp::SetStaged { entry, texts, diff, flags });
+    assert!(r.as_ref().is_err_and(|e| e.contains("changed")), "{r:?}");
+    assert_eq!(f.git(&["show", ":a.txt"]), "a\nb", "index untouched");
+}
+
+#[test]
+fn symlink_diffs_offer_no_line_staging() {
+    let f = Fixture::new();
+    std::os::unix::fs::symlink("old-target", f.path().join("link")).unwrap();
+    f.commit("base", 1_700_000_000);
+    std::fs::remove_file(f.path().join("link")).unwrap();
+    std::os::unix::fs::symlink("new-target", f.path().join("link")).unwrap();
+    let (_, _, _, _, staged, _) = change_diff(&f, "link");
+    assert_eq!(staged, None);
+}

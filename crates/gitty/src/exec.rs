@@ -23,6 +23,44 @@ fn error(what: impl Into<String>, e: &anyhow::Error) -> Msg {
     Msg::Error { what: what.into(), detail: format!("{e:#}") }
 }
 
+type ChangeDiffParts = (DiffKey, Arc<gitty_core::diff::FileDiff>, gitty_core::stage::Texts, Option<Vec<bool>>, bool);
+
+/// HEAD → worktree diff of a status entry plus its staged lines (Changes tab).
+fn change_diff(h: &Handle, e: &gitty_core::status::StatusEntry, opts: gitty_core::diff::DiffOptions, force_text: bool) -> anyhow::Result<ChangeDiffParts> {
+    use gitty_core::diff::ops::WsMode;
+    let texts = h.stage_texts(e)?;
+    let mut diff = gitty_core::diff::FileDiff::from_bytes(
+        &e.path,
+        e.orig_path.as_deref(),
+        texts.head.bytes().to_vec(),
+        texts.wt.bytes().to_vec(),
+        e.head_mode,
+        texts.wt_mode,
+        opts,
+    );
+    if force_text {
+        diff = diff.force_text();
+    }
+    // symlinks, submodules and type changes are whole-file only (an untracked symlink shows only in wt_mode)
+    let lines_ok = diff.is_text() && opts.ws == WsMode::Show && e.line_stageable() && texts.wt_mode & 0o170000 != 0o120000;
+    let derived = lines_ok.then(|| gitty_core::stage::staged_set(&texts, &diff.ops));
+    let divergent = matches!(derived, Some(None));
+    let key = DiffKey {
+        old: e.head_blob,
+        new: (texts.wt_mode != 0).then_some(texts.wt_blob),
+        path: e.path.clone(),
+        old_path: e.orig_path.clone(),
+        old_mode: e.head_mode,
+        new_mode: texts.wt_mode,
+        opts,
+        force_text,
+    };
+    Ok((key, Arc::new(diff), texts, derived.flatten(), divergent))
+}
+
+/// A clean status this slow usually means racily clean index entries being re-hashed each run.
+const SLOW_STATUS: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
     match req {
         Request::Refs => match h.refs() {
@@ -141,6 +179,27 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let spans = HIGHLIGHTER.with_borrow_mut(|hl| hl.highlight(&key.path, text.bytes(), &stale));
             let cancelled = spans.is_none() && stale();
             sink(Msg::Highlighted { key, spans: spans.map(Arc::new), cancelled });
+        }
+        Request::Status { generation } => {
+            let t = std::time::Instant::now();
+            let result = gitty_core::git_cli::GitCli::new(h.owner()).status().map_err(|e| format!("{e:#}"));
+            let slow = result.is_ok() && t.elapsed() >= SLOW_STATUS;
+            sink(Msg::Status { generation, result });
+            if slow {
+                sink(Msg::StatusSlow);
+            }
+        }
+        Request::ChangeDiff { generation, entry, opts, force_text } => match change_diff(h, &entry, opts, force_text) {
+            Ok((key, diff, texts, staged, divergent)) => sink(Msg::ChangeDiff { generation, entry, key, diff, texts, staged, divergent }),
+            Err(e) => sink(Msg::ChangeDiffError { generation, path: entry.path, detail: format!("{e:#}") }),
+        },
+        Request::Write(op) => {
+            let result = crate::write::run(h, &op, &mut |line| sink(Msg::WriteLog { line: line.to_string() })).map_err(|e| format!("{e:#}"));
+            sink(Msg::WriteDone { op, result });
+        }
+        Request::HeadMessage => {
+            let result = gitty_core::git_cli::GitCli::new(h.owner()).head_message().map_err(|e| format!("{e:#}"));
+            sink(Msg::HeadMessage { result });
         }
     }
 }

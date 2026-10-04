@@ -57,16 +57,19 @@ impl App {
         if let Some(ov) = self.overlay.take() {
             return self.overlay_key(ov, k);
         }
+        if self.tab == Tab::Changes && self.focus == Focus::Commit {
+            return self.commit_key(k);
+        }
         match k.code {
             KeyCode::Char('q') => return self.quit = true,
-            KeyCode::Char('1') => return self.tab = Tab::Changes,
-            KeyCode::Char('2') => return self.tab = Tab::History,
+            KeyCode::Char('1') => return self.set_tab(Tab::Changes),
+            KeyCode::Char('2') => return self.set_tab(Tab::History),
             KeyCode::Char('T') => return self.open_theme_picker(),
             KeyCode::Char('?') => return self.overlay = Some(Overlay::Help),
             KeyCode::Char('!') if self.toast.is_some() => return self.overlay = Some(Overlay::ErrorDetail),
             _ => {}
         }
-        if self.tab == Tab::Changes {
+        if self.tab == Tab::Changes && self.changes_key(k) {
             return;
         }
         let split = self.split_active();
@@ -188,6 +191,11 @@ impl App {
                 }
                 self.overlay = Some(Overlay::ThemePicker { sel, original });
             }
+            Overlay::Confirm { op, .. } if matches!(k.code, KeyCode::Enter | KeyCode::Char('y')) => self.write(op),
+            Overlay::Confirm { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Char('n' | 'q')) => {}
+            Overlay::Confirm { .. } => self.overlay = Some(ov),
+            Overlay::Log { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) => {}
+            Overlay::Log { .. } => self.overlay = Some(ov),
             Overlay::Help | Overlay::ErrorDetail => {
                 if !matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?' | '!')) {
                     self.overlay = Some(ov);
@@ -204,6 +212,86 @@ impl App {
         self.overlay = Some(Overlay::ThemePicker { sel, original: self.theme.clone() });
     }
 
+    /// Changes-tab keys. Returns false for diff keys shared with the History tab.
+    fn changes_key(&mut self, k: KeyEvent) -> bool {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let mv = match (k.code, ctrl) {
+            (KeyCode::Char('d'), true) => Some(Move::Half(1)),
+            (KeyCode::Char('u'), true) => Some(Move::Half(-1)),
+            (KeyCode::Char('f'), true) | (KeyCode::PageDown, _) => Some(Move::Page(1)),
+            (KeyCode::Char('b'), true) | (KeyCode::PageUp, _) => Some(Move::Page(-1)),
+            (KeyCode::Char('j') | KeyCode::Down, false) => Some(Move::Step(1)),
+            (KeyCode::Char('k') | KeyCode::Up, false) => Some(Move::Step(-1)),
+            (KeyCode::Char('g') | KeyCode::Home, _) => Some(Move::Top),
+            (KeyCode::Char('G') | KeyCode::End, _) => Some(Move::Bottom),
+            _ => None,
+        };
+        match (k.code, ctrl) {
+            (KeyCode::Char('c'), false) => return self.focus_commit_or_true(),
+            (KeyCode::Char('A'), false) => {
+                self.toggle_amend();
+                return true;
+            }
+            (KeyCode::Char('u'), false) => {
+                self.undo_commit();
+                return true;
+            }
+            _ => {}
+        }
+        match self.focus {
+            Focus::Diff => match k.code {
+                KeyCode::Char(' ') => self.toggle_lines(),
+                KeyCode::Char('v') => {
+                    let c = self.diff.as_ref().map_or(0, |d| d.cursor);
+                    self.changes.visual = if self.changes.visual.is_some() { None } else { Some(c) };
+                }
+                KeyCode::Char('H') => self.toggle_hunk(),
+                KeyCode::Char('a') => self.toggle_current_file(),
+                KeyCode::Char('d') if !ctrl => self.confirm_discard_lines(),
+                KeyCode::Esc if self.changes.visual.is_some() => self.changes.visual = None,
+                KeyCode::Esc if !self.fullscreen => self.focus = Focus::Files,
+                KeyCode::Enter => {
+                    let hidden = self.diff.as_ref().is_some_and(|d| {
+                        matches!(d.diff.class, gitty_core::diff::classify::FileClass::LargeText { .. } | gitty_core::diff::classify::FileClass::Generated { .. })
+                    });
+                    if hidden {
+                        self.changes.force_text = true;
+                        self.request_change_diff();
+                    }
+                }
+                KeyCode::Char('{') => self.select_change(self.changes.sel.saturating_sub(1)),
+                KeyCode::Char('}') => self.select_change(self.changes.sel + 1),
+                KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Files,
+                // History-only keys
+                KeyCode::Char('r' | 'y' | 'Y' | 'o' | 'D' | 'z') => {}
+                _ => return false,
+            },
+            _ => {
+                if let Some(m) = mv {
+                    let n = self.changes.visible().len();
+                    let t = target(self.changes.sel, n, self.files_capacity(), m);
+                    self.select_change(t);
+                    return true;
+                }
+                match k.code {
+                    KeyCode::Char(' ') => self.toggle_file(self.changes.sel),
+                    KeyCode::Char('a') => self.toggle_all_files(),
+                    KeyCode::Char('F') => {
+                        self.changes.filter = self.changes.filter.next();
+                        self.changes.sel = 0;
+                        self.changes.scroll = 0;
+                        self.request_change_diff();
+                    }
+                    KeyCode::Char('d') if !ctrl => self.confirm_discard_file(),
+                    KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Diff,
+                    KeyCode::Char('<') | KeyCode::Char('>') => return false,
+                    _ => {}
+                }
+            }
+        }
+        true
+    }
+
     fn move_focused(&mut self, m: Move) {
         match self.focus {
             Focus::History => {
@@ -215,6 +303,7 @@ impl App {
                 let t = target(self.file_sel, n, self.files_capacity(), m);
                 self.select_file(t);
             }
+            Focus::Commit => {}
             Focus::Diff => {
                 let split = self.split_active();
                 let (cap, wrap) = (self.diff_capacity(), self.diff_wrap());
@@ -233,7 +322,11 @@ impl App {
     }
 
     fn cycle_focus(&mut self, dir: i64) {
-        let order = layout::tab_order(self.mode(), self.fullscreen);
+        let order: &[Focus] = match self.tab {
+            Tab::Changes if self.fullscreen => &[Focus::Diff],
+            Tab::Changes => &[Focus::Files, Focus::Diff],
+            Tab::History => layout::tab_order(self.mode(), self.fullscreen),
+        };
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as i64;
         self.focus = order[(i + dir).rem_euclid(order.len() as i64) as usize];
     }
@@ -243,6 +336,7 @@ impl App {
             Focus::History => self.focus = Focus::Files,
             Focus::Files => self.focus = Focus::Diff,
             Focus::Diff => self.force_show(),
+            Focus::Commit => {}
         }
     }
 
@@ -252,7 +346,7 @@ impl App {
             return;
         }
         match self.focus {
-            Focus::Diff => self.focus = Focus::Files,
+            Focus::Diff | Focus::Commit => self.focus = Focus::Files,
             Focus::Files => self.focus = Focus::History,
             Focus::History => self.toast = None,
         }
@@ -298,10 +392,14 @@ impl App {
         self.dirty = true;
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(x, y),
+            MouseEventKind::Drag(MouseButton::Left) if self.changes.gutter_drag => self.gutter_drag(y),
             MouseEventKind::Drag(MouseButton::Left) => self.drag(x, y),
             MouseEventKind::Up(MouseButton::Left) => {
                 if self.hits.dragging.take().is_some() {
                     self.save_state();
+                }
+                if std::mem::take(&mut self.changes.gutter_drag) {
+                    self.toggle_lines();
                 }
             }
             MouseEventKind::ScrollDown => self.wheel(x, y, 3),
@@ -315,15 +413,15 @@ impl App {
             return;
         }
         if let Some(tab) = self.hits.tabs.iter().find(|(r, _)| r.contains(Position { x, y })).map(|t| t.1) {
-            self.tab = tab;
-            return;
-        }
-        if self.tab == Tab::Changes {
+            self.set_tab(tab);
             return;
         }
         if let Some(sep) = self.hits.panes.seps.iter().find(|(r, _)| r.contains(Position { x, y })).map(|s| s.1) {
             self.hits.dragging = Some(sep);
             return;
+        }
+        if self.tab == Tab::Changes {
+            return self.changes_click(x, y);
         }
         if let Some(r) = inside(self.hits.history_rows, x, y) {
             self.focus = Focus::History;
@@ -362,11 +460,80 @@ impl App {
         }
     }
 
+    /// Changes tab: checkboxes toggle files; the diff gutter toggles lines (drag for a range).
+    fn changes_click(&mut self, x: u16, y: u16) {
+        if inside(self.hits.commit_button, x, y).is_some() {
+            return self.commit();
+        }
+        if let Some((_, f)) = self.hits.commit_fields.iter().find(|(r, _)| r.contains(Position { x, y })) {
+            self.focus = Focus::Commit;
+            self.changes.commit.field = *f;
+            return;
+        }
+        if let Some(r) = self.hits.files_rows {
+            let in_box = x >= r.x && x < r.x + 4;
+            if y + 1 == r.y && r.contains(Position { x, y: r.y }) && in_box {
+                self.focus = Focus::Files;
+                return self.toggle_all_files();
+            }
+            if r.contains(Position { x, y }) {
+                self.focus = Focus::Files;
+                let i = self.changes.scroll + (y - r.y) as usize;
+                if i < self.changes.visible().len() {
+                    self.select_change(i);
+                    if in_box {
+                        self.toggle_file(i);
+                    }
+                }
+                return;
+            }
+        }
+        if let Some(r) = inside(self.hits.diff_rows, x, y) {
+            self.focus = Focus::Diff;
+            let Some(&i) = self.hits.diff_lines.get((y - r.y) as usize) else { return };
+            let (og, ng) = (self.hits.diff_old_gutter, self.hits.diff_new_gutter);
+            let in_gutter = (og.0..og.0 + og.1).contains(&x) || (ng.0..ng.0 + ng.1).contains(&x);
+            let split = self.split_active();
+            let Some(d) = self.diff.as_mut() else { return };
+            d.cursor = i;
+            let gap = match d.vrow(i, split) {
+                Some(VRow::Row(Row::Gap { gap, .. }) | VRow::Split(SplitRow::Gap { gap, .. })) => Some(gap),
+                _ => None,
+            };
+            match gap {
+                Some(gap) => {
+                    let e = if (og.0..og.0 + og.1).contains(&x) {
+                        Expand::Up(gap)
+                    } else if (ng.0..ng.0 + ng.1).contains(&x) {
+                        Expand::Down(gap)
+                    } else {
+                        Expand::All(gap)
+                    };
+                    d.expand(e, split);
+                }
+                None if in_gutter => {
+                    self.changes.visual = Some(i);
+                    self.changes.gutter_drag = true;
+                }
+                None => self.changes.visual = None,
+            }
+        }
+    }
+
+    fn gutter_drag(&mut self, y: u16) {
+        let Some(r) = self.hits.diff_rows else { return };
+        let row = (y.clamp(r.y, r.bottom().saturating_sub(1)) - r.y) as usize;
+        if let (Some(&i), Some(d)) = (self.hits.diff_lines.get(row), self.diff.as_mut()) {
+            d.cursor = i;
+        }
+    }
+
     fn drag(&mut self, x: u16, y: u16) {
         let Some(sep) = self.hits.dragging else { return };
         let p = self.panes();
         match sep {
             Sep::History => self.ui_state.history_width = Some(x.saturating_sub(p.body.x)),
+            Sep::Changes => self.ui_state.changes_width = Some(x.saturating_sub(p.body.x)),
             Sep::Files => {
                 if let Some(f) = p.files {
                     self.ui_state.files_width = Some(x.saturating_sub(f.x).clamp(MIN_FILES, MAX_FILES));

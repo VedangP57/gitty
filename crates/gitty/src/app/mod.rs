@@ -1,6 +1,8 @@
 //! Application state. Pure: inputs and worker messages go in, [`Request`]s collect in an
 //! outbox, and `ui::draw` renders. Nothing here touches git.
 
+pub mod changes;
+pub mod commit;
 pub mod diffstate;
 mod input;
 
@@ -46,6 +48,10 @@ pub enum Overlay {
     ThemePicker { sel: usize, original: Theme },
     Help,
     ErrorDetail,
+    /// A destructive write waiting for Enter (or `y`); Esc cancels.
+    Confirm { title: String, body: String, op: crate::msg::WriteOp },
+    /// Full output of a failed write (hooks), shown until dismissed.
+    Log { title: String, body: String },
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +77,8 @@ pub struct Hits {
     pub diff_old_gutter: (u16, u16),
     pub diff_new_gutter: (u16, u16),
     pub tabs: Vec<(Rect, Tab)>,
+    pub commit_fields: Vec<(Rect, commit::Field)>,
+    pub commit_button: Option<Rect>,
     pub dragging: Option<Sep>,
 }
 
@@ -208,12 +216,17 @@ pub struct App {
     /// Escape sequences (OSC 52) for main to write after the next frame.
     pub osc_out: Vec<String>,
     pub hits: Hits,
+
+    pub changes: changes::Changes,
+    /// The terminal has focus (FocusGained/FocusLost); the status backstop runs only then.
+    pub focused: bool,
+    index_mark: Option<gitty_core::watch::IndexMark>,
 }
 
 impl App {
     pub fn new(i: AppInit) -> App {
         let scope = if i.ui_state.scope_all { HistoryScope::AllRefs } else { HistoryScope::HeadAndUpstream };
-        App {
+        let mut app = App {
             repo_name: i.repo_name,
             date_mode: i.config.date_mode,
             density: i.config.density,
@@ -279,7 +292,12 @@ impl App {
             outbox: vec![Request::Refs],
             osc_out: Vec::new(),
             hits: Hits::default(),
-        }
+            changes: changes::Changes::default(),
+            focused: false,
+            index_mark: None,
+        };
+        app.request_status();
+        app
     }
 
     pub fn take_requests(&mut self) -> Vec<Request> {
@@ -325,7 +343,7 @@ impl App {
     }
 
     pub fn panes(&self) -> Panes {
-        layout::compute(&LayoutInput {
+        let input = LayoutInput {
             width: self.size.0,
             height: self.size.1,
             focus: self.focus,
@@ -333,7 +351,11 @@ impl App {
             header_height: self.header_height(),
             file_count: self.files.as_ref().map_or(0, |f| f.len()),
             ui: &self.ui_state,
-        })
+        };
+        match self.tab {
+            Tab::History => layout::compute(&input),
+            Tab::Changes => layout::compute_changes(&input),
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -361,7 +383,7 @@ impl App {
 
     pub fn diff_capacity(&self) -> usize {
         let p = self.panes();
-        let banners = self.diff.as_ref().map_or(0, |d| d.banners().len());
+        let banners = self.diff.as_ref().map_or(0, |d| d.banners().len()) + usize::from(self.changes_notice().is_some());
         p.diff.map_or(1, |r| (r.height as usize).saturating_sub(1 + banners)).max(1)
     }
 
@@ -385,14 +407,22 @@ impl App {
 
     pub fn handle_msg(&mut self, m: Msg) {
         self.dirty = true;
+        let Some(m) = self.handle_changes_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
                     self.outbox.push(Request::AheadBehind { local, upstream });
                 }
+                let moved = self.refs.as_ref().is_none_or(|old| old.tips(self.scope) != refs.tips(self.scope));
                 self.refs = Some(refs);
                 self.fetched_at = fetched_at;
-                self.start_walk();
+                if moved {
+                    // a refresh after a commit or fetch keeps the selected commit selected
+                    if self.history.is_some() {
+                        self.reselect = self.selected_id.or(self.reselect);
+                    }
+                    self.start_walk();
+                }
             }
             Msg::HistoryStarted { session, history } => {
                 if session == self.session {
@@ -504,6 +534,8 @@ impl App {
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
+            // handled by handle_changes_msg
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
         }
     }
 
@@ -529,10 +561,11 @@ impl App {
         if self.diff_deadline.is_some_and(|d| d <= at) {
             self.fire_diff();
         }
+        self.tick_changes(at);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.diff_deadline
+        [self.diff_deadline, self.status_deadline()].into_iter().flatten().min()
     }
 
     /// Earliest epoch second at which a visible relative date changes.
@@ -833,7 +866,9 @@ impl App {
 
     /// Re-requests the current file's diff with new options (whitespace mode, force text).
     pub fn refresh_diff(&mut self) {
-        if self.current_file().is_some() {
+        if self.tab == Tab::Changes {
+            self.request_change_diff();
+        } else if self.current_file().is_some() {
             self.schedule_diff();
         }
     }

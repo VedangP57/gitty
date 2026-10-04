@@ -117,7 +117,7 @@ fn startup_requests_refs_then_walk_then_rows() {
     let ids = commits(&f, 5);
     let mut t = H::new(&f);
     let r = t.app.take_requests();
-    assert!(matches!(r.as_slice(), [Request::Refs]));
+    assert!(matches!(r.as_slice(), [Request::Refs, Request::Status { .. }]));
     for m in t.exec_all(r) {
         t.app.handle_msg(m);
     }
@@ -778,4 +778,531 @@ fn forced_large_text_is_not_highlighted() {
     t.pump();
     assert!(t.app.diff.as_ref().unwrap().key.force_text);
     assert!(t.highlights.is_empty(), "{:?}", t.highlights);
+}
+
+fn changes_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\nb\n");
+    f.write("b.txt", "b\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nB\n");
+    f.write("new.txt", "n\n");
+    f
+}
+
+#[test]
+fn startup_reads_status_and_changes_tab_loads_the_first_file() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Status { .. })));
+    t.pump();
+    let paths: Vec<String> = t.app.changes.status.as_ref().unwrap().entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(paths, ["a.txt", "new.txt"]);
+    assert!(t.app.diff.is_some(), "History shows its own diff");
+    t.app.set_tab(gitty::app::Tab::Changes);
+    assert!(t.app.diff.is_none(), "the History diff is not shown on Changes");
+    t.pump();
+    let d = t.app.diff.as_ref().unwrap();
+    assert_eq!(d.key.path, "a.txt");
+    assert_eq!(t.app.changes.current.as_ref().unwrap().staged, Some(vec![false, false]));
+    t.app.set_tab(gitty::app::Tab::History);
+    t.pump();
+    assert_ne!(t.app.diff.as_ref().map(|d| d.key.path.as_str()), Some("new.txt"));
+}
+
+#[test]
+fn stale_change_diff_is_dropped() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.set_tab(gitty::app::Tab::Changes);
+    let reqs = t.app.take_requests();
+    let old = t.exec_all(reqs);
+    // the selection moves on before the reply lands
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    for m in old {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.diff.as_ref().is_none_or(|d| d.key.path == "new.txt"));
+    t.pump();
+    assert_eq!(t.app.diff.as_ref().unwrap().key.path, "new.txt");
+}
+
+#[test]
+fn watcher_bursts_coalesce_into_one_status_at_a_time() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    let count = |r: &[Request]| r.iter().filter(|r| matches!(r, Request::Status { .. })).count();
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::WORKTREE));
+    let first = t.app.take_requests();
+    assert_eq!(count(&first), 1);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::INDEX));
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::WORKTREE));
+    assert_eq!(count(t.app.take_requests_peek()), 0, "one status in flight at a time");
+    for m in t.exec_all(first) {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(count(t.app.take_requests_peek()), 1, "changes during the run cause exactly one rerun");
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Refs)));
+}
+
+#[test]
+fn refs_refresh_restarts_history_only_when_tips_move() {
+    let f = Fixture::new();
+    commits(&f, 3);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('j');
+    t.pump();
+    let sel = t.selected_id();
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    let walks = |t: &mut H| {
+        let r = t.app.take_requests();
+        let n = r.iter().filter(|r| matches!(r, Request::Walk { .. })).count();
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+        n
+    };
+    walks(&mut t);
+    assert_eq!(walks(&mut t), 0, "same tips: no new walk");
+    f.write("a.txt", "next\n");
+    f.commit("next", 1_700_009_000);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    walks(&mut t);
+    assert_eq!(walks(&mut t), 1, "HEAD moved: history restarts");
+    t.pump();
+    assert_eq!(t.app.history_len, 4);
+    assert_eq!(t.selected_id(), sel, "the selected commit stays selected");
+}
+
+#[test]
+fn writes_refresh_status_and_errors_toast() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    assert_eq!(t.app.changes.busy, 1);
+    t.pump();
+    assert_eq!(t.app.changes.busy, 0);
+    assert!(t.app.changes.status.as_ref().unwrap().entries.iter().all(|e| e.check() == gitty_core::status::Check::Staged));
+    t.app.write(gitty::msg::WriteOp::Commit { message: "Commit it".into(), amend: false });
+    t.pump();
+    assert_eq!(t.app.history_len, 2, "a commit refreshes refs and history");
+    std::fs::write(f.path().join(".git/index.lock"), "").unwrap();
+    f.write("a.txt", "again\n");
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("error toast");
+    assert!(toast.error && toast.detail.contains("index.lock"), "{}", toast.detail);
+}
+
+#[test]
+fn focus_gained_and_backstop_refresh_status() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    let has_status = |t: &H| t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Status { .. }));
+    let run_now = |t: &mut H| {
+        let r = t.app.take_requests();
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+    };
+    assert_eq!(t.app.next_deadline(), None, "unfocused at start: no backstop timer");
+    t.app.handle_focus(true);
+    assert!(has_status(&t));
+    run_now(&mut t);
+    let at = t.app.next_deadline().expect("backstop armed while focused");
+    assert!(at >= t.clock + Duration::from_secs(59));
+    t.app.clock = at;
+    t.app.tick(at);
+    assert!(has_status(&t), "60 s backstop while focused");
+    run_now(&mut t);
+    t.app.handle_focus(false);
+    assert_eq!(t.app.next_deadline(), None, "no backstop while unfocused");
+}
+
+/// Changes tab with `a.txt` selected and its diff loaded.
+fn changes_tab(f: &Fixture) -> H {
+    let mut t = H::new(f);
+    t.pump();
+    t.app.set_tab(gitty::app::Tab::Changes);
+    t.pump();
+    t
+}
+
+fn writes(r: &[Request]) -> Vec<String> {
+    r.iter()
+        .filter_map(|r| match r {
+            Request::Write(op) => Some(match op {
+                gitty::msg::WriteOp::Stage(p) => format!("stage {p:?}"),
+                gitty::msg::WriteOp::Unstage(p) => format!("unstage {p:?}"),
+                gitty::msg::WriteOp::StageAll => "stage all".into(),
+                gitty::msg::WriteOp::UnstageAll => "unstage all".into(),
+                gitty::msg::WriteOp::SetStaged { flags, .. } => format!("lines {flags:?}"),
+                gitty::msg::WriteOp::WriteFile { path, .. } => format!("write {path}"),
+                gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
+                gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
+                gitty::msg::WriteOp::UndoCommit => "undo".into(),
+                gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
+                gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn index_of(f: &Fixture, p: &str) -> String {
+    f.git(&["show", &format!(":{p}")])
+}
+
+fn diff_row(t: &H, want: &str) -> usize {
+    let d = t.app.diff.as_ref().unwrap();
+    (0..d.rows(false)).find(|&i| row_kind(d, i) == want).unwrap_or_else(|| panic!("no {want} row"))
+}
+
+#[test]
+fn space_and_a_toggle_whole_files() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch(' ');
+    assert_eq!(writes(t.app.take_requests_peek()), ["stage [\"a.txt\"]"]);
+    t.pump();
+    assert_eq!(t.app.changes.selected().unwrap().check(), gitty_core::status::Check::Staged);
+    t.ch(' ');
+    assert_eq!(writes(t.app.take_requests_peek()), ["unstage [\"a.txt\"]"]);
+    t.pump();
+    t.ch('a');
+    assert_eq!(writes(t.app.take_requests_peek()), ["stage all"]);
+    t.pump();
+    t.ch('a');
+    assert_eq!(writes(t.app.take_requests_peek()), ["unstage all"]);
+}
+
+#[test]
+fn space_stages_the_line_under_the_cursor_and_range_and_hunk() {
+    let base: Vec<String> = (1..=12).map(|i| i.to_string()).collect();
+    let mut wt = base.clone();
+    wt[1] = "TWO".into();
+    wt.extend(["x13".to_string(), "x14".to_string()]);
+    let text = |v: &[String]| v.iter().map(|l| format!("{l}\n")).collect::<String>();
+    let f = Fixture::new();
+    f.write("a.txt", text(&base));
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", text(&wt));
+    let index = |f: &Fixture| format!("{}\n", index_of(f, "a.txt"));
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add1");
+    t.ch(' ');
+    assert_eq!(writes(t.app.take_requests_peek()), ["lines [false, true, false, false]"]);
+    assert_eq!(t.app.changes.current.as_ref().unwrap().staged, Some(vec![false, true, false, false]), "marks update at once");
+    t.pump();
+    let mut want = base.clone();
+    want.insert(2, "TWO".into());
+    assert_eq!(index(&f), text(&want), "unstaged deletion stays, staged addition follows it");
+    // v + j + space: both added lines at the end
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add12");
+    t.ch('v');
+    t.ch('j');
+    t.ch(' ');
+    t.pump();
+    want.extend(["x13".to_string(), "x14".to_string()]);
+    assert_eq!(index(&f), text(&want));
+    // H on the first hunk stages its deletion too; H again unstages that hunk only
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "del1");
+    t.ch('H');
+    t.pump();
+    assert_eq!(index(&f), text(&wt));
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "del1");
+    t.ch('H');
+    t.pump();
+    let mut want = base.clone();
+    want.extend(["x13".to_string(), "x14".to_string()]);
+    assert_eq!(index(&f), text(&want));
+}
+
+#[test]
+fn whitespace_hidden_or_divergent_files_refuse_line_staging() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.ch('w');
+    t.pump();
+    t.app.diff.as_mut().unwrap().cursor = 1;
+    t.ch(' ');
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+    assert!(t.app.toast.as_ref().unwrap().what.to_lowercase().contains("whitespace"), "{:?}", t.app.toast.as_ref().map(|t| &t.what));
+}
+
+/// One Trash directory for the whole test binary: the variable is process-wide and tests run in
+/// parallel. Tests that count copies use file names no other test discards.
+fn trash_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let d = tempfile::tempdir().unwrap();
+        // SAFETY: set once, before any write in this binary reads it
+        unsafe { std::env::set_var("GITTY_TRASH_DIR", d.path()) };
+        d
+    })
+    .path()
+}
+
+#[test]
+fn discard_asks_first_and_keeps_a_trash_copy() {
+    let trash = trash_dir();
+    let f = Fixture::new();
+    f.write("a.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "1\nTWO\n3\nfour\n");
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch('d');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })));
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert!(writes(t.app.take_requests_peek()).is_empty(), "cancelled");
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    assert_eq!(writes(t.app.take_requests_peek()), ["write a.txt"]);
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "1\nTWO\n3\n");
+    let copies = std::fs::read_dir(trash).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("a.txt (discarded")).count();
+    assert_eq!(copies, 1);
+    // whole file from the file list
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "1\n2\n3\n");
+    assert!(t.app.changes.entries().is_empty());
+}
+
+#[test]
+fn filter_cycles_what_the_list_shows() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    assert_eq!(t.app.changes.visible().len(), 2);
+    t.ch('F');
+    assert_eq!(t.app.changes.filter, gitty::app::changes::Filter::Included);
+    assert_eq!(t.app.changes.visible().len(), 0);
+    t.ch('F');
+    t.ch('F');
+    assert_eq!(t.app.changes.filter, gitty::app::changes::Filter::New);
+    t.pump();
+    assert_eq!(t.app.changes.selected().unwrap().path, "new.txt");
+    assert_eq!(t.app.diff.as_ref().unwrap().key.path, "new.txt");
+}
+
+// ---- commit box ----
+
+fn typed(t: &mut H, s: &str) {
+    for c in s.chars() {
+        t.ch(c);
+    }
+}
+
+fn commit_key(t: &mut H, m: KeyModifiers) {
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, m));
+}
+
+/// One modified, staged file in a repo with one commit ("base").
+fn staged_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nb\n");
+    f.git(&["add", "a.txt"]);
+    f
+}
+
+#[test]
+fn commit_box_commits_with_trailers_and_undo_restores_the_message() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    assert_eq!(t.app.focus, Focus::Commit);
+    typed(&mut t, "Add b quickly");
+    t.key(KeyCode::Tab);
+    typed(&mut t, "Because b matters.");
+    t.key(KeyCode::Tab);
+    typed(&mut t, "Ann <ann@example.org>");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%B"]), "Add b quickly\n\nBecause b matters.\n\nCo-authored-by: Ann <ann@example.org>");
+    assert_eq!(t.app.changes.commit.summary.text(), "", "box cleared after a commit");
+    assert!(t.app.commit_bar().is_some_and(|b| b.contains("Committed just now")), "{:?}", t.app.commit_bar());
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('u');
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "a.txt", "changes stay staged");
+    assert_eq!(t.app.changes.commit.summary.text(), "Add b quickly");
+    assert_eq!(t.app.changes.commit.body.text(), "Because b matters.");
+    assert_eq!(t.app.changes.commit.coauthors.text(), "Ann <ann@example.org>");
+    assert_eq!(t.app.commit_bar(), None);
+}
+
+#[test]
+fn typing_in_the_commit_box_does_not_trigger_shortcuts() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "q12?T a");
+    assert!(!t.app.quit);
+    assert_eq!(t.app.tab, gitty::app::Tab::Changes);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(t.app.changes.commit.summary.text(), "q12?T a");
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+}
+
+#[test]
+fn empty_summary_uses_the_placeholder_and_nothing_staged_refuses() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    assert_eq!(t.app.commit_placeholder(), "Update a.txt");
+    t.ch('c');
+    commit_key(&mut t, KeyModifiers::CONTROL);
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Update a.txt");
+    t.ch('c');
+    typed(&mut t, "nothing here");
+    commit_key(&mut t, KeyModifiers::ALT);
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+    assert!(t.app.toast.as_ref().is_some_and(|t| t.what.contains("Nothing staged")), "{:?}", t.app.toast);
+}
+
+#[test]
+fn amend_loads_the_head_message_and_rewrites_it() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('A');
+    t.pump();
+    assert!(t.app.changes.commit.amend);
+    assert_eq!(t.app.changes.commit.summary.text(), "base");
+    assert_eq!(t.app.commit_button(), "Amend last commit");
+    t.ch('c');
+    typed(&mut t, " v2");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base v2");
+    assert_eq!(f.git(&["rev-list", "--count", "HEAD"]), "1");
+    assert!(!t.app.changes.commit.amend, "amend is one-shot");
+}
+
+#[test]
+fn toggling_amend_off_restores_the_draft() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "my draft");
+    t.key(KeyCode::Esc);
+    t.ch('A');
+    t.pump();
+    assert_eq!(t.app.changes.commit.summary.text(), "base");
+    t.ch('A');
+    assert_eq!(t.app.changes.commit.summary.text(), "my draft");
+    assert_eq!(t.app.commit_button(), "Commit 1 file to main");
+}
+
+#[test]
+fn hook_failure_opens_a_modal_and_keeps_the_message() {
+    let f = staged_fixture();
+    let hook = f.path().join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\necho 'lint failed: bad.rs' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "Will fail");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Log { title, body }) => {
+            assert!(title.contains("Commit failed"), "{title}");
+            assert!(body.contains("lint failed: bad.rs"), "{body}");
+        }
+        _ => panic!("expected the hook log modal"),
+    }
+    assert_eq!(t.app.changes.commit.summary.text(), "Will fail");
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+}
+
+#[test]
+fn slow_status_refreshes_the_index_at_most_once_a_minute() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.app.handle_msg(Msg::StatusSlow);
+    assert_eq!(writes(t.app.take_requests_peek()), ["refresh index"]);
+    t.pump();
+    assert_eq!(t.app.changes.busy, 0, "a refresh does not show as work");
+    t.app.handle_msg(Msg::StatusSlow);
+    assert!(writes(t.app.take_requests_peek()).is_empty(), "throttled");
+    t.app.tick(t.clock + Duration::from_secs(61));
+    t.app.handle_msg(Msg::StatusSlow);
+    assert_eq!(writes(t.app.take_requests_peek()), ["refresh index"]);
+}
+
+#[test]
+fn discarding_a_staged_rename_restores_the_original() {
+    let _ = trash_dir();
+    let f = Fixture::new();
+    f.write("old.txt", "one\ntwo\nthree\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["mv", "old.txt", "new.txt"]);
+    f.write("new.txt", "one\ntwo\nthree\nfour\n");
+    let mut t = changes_tab(&f);
+    let entries = t.app.changes.entries().to_vec();
+    let pos = t.app.changes.visible().iter().position(|&i| entries[i].path == "new.txt").unwrap();
+    t.app.select_change(pos);
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
+    assert_eq!(std::fs::read_to_string(f.path().join("old.txt")).unwrap(), "one\ntwo\nthree\n");
+    assert!(!f.path().join("new.txt").exists());
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "back to HEAD");
+}
+
+#[test]
+fn quick_successive_line_toggles_all_apply() {
+    let f = Fixture::new();
+    f.write("a.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "1\nX\n2\n3\n4\n5\n6\n7\n8\n9\nY\n10\nZ\n");
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add1");
+    t.ch(' ');
+    // the second toggle comes before the first write's status/diff round trip
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add10");
+    t.ch(' ');
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast);
+    assert_eq!(f.git(&["show", ":a.txt"]), "1\nX\n2\n3\n4\n5\n6\n7\n8\n9\nY\n10", "X and Y staged, Z not");
+}
+
+#[test]
+fn discarding_a_staged_line_unstages_it_too() {
+    let _ = trash_dir();
+    let f = Fixture::new();
+    f.write("b.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.write("b.txt", "1\n2\n3\nfour\n");
+    f.git(&["add", "b.txt"]);
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "1\n2\n3\n");
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the discarded line is not left staged");
 }

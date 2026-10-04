@@ -13,6 +13,9 @@ use gitty_core::diff::{DiffOptions, FileDiff};
 use gitty_highlight::Highlights;
 use gitty_core::history::{CommitDetail, CommitRow, History};
 use gitty_core::refs::RefsSnapshot;
+use gitty_core::stage::Texts;
+use gitty_core::status::{Status, StatusEntry};
+use gitty_core::watch::Changed;
 use gitty_core::CommitId;
 
 pub type SharedHistory = Arc<RwLock<History>>;
@@ -69,6 +72,52 @@ pub struct HlKey {
     pub path: String,
 }
 
+/// A mutating git operation, run in order on the writer thread.
+#[derive(Clone)]
+pub enum WriteOp {
+    /// `git add -A` for the paths.
+    Stage(Vec<String>),
+    /// Restore the paths' index entries to HEAD.
+    Unstage(Vec<String>),
+    StageAll,
+    UnstageAll,
+    /// Make the index hold exactly the flagged changes of `diff` (HEAD → worktree).
+    SetStaged { entry: StatusEntry, texts: Texts, diff: Arc<FileDiff>, flags: Vec<bool> },
+    /// Replace the worktree file's bytes (line discard); the file keeps its mode.
+    WriteFile { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId },
+    /// Discard every change to the paths: `restore` paths go back to HEAD (index and worktree),
+    /// `remove` paths (not in HEAD) leave the index and the disk. Each file is copied to the
+    /// Trash first.
+    DiscardFiles { restore: Vec<String>, remove: Vec<String> },
+    Commit { message: String, amend: bool },
+    UndoCommit,
+    /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
+    /// re-hashing racily clean files.
+    RefreshIndex,
+    /// Runs in order and stops at the first failure (a line discard that unstages first).
+    Seq(Vec<WriteOp>),
+}
+
+impl WriteOp {
+    pub fn label(&self) -> &'static str {
+        match self {
+            WriteOp::Stage(_) | WriteOp::StageAll => "staging",
+            WriteOp::Unstage(_) | WriteOp::UnstageAll => "unstaging",
+            WriteOp::SetStaged { .. } => "staging lines",
+            WriteOp::WriteFile { .. } | WriteOp::DiscardFiles { .. } => "discarding",
+            WriteOp::Commit { amend: false, .. } => "committing",
+            WriteOp::Commit { amend: true, .. } => "amending",
+            WriteOp::UndoCommit => "undoing the commit",
+            WriteOp::RefreshIndex => "refreshing the index",
+            WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
+        }
+    }
+    /// Commits and undo move HEAD; refs and history refresh after them.
+    pub fn moves_head(&self) -> bool {
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit)
+    }
+}
+
 pub enum Request {
     Refs,
     Walk { session: u64, tips: Vec<CommitId> },
@@ -82,6 +131,13 @@ pub enum Request {
     Intraline { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
     /// Whole-file syntax highlighting of one side; cancelled when the file generation moves on.
     Highlight { generation: u64, key: HlKey, text: Arc<Text> },
+    /// Working-tree status.
+    Status { generation: u64 },
+    /// HEAD → worktree diff of one status entry, with its staged lines.
+    ChangeDiff { generation: u64, entry: StatusEntry, opts: DiffOptions, force_text: bool },
+    Write(WriteOp),
+    /// HEAD's full message, for amend.
+    HeadMessage,
 }
 
 impl Request {
@@ -109,6 +165,21 @@ pub enum Msg {
     /// `spans` is None for unknown languages and files over the limits; `cancelled` results are
     /// not cached.
     Highlighted { key: HlKey, spans: Option<Arc<Highlights>>, cancelled: bool },
+    Status { generation: u64, result: Result<Status, String> },
+    /// `staged`: per changed line of `diff`; None when lines cannot be staged individually
+    /// (binary and other whole-file classes, whitespace hidden, conflicts, or an index holding
+    /// content of its own: `divergent`).
+    ChangeDiff { generation: u64, entry: StatusEntry, key: DiffKey, diff: Arc<FileDiff>, texts: Texts, staged: Option<Vec<bool>>, divergent: bool },
+    ChangeDiffError { generation: u64, path: String, detail: String },
+    /// A line of hook or git output from the running write.
+    WriteLog { line: String },
+    /// `Ok(Some(head))` after a commit; `Ok(Some(message))` after an undo: the undone commit's message.
+    WriteDone { op: WriteOp, result: Result<Option<String>, String> },
+    /// The watcher saw these kinds of change.
+    Changed(Changed),
+    /// A status run was slow enough that refreshing the index is worth a try.
+    StatusSlow,
+    HeadMessage { result: Result<String, String> },
     Error { what: String, detail: String },
 }
 
@@ -128,6 +199,19 @@ impl std::fmt::Debug for Msg {
             Msg::IntralineDone { key } => write!(f, "IntralineDone {{ path: {} }}", key.path),
             Msg::DiffError { key, detail, .. } => write!(f, "DiffError {{ {}: {detail} }}", key.path),
             Msg::Highlighted { key, spans, cancelled } => write!(f, "Highlighted {{ {}: {}, cancelled: {cancelled} }}", key.path, spans.is_some()),
+            Msg::Status { generation, result } => match result {
+                Ok(s) => write!(f, "Status {{ generation: {generation}, n: {} }}", s.entries.len()),
+                Err(e) => write!(f, "Status {{ generation: {generation}, error: {e} }}"),
+            },
+            Msg::ChangeDiff { generation, entry, staged, divergent, .. } => {
+                write!(f, "ChangeDiff {{ generation: {generation}, {}: staged {:?}, divergent: {divergent} }}", entry.path, staged.as_ref().map(|s| s.iter().filter(|b| **b).count()))
+            }
+            Msg::ChangeDiffError { path, detail, .. } => write!(f, "ChangeDiffError {{ {path}: {detail} }}"),
+            Msg::WriteLog { line } => write!(f, "WriteLog {{ {line} }}"),
+            Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
+            Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
+            Msg::StatusSlow => write!(f, "StatusSlow"),
+            Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
     }
