@@ -1,6 +1,5 @@
 mod common;
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use common::Fixture;
@@ -19,25 +18,6 @@ fn run(f: &Fixture, cmd: NetCmd, mode: Mode) -> (Outcome, Vec<f32>) {
     (out, seen)
 }
 
-/// A second clone of `bare` that commits `file` and pushes, as another person would.
-fn push_from_elsewhere(bare: &Path, file: &str) {
-    let tmp = tempfile::tempdir().unwrap();
-    let git = |args: &[&str]| {
-        let out = std::process::Command::new("git").current_dir(tmp.path()).env("GIT_CONFIG_GLOBAL", "/dev/null").args(args).output().unwrap();
-        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    };
-    git(&["clone", "-q", bare.to_str().unwrap(), "o"]);
-    let o = tmp.path().join("o");
-    std::fs::write(o.join(file), "theirs\n").unwrap();
-    let git_o = |args: &[&str]| {
-        let out = std::process::Command::new("git").current_dir(&o).env("GIT_CONFIG_GLOBAL", "/dev/null").args(args).output().unwrap();
-        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    };
-    git_o(&["-c", "user.name=O", "-c", "user.email=o@x", "add", "-A"]);
-    git_o(&["-c", "user.name=O", "-c", "user.email=o@x", "commit", "-qm", "theirs"]);
-    git_o(&["push", "-q", "origin", "main"]);
-}
-
 fn base() -> (Fixture, std::path::PathBuf) {
     let f = Fixture::new();
     f.write("a.txt", "a\n");
@@ -49,7 +29,7 @@ fn base() -> (Fixture, std::path::PathBuf) {
 #[test]
 fn fetch_then_fast_forward() {
     let (f, bare) = base();
-    push_from_elsewhere(&bare, "b.txt");
+    common::push_as_someone_else(&bare, "b.txt");
     let remote = remote_of(&cli(&f), Some("main")).unwrap();
     assert_eq!(remote, "origin");
     let (out, _) = run(&f, NetCmd::Fetch { remote }, Mode::Background);
@@ -63,7 +43,7 @@ fn fetch_then_fast_forward() {
 #[test]
 fn diverged_pull_is_reported_and_rebase_resolves_it() {
     let (f, bare) = base();
-    push_from_elsewhere(&bare, "b.txt");
+    common::push_as_someone_else(&bare, "b.txt");
     f.write("c.txt", "mine\n");
     f.commit("mine", 1_700_000_100);
     run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
@@ -87,7 +67,7 @@ fn push_updates_the_remote_and_rejects_non_fast_forward() {
     let remote_head = std::process::Command::new("git").arg("--git-dir").arg(&bare).args(["rev-parse", "main"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&remote_head.stdout).trim(), head);
 
-    push_from_elsewhere(&bare, "d.txt");
+    common::push_as_someone_else(&bare, "d.txt");
     f.write("e.txt", "mine again\n");
     f.commit("mine again", 1_700_000_200);
     let (out, _) = run(&f, NetCmd::Push(push_target(&cli(&f), "main").unwrap()), Mode::Background);
@@ -111,19 +91,10 @@ fn first_push_of_a_branch_sets_its_upstream() {
     assert_eq!(f.git(&["config", "branch.topic.merge"]), "refs/heads/topic");
 }
 
-fn script_remote(f: &Fixture, name: &str, body: &str) {
-    let p = f.path().join(format!("{name}.sh"));
-    std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    f.git(&["config", "protocol.ext.allow", "always"]);
-    f.git(&["remote", "add", name, &format!("ext::{}", p.display())]);
-}
-
 #[test]
 fn cancel_kills_the_whole_process_group() {
     let (f, _) = base();
-    script_remote(&f, "hang", "sleep 30 & sleep 30");
+    f.script_remote("hang", "sleep 30 & sleep 30");
     let job = Job::spawn(&cli(&f), NetCmd::Fetch { remote: "hang".into() }, Mode::Background).unwrap();
     let cancel = job.cancel_handle();
     let pgid = cancel.pgid();
@@ -144,7 +115,7 @@ fn cancel_kills_the_whole_process_group() {
 #[test]
 fn background_auth_failure_is_needs_auth() {
     let (f, _) = base();
-    script_remote(&f, "locked", "echo \"fatal: could not read Username for 'https://example.com': terminal prompts disabled\" >&2; exit 128");
+    f.script_remote("locked", "echo \"fatal: could not read Username for 'https://example.com': terminal prompts disabled\" >&2; exit 128");
     let (out, _) = run(&f, NetCmd::Fetch { remote: "locked".into() }, Mode::Background);
     assert!(matches!(out, Outcome::NeedsAuth { .. }), "{out:?}");
 }

@@ -5,6 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use super::paint::{fill, spans, text};
+use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
 
 const HELP: &[(&str, &str)] = &[
@@ -29,6 +30,8 @@ const HELP: &[(&str, &str)] = &[
     ("v H", "Changes: line range / hunk"),
     ("d F", "Changes: discard (asks first) / filter files"),
     ("c A u", "Changes: commit box / amend / undo commit"),
+    ("f p P", "fetch / pull / push"),
+    ("x", "cancel the running fetch or push"),
     ("Alt+Enter", "commit (Ctrl+Enter in kitty)"),
     ("!", "error details"),
     ("q", "quit"),
@@ -96,6 +99,37 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
             if inner.height > 3 {
                 spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (" discard · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            }
+        }
+        Overlay::Prompt { ask, input } => {
+            let inner = boxed(app, buf, area, 64.min(area.width.saturating_sub(4)).max(30), 7, "git asks");
+            text(buf, inner.x, inner.y, inner.right(), ask.prompt.trim(), st.add_modifier(Modifier::BOLD));
+            if inner.height > 2 {
+                let field = Rect::new(inner.x, inner.y + 2, inner.width, 1);
+                fill(buf, field, Style::new().bg(ui.bg).fg(ui.fg));
+                let shown = match ask.kind {
+                    AskKind::Text => input.text().to_string(),
+                    // one bullet per character typed; never the text
+                    AskKind::Secret => "•".repeat(input.text().chars().count()),
+                    AskKind::YesNo => String::new(),
+                };
+                let end = text(buf, field.x + 1, field.y, field.right(), &shown, Style::new().bg(ui.bg).fg(ui.fg));
+                if ask.kind != AskKind::YesNo && end < field.right() {
+                    buf[(end, field.y)].set_symbol(" ").set_style(Style::new().add_modifier(Modifier::REVERSED));
+                }
+            }
+            if inner.height > 4 {
+                let keys: &[(&str, &str)] = if ask.kind == AskKind::YesNo { &[("y", " yes · "), ("n", " no · "), ("Esc", " cancel")] } else { &[("Enter", " send · "), ("Esc", " cancel")] };
+                let parts: Vec<(&str, Style)> = keys.iter().flat_map(|(k, w)| [(*k, st.fg(ui.accent)), (*w, st)]).collect();
+                spans(buf, inner.x, inner.y + 4, inner.right(), &parts);
+            }
+        }
+        Overlay::Diverged => {
+            let inner = boxed(app, buf, area, 60, 6, "Pull");
+            text(buf, inner.x, inner.y, inner.right(), "Your branch and its upstream have both moved on", st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            text(buf, inner.x, inner.y + 1, inner.right(), "Fast-forward is not possible.", st.fg(ui.muted));
+            if inner.height > 3 {
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("m", st.fg(ui.accent)), (" merge · ", st), ("r", st.fg(ui.accent)), (" rebase · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Log { title, body } => {

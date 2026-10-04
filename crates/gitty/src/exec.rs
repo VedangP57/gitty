@@ -197,6 +197,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let result = crate::write::run(h, &op, &mut |line| sink(Msg::WriteLog { line: line.to_string() })).map_err(|e| format!("{e:#}"));
             sink(Msg::WriteDone { op, result });
         }
+        Request::Net { op, mode, background } => crate::netjob::run(h, op, mode, background, sink),
         Request::HeadMessage => {
             let result = gitty_core::git_cli::GitCli::new(h.owner()).head_message().map_err(|e| format!("{e:#}"));
             sink(Msg::HeadMessage { result });

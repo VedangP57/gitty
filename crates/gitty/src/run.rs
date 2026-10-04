@@ -118,6 +118,10 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
     let watcher = gitty_core::watch::Watcher::spawn(&repo, move |c| {
         let _ = watch_tx.send(crate::msg::Msg::Changed(c));
     });
+    let ask_tx = msg_tx.clone();
+    let asker = crate::askpass::AskServer::start(move |a| {
+        let _ = ask_tx.send(crate::msg::Msg::Ask(a));
+    });
     let workers = Workers::spawn(repo.clone(), gens.clone(), msg_tx);
     input::spawn(in_tx);
 
@@ -138,6 +142,14 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
     // focus reports arrive only on change, so assume the terminal is focused at launch
     app.focused = true;
     let mut problems: Vec<String> = warnings;
+    match (&asker, std::env::current_exe()) {
+        (Ok(s), Ok(exe)) => {
+            app.set_askpass(exe, s.socket().to_path_buf());
+            app.ask_handle = Some(s.handle());
+        }
+        (Err(e), _) => problems.push(format!("password prompts are unavailable; network jobs that need one will fail: {e:#}")),
+        (_, Err(e)) => problems.push(format!("password prompts are unavailable (gitty cannot find its own executable): {e}")),
+    }
     match &watcher {
         Ok(w) => app.set_index_mark(w.index_mark()),
         Err(e) => problems.push(format!("watching the repository for changes failed; refresh on focus only: {e:#}")),

@@ -96,3 +96,30 @@ impl Fixture {
         id
     }
 }
+
+/// Another person's clone of `bare` commits `file` and pushes main.
+pub fn push_as_someone_else(bare: &Path, file: &str) {
+    let tmp = tempfile::tempdir().unwrap();
+    let o = tmp.path().join("o");
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(tmp.path(), &["clone", "-q", bare.to_str().unwrap(), "o"]);
+    std::fs::write(o.join(file), "theirs\n").unwrap();
+    git(&o, &["add", "-A"]);
+    git(&o, &["-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-qm", "theirs"]);
+    git(&o, &["push", "-q", "origin", "main"]);
+}
+
+impl Fixture {
+    /// A remote `name` whose transport is the shell script `body` (`ext::`), for hangs and failures.
+    pub fn script_remote(&self, name: &str, body: &str) {
+        let p = self.dir.path().join(format!("{name}.sh"));
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        self.git(&["config", "protocol.ext.allow", "always"]);
+        self.git(&["remote", "add", name, &format!("ext::{}", p.display())]);
+    }
+}

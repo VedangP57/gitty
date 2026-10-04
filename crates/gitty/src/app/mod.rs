@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod commit;
+pub mod net;
 pub mod diffstate;
 mod input;
 
@@ -52,6 +53,10 @@ pub enum Overlay {
     Confirm { title: String, body: String, op: crate::msg::WriteOp },
     /// Full output of a failed write (hooks), shown until dismissed.
     Log { title: String, body: String },
+    /// git or ssh asks for input (masked unless it is a username).
+    Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
+    /// A pull found local and upstream commits: merge, rebase or cancel.
+    Diverged,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +226,11 @@ pub struct App {
     /// The terminal has focus (FocusGained/FocusLost); the status backstop runs only then.
     pub focused: bool,
     index_mark: Option<gitty_core::watch::IndexMark>,
+    pub net: Option<net::NetJob>,
+    /// (gitty executable, trampoline socket) for interactive network jobs.
+    pub askpass: Option<(PathBuf, PathBuf)>,
+    pub ask_handle: Option<crate::askpass::AskHandle>,
+    asks: std::collections::VecDeque<crate::askpass::Ask>,
 }
 
 impl App {
@@ -295,6 +305,10 @@ impl App {
             changes: changes::Changes::default(),
             focused: false,
             index_mark: None,
+            net: None,
+            askpass: None,
+            ask_handle: None,
+            asks: Default::default(),
         };
         app.request_status();
         app
@@ -408,6 +422,7 @@ impl App {
     pub fn handle_msg(&mut self, m: Msg) {
         self.dirty = true;
         let Some(m) = self.handle_changes_msg(m) else { return };
+        let Some(m) = self.handle_net_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
@@ -536,6 +551,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
+            Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) => {}
         }
     }
 

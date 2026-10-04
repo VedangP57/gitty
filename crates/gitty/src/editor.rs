@@ -17,7 +17,17 @@ impl Editor {
     }
 
     pub fn multi() -> Self {
-        Self { multiline: true, ..Self::default() }
+        Self { text: String::new(), cursor: 0, multiline: true }
+    }
+
+    pub fn reserve(&mut self, n: usize) {
+        self.text.reserve(n);
+    }
+
+    /// Moves the text out without copying it, leaving the editor empty.
+    pub fn take(&mut self) -> String {
+        self.cursor = 0;
+        std::mem::take(&mut self.text)
     }
 
     pub fn text(&self) -> &str {
@@ -159,6 +169,14 @@ impl Editor {
 
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+}
+
+/// Prompt answers pass through an editor: leave no copy behind in freed memory.
+impl Drop for Editor {
+    fn drop(&mut self) {
+        // SAFETY: zero bytes are valid UTF-8
+        unsafe { self.text.as_bytes_mut() }.fill(0);
     }
 }
 

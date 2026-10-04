@@ -22,6 +22,7 @@ pub struct Workers {
     differs: Pool,
     highlighters: Pool,
     writer: Pool,
+    net: Pool,
 }
 
 fn next(high: &Receiver<Request>, low: &Receiver<Request>) -> Option<Request> {
@@ -55,6 +56,10 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                     Request::Write(op) => Some(op.clone()),
                     _ => None,
                 };
+                let net_req = match &req {
+                    Request::Net { op, background, .. } => Some((*op, *background)),
+                    _ => None,
+                };
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     exec(&h, req, &mut |m| {
                         let _ = wtx.send(m);
@@ -66,9 +71,12 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                         .map(|s| s.to_string())
                         .or_else(|| p.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".into());
-                    let _ = match (files_req, write_req) {
-                        (Some((generation, id, prefetch)), _) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
-                        (_, Some(op)) => wtx.send(Msg::WriteDone { op, result: Err(format!("internal error: {detail}")) }),
+                    let _ = match (files_req, write_req, net_req) {
+                        (Some((generation, id, prefetch)), _, _) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
+                        (_, Some(op), _) => wtx.send(Msg::WriteDone { op, result: Err(format!("internal error: {detail}")) }),
+                        (_, _, Some((op, background))) => {
+                            wtx.send(Msg::NetDone { op, background, outcome: gitty_core::net::Outcome::Failed { detail: format!("internal error: {detail}") } })
+                        }
                         _ => wtx.send(Msg::Error { what: "internal error in a worker".into(), detail }),
                     };
                 }
@@ -91,6 +99,8 @@ impl Workers {
             highlighters: pool("highlight", 2, false, &repo, &gens, &tx),
             // one thread: writes run in the order they were asked for
             writer: pool("writer", 1, false, &repo, &gens, &tx),
+            // one network job at a time, like Desktop
+            net: pool("net", 1, false, &repo, &gens, &tx),
         }
     }
 
@@ -100,6 +110,7 @@ impl Workers {
             Request::Diff { .. } | Request::Intraline { .. } => &self.differs,
             Request::Highlight { .. } => &self.highlighters,
             Request::Write(_) => &self.writer,
+            Request::Net { .. } => &self.net,
             _ => &self.readers,
         };
         let q = if req.is_background() { &pool.low } else { &pool.high };
