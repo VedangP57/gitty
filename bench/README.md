@@ -34,7 +34,6 @@ Notes:
 | commit file list, 300 commits (warm) | p50 **0.05–0.17 ms**, p99 1.0–2.6 ms | p50 0.13 ms, p99 1.4 ms |
 | first call on a fresh handle | ~0.66 s cold (attribute stack + pack index). The UI warms this on a worker at startup | — |
 | first 500 / full walk (branch+upstream) | 26 ms / 250 ms | — |
-||||||| 9ec5470
 ## Diff engine — 2026-10-02 (M2a), load average ~25
 
 `probe diffs <repo> 300`: for every file of the first 300 commits on HEAD, this loads blobs, diffs them
@@ -45,3 +44,24 @@ Notes:
 | git-cg | 1,108 | 7,586 | **0.18–0.22 ms** | **6.2–6.9 ms** | 13–15 ms | p50 < 1 ms, p99 < 10 ms ✅ |
 After the M2a review fix (no manual trim, lazy pairing): p50 0.21–0.25 ms, p99 6.4–9.4 ms. The probe still
 computes intraline for every block, which is the worst case.
+
+## TUI end to end (M2b) — 2026-10-04, release build, 200×50 pty, warm cache
+
+Measured with a `pyte` screen emulator driving the real binary, plus `GITTY_TRACE=<file>` event
+timestamps (ms since start). The terminal answers the startup probe (DA1) as a real one does.
+
+| Milestone | git (no graph) | git-cg | linux (1.48M, blobless) | Budget |
+|---|---|---|---|---|
+| first frame (layout drawn) | 14 ms | 14–15 ms | 14 ms | < 16 ms ✅ |
+| first rows on screen | 48 ms | 48–85 ms | 57–72 ms | — |
+| full history walk done | 617 ms | 30 ms | 263 ms | < 400 ms (kernel) ✅ |
+| slowest frame after the first | — | — | 5.8 ms | < 16 ms ✅ |
+
+- Cold kernel start (first run after build): rows at ~1.0 s. Cold `refs()` (~0.7 s) dominates; the
+  layout is already drawn at 14 ms.
+- Fixed during measurement: the walker held the history write lock while walking, which starved the UI
+  thread for the length of the walk (~350 ms on the kernel). It now walks into a private chunk and
+  publishes it with `History::append` (regression test `walk_never_starves_readers`).
+- The linux bench repo is a blobless partial clone. Diffs there report "Could not load this diff",
+  and line stats are left blank instead of showing `+0 −0`.
+- `cargo run --release -p gitty --example trace -- <repo>` times each worker request in isolation.

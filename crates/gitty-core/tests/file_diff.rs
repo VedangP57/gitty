@@ -94,3 +94,12 @@ fn pairing_many_blocks_is_linear_and_lazy() {
     assert!(d.is_paired(9_999));
     assert_eq!(v.split_row_count(), v.row_count() - 10_000);
 }
+
+#[test]
+fn intraline_ready_is_lazy() {
+    let d = FileDiff::from_bytes("a.txt", None, b"one\ntwo\n".to_vec(), b"one\nthree\n".to_vec(), 0o100644, 0o100644, DiffOptions::default());
+    assert!(d.intraline_ready(0).is_none());
+    let h = d.intraline(0).clone();
+    assert_eq!(d.intraline_ready(0), Some(&h));
+    assert!(d.intraline_ready(99).is_none());
+}

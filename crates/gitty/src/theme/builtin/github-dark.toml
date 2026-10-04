@@ -1,0 +1,44 @@
+# GitHub Dark (Primer). GitHub itself uses emph_alpha = 0.40; set it in config.toml to compare.
+name = "github-dark"
+kind = "dark"
+
+[palette]
+bg = "#0d1117"
+panel = "#161b22"
+fg = "#e6edf3"
+muted = "#7d8590"
+accent = "#2f81f7"
+border = "#30363d"
+red = "#f85149"
+green = "#3fb950"
+yellow = "#d29922"
+blue = "#58a6ff"
+magenta = "#bc8cff"
+cyan = "#39c5cf"
+orange = "#db6d28"
+
+[diff]
+add_accent = "#2ea043"
+del_accent = "#f85149"
+hunk_bg = "#121d2f"
+
+[syntax]
+keyword = "#ff7b72"
+string = "#a5d6ff"
+comment = { fg = "#8b949e", italic = true }
+function = "#d2a8ff"
+type = "#ffa657"
+constant = "#79c0ff"
+number = "#79c0ff"
+operator = "#ff7b72"
+variable = "fg"
+property = "#79c0ff"
+punctuation = "fg"
+attribute = "#79c0ff"
+tag = "#7ee787"
+label = "#79c0ff"
+module = "#ffa657"
+constructor = "#d2a8ff"
+macro = "#d2a8ff"
+escape = "#79c0ff"
+embedded = "fg"

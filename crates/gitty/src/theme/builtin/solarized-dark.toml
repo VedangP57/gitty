@@ -1,0 +1,41 @@
+name = "solarized-dark"
+kind = "dark"
+
+[palette]
+bg = "#002b36"
+panel = "#073642"
+fg = "#839496"
+muted = "#586e75"
+accent = "#268bd2"
+border = "#0e4b5a"
+red = "#dc322f"
+green = "#859900"
+yellow = "#b58900"
+blue = "#268bd2"
+magenta = "#d33682"
+cyan = "#2aa198"
+orange = "#cb4b16"
+
+[ui]
+fg = "#93a1a1"
+
+[syntax]
+keyword = "#859900"
+string = "#2aa198"
+comment = { fg = "#586e75", italic = true }
+function = "#268bd2"
+type = "#b58900"
+constant = "#cb4b16"
+number = "#d33682"
+operator = "#859900"
+variable = "fg"
+property = "#268bd2"
+punctuation = "fg"
+attribute = "#cb4b16"
+tag = "#268bd2"
+label = "#859900"
+module = "#cb4b16"
+constructor = "#b58900"
+macro = "#cb4b16"
+escape = "#dc322f"
+embedded = "fg"

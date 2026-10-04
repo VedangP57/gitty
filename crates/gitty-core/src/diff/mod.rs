@@ -126,6 +126,11 @@ impl FileDiff {
         DiffView::new(&self.ops, &self.old, &self.new)
     }
 
+    /// Word-level highlights for `change` if already computed; never computes.
+    pub fn intraline_ready(&self, change: usize) -> Option<&BlockHighlights> {
+        self.intraline.get(change).and_then(OnceLock::get)
+    }
+
     /// Whether intraline (and so pairing) for `change` has been computed.
     pub fn is_paired(&self, change: usize) -> bool {
         self.intraline.get(change).is_some_and(|c| c.get().is_some())

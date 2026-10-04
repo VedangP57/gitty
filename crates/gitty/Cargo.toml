@@ -7,3 +7,16 @@ license.workspace = true
 [dependencies]
 gitty-core = { path = "../gitty-core" }
 anyhow.workspace = true
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "underline-color", "layout-cache"] }
+crossterm = "0.29"
+crossbeam-channel = "0.5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+libc = "0.2"
+signal-hook = "0.3"
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"

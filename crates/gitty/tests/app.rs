@@ -1,0 +1,668 @@
+#[path = "../../gitty-core/tests/common/mod.rs"]
+mod common;
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use common::Fixture;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use gitty::app::diffstate::{DiffState, VRow};
+use gitty::app::{App, AppInit, Focus};
+use gitty::config::{Config, UiState};
+use gitty::exec::exec;
+use gitty::msg::{DiffKey, Gens, Msg, Request};
+use gitty::theme::{ColorDepth, Registry};
+use gitty_core::diff::ops::WsMode;
+use gitty_core::diff::view::Row;
+use gitty_core::diff::{DiffOptions, FileDiff};
+use gitty_core::{CommitId, Handle, Repo};
+
+const NOW: i64 = 1_790_899_200;
+
+struct H {
+    app: App,
+    h: Handle,
+    gens: Arc<Gens>,
+    clock: Instant,
+}
+
+impl H {
+    fn new(f: &Fixture) -> H {
+        H::with(f, Config::default(), None)
+    }
+    fn with(f: &Fixture, config: Config, config_path: Option<std::path::PathBuf>) -> H {
+        let repo = Repo::open(f.path()).unwrap();
+        let registry = Registry::load(None);
+        let theme = registry.resolve("github-dark", ColorDepth::True, None).unwrap();
+        let gens = Arc::new(Gens::default());
+        let clock = Instant::now();
+        let app = App::new(AppInit {
+            repo_name: "repo".into(),
+            config,
+            registry,
+            theme,
+            depth: ColorDepth::True,
+            ui_state: UiState::default(),
+            config_path,
+            state_path: None,
+            gens: gens.clone(),
+            now: NOW,
+            clock,
+            size: (140, 40),
+        });
+        H { app, h: repo.handle(), gens, clock }
+    }
+    fn exec_all(&mut self, reqs: Vec<Request>) -> Vec<Msg> {
+        let mut out = Vec::new();
+        for r in reqs {
+            exec(&self.h, r, &mut |m| out.push(m), &self.gens);
+        }
+        out
+    }
+    /// Runs requests and delivers results until quiet, advancing the clock past debounces.
+    fn pump(&mut self) {
+        for _ in 0..1000 {
+            let reqs = self.app.take_requests();
+            if reqs.is_empty() {
+                match self.app.next_deadline() {
+                    Some(d) => {
+                        self.clock = self.clock.max(d) + Duration::from_millis(1);
+                        self.app.tick(self.clock);
+                        continue;
+                    }
+                    None => return,
+                }
+            }
+            for m in self.exec_all(reqs) {
+                self.app.handle_msg(m);
+            }
+        }
+        panic!("pump did not settle");
+    }
+    fn key(&mut self, c: KeyCode) {
+        self.app.handle_key(KeyEvent::new(c, KeyModifiers::NONE));
+    }
+    fn ch(&mut self, c: char) {
+        self.key(KeyCode::Char(c));
+    }
+    fn selected_id(&self) -> CommitId {
+        self.app.selected_id().unwrap()
+    }
+}
+
+fn id(hex: &str) -> CommitId {
+    CommitId::from_hex(hex).unwrap()
+}
+
+fn commits(f: &Fixture, n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| {
+            f.write("a.txt", format!("line {i}\n"));
+            if i % 2 == 0 {
+                f.write(&format!("dir/f{i}.txt"), "x\n");
+            }
+            f.commit(&format!("commit {i}"), 1_700_000_000 + i as i64 * 100)
+        })
+        .collect()
+}
+
+#[test]
+fn startup_requests_refs_then_walk_then_rows() {
+    let f = Fixture::new();
+    let ids = commits(&f, 5);
+    let mut t = H::new(&f);
+    let r = t.app.take_requests();
+    assert!(matches!(r.as_slice(), [Request::Refs]));
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    let r = t.app.take_requests();
+    assert!(r.iter().any(|r| matches!(r, Request::Walk { .. })));
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    let r = t.app.take_requests();
+    assert!(r.iter().any(|r| matches!(r, Request::Rows { ids, .. } if ids.len() == 5)));
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(t.app.history_len, 5);
+    assert_eq!(t.app.rows.len(), 5);
+    assert_eq!(t.selected_id(), id(&ids[4]));
+    assert_eq!(t.app.detail.as_ref().unwrap().row.id, id(&ids[4]));
+    assert!(t.app.files.is_some());
+    assert!(t.app.diff.is_some(), "first file's diff loads on startup");
+}
+
+#[test]
+fn selecting_commit_requests_files_and_detail() {
+    let f = Fixture::new();
+    let ids = commits(&f, 5);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('j');
+    let r = t.app.take_requests();
+    let requested = r.iter().any(|r| matches!(r, Request::Files { id, prefetch: false, .. } if *id == CommitId::from_hex(&ids[3]).unwrap()));
+    assert!(requested || t.app.files_for() == Some(id(&ids[3])), "files requested or served from the prefetch cache");
+    assert!(r.iter().any(|r| matches!(r, Request::Detail { .. })) || t.app.detail.is_some());
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(t.app.files_for(), Some(id(&ids[3])));
+    assert_eq!(t.app.detail.as_ref().unwrap().row.id, id(&ids[3]));
+}
+
+#[test]
+fn stale_files_message_ignored() {
+    let f = Fixture::new();
+    let ids = commits(&f, 5);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('j');
+    let _ = t.app.take_requests();
+    let stale_gen = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
+    t.ch('j');
+    let shown = t.app.files_for();
+    t.app.handle_msg(Msg::Files { generation: stale_gen, id: id(&ids[3]), files: Arc::new(vec![]), prefetch: false });
+    assert_eq!(t.app.files_for(), shown);
+    assert_ne!(t.app.files_for(), Some(id(&ids[3])));
+    t.pump();
+    assert_eq!(t.app.files_for(), Some(id(&ids[2])));
+}
+
+#[test]
+fn files_arrival_selects_first_and_debounces_diff() {
+    let f = Fixture::new();
+    commits(&f, 5);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('j');
+    let r = t.app.take_requests();
+    let msgs = t.exec_all(r.into_iter().filter(|r| matches!(r, Request::Files { prefetch: false, .. })).collect());
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(t.app.file_sel, 0);
+    let r = t.app.take_requests();
+    assert!(!r.iter().any(|r| matches!(r, Request::Diff { .. })), "diff must wait for the debounce");
+    let deadline = t.app.next_deadline().expect("diff debounce pending");
+    t.app.tick(deadline - Duration::from_millis(5));
+    assert!(!t.app.take_requests().iter().any(|r| matches!(r, Request::Diff { .. })));
+    t.app.tick(deadline);
+    assert!(t.app.take_requests().iter().any(|r| matches!(r, Request::Diff { .. })));
+}
+
+#[test]
+fn diff_lru_hit_skips_request() {
+    let f = Fixture::new();
+    commits(&f, 5);
+    let mut t = H::new(&f);
+    t.pump();
+    let first = t.app.diff.as_ref().unwrap().key.clone();
+    t.ch('j');
+    t.pump();
+    t.ch('k');
+    let mut saw_diff = false;
+    for _ in 0..20 {
+        let r = t.app.take_requests();
+        saw_diff |= r.iter().any(|r| matches!(r, Request::Diff { .. }));
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+        if let Some(d) = t.app.next_deadline() {
+            t.app.tick(d);
+        }
+    }
+    assert!(!saw_diff, "cached diff must not be recomputed");
+    assert_eq!(t.app.diff.as_ref().unwrap().key, first);
+}
+
+#[test]
+fn prefetch_neighbors_issued() {
+    let f = Fixture::new();
+    commits(&f, 30);
+    let mut t = H::new(&f);
+    let mut prefetched = 0;
+    for _ in 0..200 {
+        let r = t.app.take_requests();
+        prefetched += r.iter().filter(|r| matches!(r, Request::Files { prefetch: true, .. })).count();
+        if r.is_empty() {
+            match t.app.next_deadline() {
+                Some(d) => t.app.tick(d),
+                None => break,
+            }
+            continue;
+        }
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+    }
+    assert_eq!(prefetched, 10, "the 10 commits after the newest (none before it)");
+    t.ch('j');
+    assert!(t.app.files.is_some(), "the prefetched file list shows immediately");
+    let r = t.app.take_requests();
+    assert!(r.iter().any(|r| matches!(r, Request::Files { prefetch: false, .. })), "stats are computed on selection");
+}
+
+#[test]
+fn scope_toggle_restarts_walk_and_reselects() {
+    let f = Fixture::new();
+    let ids = commits(&f, 4);
+    f.git(&["checkout", "-q", "-b", "side", &ids[1]]);
+    f.write("side.txt", "s\n");
+    let side = f.commit("side work", 1_700_000_250);
+    f.git(&["checkout", "-q", "main"]);
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.history_len, 4);
+    t.ch('j');
+    t.pump();
+    let sel = t.selected_id();
+    assert_eq!(sel, id(&ids[2]));
+    t.ch('r');
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Walk { tips, .. } if tips.contains(&id(&side)))));
+    t.pump();
+    assert_eq!(t.app.history_len, 5);
+    assert_eq!(t.selected_id(), sel);
+    assert_eq!(t.app.selected, 2, "side work (t=250) sorts between commit 3 (300) and commit 2 (200)");
+}
+
+fn three_hunks() -> FileDiff {
+    let mut old = String::new();
+    for i in 0..60 {
+        old.push_str(&format!("line {i}\n"));
+    }
+    let new = old.replace("line 10\n", "line ten\n").replace("line 30\n", "line thirty\n").replace("line 50\n", "line fifty\n");
+    FileDiff::from_bytes("f.txt", None, old.into_bytes(), new.into_bytes(), 0o100644, 0o100644, DiffOptions::default())
+}
+fn key() -> DiffKey {
+    DiffKey { old: None, new: None, path: "f.txt".into(), old_path: None, old_mode: 0, new_mode: 0, opts: DiffOptions::default(), force_text: false }
+}
+fn row_kind(d: &DiffState, i: usize) -> String {
+    match d.vrow(i, false) {
+        None => "none".into(),
+        Some(VRow::Header(_)) => "header".into(),
+        Some(VRow::Row(Row::Gap { .. })) => "gap".into(),
+        Some(VRow::Row(Row::Context { new, .. })) => format!("ctx{new}"),
+        Some(VRow::Row(Row::Del { old, .. })) => format!("del{old}"),
+        Some(VRow::Row(Row::Add { new, .. })) => format!("add{new}"),
+        Some(VRow::Split(_)) => "split".into(),
+    }
+}
+
+#[test]
+fn expand_near_cursor_rules() {
+    let mut d = DiffState::new(key(), Arc::new(three_hunks()));
+    let gaps: Vec<usize> = (0..d.rows(false)).filter(|&i| row_kind(&d, i) == "gap").collect();
+    assert_eq!(gaps.len(), 4, "leading, two middle, trailing");
+    // cursor on a middle gap row: expands it entirely
+    let before = d.rows(false);
+    d.cursor = gaps[1];
+    d.expand_near_cursor(false);
+    assert!(d.rows(false) > before);
+    assert_eq!((0..d.rows(false)).filter(|&i| row_kind(&d, i) == "gap").count(), 3);
+    // cursor below a gap: expands upward (towards the cursor) and the cursor keeps its line
+    let mut d = DiffState::new(key(), Arc::new(three_hunks()));
+    let target = (0..d.rows(false)).find(|&i| row_kind(&d, i) == "add30").unwrap();
+    d.cursor = target;
+    d.expand_near_cursor(false);
+    assert_eq!(row_kind(&d, d.cursor), "add30");
+    // cursor above a gap (last line of hunk 1's context): expands downward, cursor stays
+    let mut d = DiffState::new(key(), Arc::new(three_hunks()));
+    let c = (0..d.rows(false)).find(|&i| row_kind(&d, i) == "ctx13").unwrap();
+    d.cursor = c;
+    let before = d.rows(false);
+    d.expand_near_cursor(false);
+    assert!(d.rows(false) > before);
+    assert_eq!(row_kind(&d, d.cursor), "ctx13");
+    assert_eq!(row_kind(&d, d.cursor + 1), "ctx14");
+}
+
+#[test]
+fn whole_file_toggle_keeps_cursor_content() {
+    let mut d = DiffState::new(key(), Arc::new(three_hunks()));
+    d.cursor = (0..d.rows(false)).find(|&i| row_kind(&d, i) == "add50").unwrap();
+    d.toggle_whole_file(false);
+    assert_eq!(row_kind(&d, d.cursor), "add50");
+    assert!(d.view.is_fully_expanded());
+    d.toggle_whole_file(false);
+    assert_eq!(row_kind(&d, d.cursor), "add50");
+    assert!(!d.view.is_fully_expanded());
+    d.toggle_whole_file(true);
+    let split_row = d.cursor;
+    assert!(split_row < d.rows(true));
+}
+
+#[test]
+fn hunk_navigation() {
+    let mut d = DiffState::new(key(), Arc::new(three_hunks()));
+    d.cursor = 0;
+    d.next_hunk(false, 1);
+    assert_eq!(row_kind(&d, d.cursor), "del10");
+    d.next_hunk(false, 1);
+    assert_eq!(row_kind(&d, d.cursor), "del30");
+    d.next_hunk(false, 1);
+    d.next_hunk(false, 1);
+    assert_eq!(row_kind(&d, d.cursor), "del50", "stays on the last hunk");
+    d.next_hunk(false, -1);
+    assert_eq!(row_kind(&d, d.cursor), "del30");
+    assert_eq!(d.scroll, d.cursor - 3);
+}
+
+#[test]
+fn synthetic_first_header_when_change_at_top() {
+    let fd = FileDiff::from_bytes("t", None, b"a\nb\nc\n".to_vec(), b"A\nb\nc\nd\n".to_vec(), 0o100644, 0o100644, DiffOptions::default());
+    let d = DiffState::new(key(), Arc::new(fd));
+    assert_eq!(d.first_header.as_deref(), Some("@@ -1,3 +1,4 @@"));
+    assert_eq!(row_kind(&d, 0), "header");
+    assert_eq!(row_kind(&d, 1), "del0");
+    assert_eq!(d.rows(false), 1 + d.view.row_count());
+    let d = DiffState::new(key(), Arc::new(three_hunks()));
+    assert!(d.first_header.is_none(), "a gap row already heads the first hunk");
+    let fd = FileDiff::from_bytes("t", None, Vec::new(), b"new\n".to_vec(), 0, 0o100644, DiffOptions::default());
+    let d = DiffState::new(key(), Arc::new(fd));
+    assert_eq!(d.first_header.as_deref(), Some("@@ -0,0 +1,1 @@"));
+}
+
+#[test]
+fn empty_view_rows_zero_no_panic() {
+    let fd = FileDiff::from_bytes("t", None, b"same\n".to_vec(), b"same\n".to_vec(), 0o100644, 0o100644, DiffOptions::default());
+    let mut d = DiffState::new(key(), Arc::new(fd));
+    for split in [false, true] {
+        assert!(d.vrow(0, split).is_none() || d.rows(split) > 0);
+        d.expand_near_cursor(split);
+        d.toggle_whole_file(split);
+        d.next_hunk(split, 1);
+        d.next_hunk(split, -1);
+        d.apply_ready_pairing();
+        let _ = d.rows(split);
+    }
+}
+
+const ALL_KEYS: &[char] = &['j', 'k', 'g', 'G', 'h', 'l', '[', ']', '{', '}', 'e', 'E', 's', 'w', 'F', 'o', 'D', 'z', 'r', 'y', 'Y', '<', '>', '1', '2', '?', 'T', '!'];
+
+fn mash(t: &mut H) {
+    for focus in [Focus::History, Focus::Files, Focus::Diff] {
+        t.app.focus = focus;
+        for &c in ALL_KEYS {
+            t.ch(c);
+            t.key(KeyCode::Esc);
+            t.pump();
+        }
+        for k in [KeyCode::Enter, KeyCode::Tab, KeyCode::BackTab, KeyCode::PageDown, KeyCode::PageUp, KeyCode::Up, KeyCode::Down, KeyCode::Home, KeyCode::End, KeyCode::Enter, KeyCode::Esc] {
+            t.key(k);
+            t.pump();
+        }
+        t.app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        t.app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        t.pump();
+    }
+}
+
+#[test]
+fn unborn_repo_keys_dont_panic() {
+    let f = Fixture::new();
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.history_len, 0);
+    assert!(t.app.selected_id().is_none());
+    for size in [(140, 40), (100, 30), (200, 50), (10, 3), (0, 0)] {
+        t.app.handle_resize(size.0, size.1);
+        mash(&mut t);
+    }
+    assert!(!t.app.quit);
+}
+
+#[test]
+fn identical_rename_keys_dont_panic() {
+    let f = Fixture::new();
+    f.write("a.txt", "same\n");
+    f.commit("one", 1_700_000_000);
+    f.git(&["mv", "a.txt", "b.txt"]);
+    f.commit("two", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    let d = t.app.diff.as_ref().unwrap();
+    assert!(d.diff.changes.is_empty());
+    for size in [(140, 40), (220, 50), (90, 20)] {
+        t.app.handle_resize(size.0, size.1);
+        mash(&mut t);
+    }
+}
+
+#[test]
+fn theme_picker_preview_and_revert() {
+    let f = Fixture::new();
+    commits(&f, 2);
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("gitty/config.toml");
+    let mut t = H::with(&f, Config::default(), Some(cfg.clone()));
+    t.pump();
+    let original = t.app.theme.name.clone();
+    t.ch('T');
+    assert!(t.app.overlay.is_some());
+    t.ch('j');
+    assert_ne!(t.app.theme.name, original, "preview applies live");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(t.app.theme.name, original);
+    t.ch('T');
+    t.ch('j');
+    t.ch('j');
+    let chosen = t.app.theme.name.clone();
+    t.key(KeyCode::Enter);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(t.app.config.theme, chosen);
+    let (saved, _) = Config::load(&cfg);
+    assert_eq!(saved.theme, chosen);
+}
+
+#[test]
+fn whitespace_cycle_rerequests() {
+    let f = Fixture::new();
+    commits(&f, 3);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('w');
+    assert_eq!(t.app.ws, WsMode::IgnoreAll);
+    let d = t.app.next_deadline().unwrap();
+    t.app.tick(d);
+    let r = t.app.take_requests();
+    assert!(r.iter().any(|r| matches!(r, Request::Diff { opts, .. } if opts.ws == WsMode::IgnoreAll)));
+}
+
+#[test]
+fn enter_and_esc_move_focus() {
+    let f = Fixture::new();
+    commits(&f, 3);
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.focus, Focus::History);
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Files);
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Files);
+    t.key(KeyCode::Tab);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.key(KeyCode::Tab);
+    assert_eq!(t.app.focus, Focus::History);
+    t.key(KeyCode::BackTab);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.ch('q');
+    assert!(t.app.quit);
+}
+
+#[test]
+fn copy_sha_emits_osc52() {
+    let f = Fixture::new();
+    let ids = commits(&f, 2);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('Y');
+    let osc = t.app.osc_out.pop().unwrap();
+    assert!(osc.starts_with("\x1b]52;c;") && osc.ends_with('\x07'));
+    let short = t.app.osc_out.is_empty();
+    assert!(short);
+    t.ch('y');
+    assert_eq!(t.app.osc_out.len(), 1);
+    let _ = ids;
+}
+
+#[test]
+fn hold_j_through_200_commits_final_state_matches_selection() {
+    let f = Fixture::new();
+    commits(&f, 200);
+    let mut t = H::new(&f);
+    t.pump();
+    let mut late: Vec<Msg> = Vec::new();
+    for _ in 0..150 {
+        t.ch('j');
+        let r = t.app.take_requests();
+        let msgs = t.exec_all(r);
+        for m in late.drain(..) {
+            t.app.handle_msg(m);
+        }
+        late = msgs;
+        t.clock += Duration::from_millis(5);
+        t.app.tick(t.clock);
+    }
+    for m in late.drain(..) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    let sel = t.selected_id();
+    assert_eq!(t.app.selected, 150);
+    assert_eq!(t.app.files_for(), Some(sel));
+    assert_eq!(t.app.detail.as_ref().unwrap().row.id, sel);
+    let files = t.app.files.as_ref().unwrap();
+    assert_eq!(t.app.diff.as_ref().unwrap().key.path, files[t.app.file_sel].path);
+}
+
+#[test]
+fn diff_cache_distinguishes_mode_changes() {
+    let f = Fixture::new();
+    f.write("a.sh", "echo\n");
+    f.commit("add", 1_700_000_000);
+    f.git(&["update-index", "--chmod=+x", "a.sh"]);
+    f.git_env(&["commit", "-q", "-m", "exec"], &[("GIT_AUTHOR_DATE", "1700000100 +0000".into()), ("GIT_COMMITTER_DATE", "1700000100 +0000".into())]);
+    f.git(&["update-index", "--chmod=-x", "a.sh"]);
+    f.git_env(&["commit", "-q", "-m", "unexec"], &[("GIT_AUTHOR_DATE", "1700000200 +0000".into()), ("GIT_COMMITTER_DATE", "1700000200 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.diff.as_ref().unwrap().diff.modes(), (0o100755, 0o100644));
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.diff.as_ref().unwrap().diff.modes(), (0o100644, 0o100755), "a cached diff with other modes must not be reused");
+}
+
+#[test]
+fn uncached_commit_shows_loading_not_previous_diff() {
+    let f = Fixture::new();
+    commits(&f, 15);
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.diff.is_some());
+    t.ch('G');
+    let _withheld = t.app.take_requests();
+    assert!(t.app.files.is_none());
+    assert!(t.app.diff.is_none(), "the previous commit's diff must not stay on screen");
+    assert!(t.app.diff_loading());
+}
+
+#[test]
+fn files_error_is_shown_and_prefetch_errors_are_quiet() {
+    let f = Fixture::new();
+    let ids = commits(&f, 15);
+    let mut t = H::new(&f);
+    let _ = t.app.take_requests();
+    for m in t.exec_all(vec![Request::Refs]) {
+        t.app.handle_msg(m);
+    }
+    // run the walk etc. but withhold prefetch results
+    for _ in 0..50 {
+        let r: Vec<Request> = t.app.take_requests().into_iter().filter(|r| !matches!(r, Request::Files { prefetch: true, .. })).collect();
+        if r.is_empty() {
+            match t.app.next_deadline() {
+                Some(d) => t.app.tick(d),
+                None => break,
+            }
+            continue;
+        }
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+    }
+    let in_flight = t.app.prefetch_in_flight();
+    assert_eq!(in_flight, 10);
+    t.app.handle_msg(Msg::FilesError { generation: 0, id: id(&ids[13]), prefetch: true, detail: "boom".into() });
+    assert_eq!(t.app.prefetch_in_flight(), 9, "a failed prefetch frees its slot");
+    assert!(t.app.toast.is_none(), "prefetch failures are not the user's problem");
+    t.ch('G');
+    let generation = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
+    let sel = t.selected_id();
+    t.app.handle_msg(Msg::FilesError { generation, id: sel, prefetch: false, detail: "object not found".into() });
+    assert_eq!(t.app.files_error.as_deref(), Some("object not found"));
+    assert!(!t.app.diff_loading());
+}
+
+fn many(f: &Fixture, n: usize) {
+    let mut s = String::new();
+    for i in 0..n {
+        s.push_str(&format!("commit refs/heads/main\nmark :{}\ncommitter T <t@t> {} +0000\ndata 3\nmsg\n", i + 1, 1_700_000_000 + i));
+        if i > 0 {
+            s.push_str(&format!("from :{i}\n"));
+        }
+        s.push('\n');
+    }
+    let mut c = std::process::Command::new("git");
+    c.current_dir(f.path()).args(["fast-import", "--quiet"]).stdin(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn user_navigation_beats_pending_reselect() {
+    let f = Fixture::new();
+    many(&f, 300);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(280);
+    t.pump();
+    let target = t.selected_id();
+    t.ch('r');
+    assert!(t.app.files.is_none() && t.app.diff.is_none(), "nothing from the old selection is shown while re-walking");
+    let walk: Vec<Request> = t.app.take_requests();
+    let mut msgs = t.exec_all(walk).into_iter();
+    // HistoryStarted and the first 256-row chunk (target is at 280: not yet found)
+    t.app.handle_msg(msgs.next().unwrap());
+    t.app.handle_msg(msgs.next().unwrap());
+    t.ch('j');
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(t.app.selected, 1, "the user's choice wins over the pending reselect");
+    assert_ne!(t.selected_id(), target);
+}
+
+#[test]
+fn double_scope_toggle_keeps_target() {
+    let f = Fixture::new();
+    many(&f, 300);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(280);
+    t.pump();
+    let target = t.selected_id();
+    t.ch('r');
+    t.ch('r');
+    t.pump();
+    assert_eq!(t.selected_id(), target);
+    assert_eq!(t.app.selected, 280);
+}

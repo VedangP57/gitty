@@ -1,0 +1,34 @@
+---
+source: crates/gitty/tests/render.rs
+expression: digest(&b)
+---
+ 0 7:0969da/f6f8fa 12:1f2328/f6f8fa 4:9a6700/f6f8fa 3:1b7c83/f6f8fa 169:1f2328/f6f8fa 11:656d76/f6f8fa 2:1f2328/f6f8fa 11:0969da/f6f8fa 1:1f2328/f6f8fa
+ 1 1:1f2328/ffffff 7:0969da/ffffff 4:656d76/ffffff 43:1f2328/ffffff 1:d0d7de/ffffff 164:1f2328/ffffff
+ 2 1:1f2328/ffffff 1:9a6700/ffffff 1:1f2328/ffffff 20:656d76/ffffff 18:1f2328/ffffff 6:ffffff/0969da 1:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 3:656d76/ffffff 1:1f2328/ffffff 1:d0d7de/ffffff 1:1f2328/ffffff 2:cf222e/ffffff 10:1f2328/ffffff 3:656d76/ffffff 7:0969da/ffffff 3:656d76/ffffff 2:1a7f37/ffffff 3:cf222e/ffffff 5:656d76/ffffff 128:1f2328/ffffff
+ 3 1:1f2328/c9def7 1:9a6700/c9def7 47:1f2328/c9def7 2:cf222e/c9def7 1:1f2328/c9def7 2:656d76/c9def7 1:1f2328/c9def7 165:d0d7de/ffffff
+ 4 28:1f2328/ffffff 13:0969da/d3e4f8 1:1f2328/ffffff 6:9a6700/ede4d1 1:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 2:656d76/ffffff 1:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 10:1f2328/ffffff 15:656d76/ffffff 102:1f2328/ffffff
+ 5 45:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 6:656d76/ffffff 1:1f2328/ffffff 1:d0d7de/ffffff 1:1f2328/ededee 1:9a6700/ededee 28:1f2328/ededee 2:1a7f37/ededee 1:1f2328/ededee 2:cf222e/ededee 1:1f2328/ededee 1:d0d7de/ffffff 127:656d76/ddf4ff
+ 6 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 4:656d76/ffffff 59:1f2328/ffffff 1:d0d7de/ffffff 4:656d76/ffffff 59:1f2328/ffffff
+ 7 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 4:656d76/f6f6f6 59:1f2328/f6f6f6 1:d0d7de/ffffff 3:407657/ccffd8 1:407657/e6ffec 59:1f2328/e6ffec
+ 8 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 4:656d76/f6f6f6 59:1f2328/f6f6f6 1:d0d7de/ffffff 3:407657/ccffd8 1:407657/e6ffec 59:1f2328/e6ffec
+ 9 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+10 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+11 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+12 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+13 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+14 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+15 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+16 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+17 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+18 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+19 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+20 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+21 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+22 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+23 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+24 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+25 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+26 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+27 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+28 55:1f2328/ffffff 1:d0d7de/ffffff 36:1f2328/ffffff 1:d0d7de/ffffff 127:1f2328/ffffff
+29 1:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 5:0969da/f6f8fa 8:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 10:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 139:656d76/f6f8fa

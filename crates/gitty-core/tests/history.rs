@@ -98,3 +98,29 @@ fn decode_row_fields() {
     let d = h.commit_detail(id).unwrap();
     assert!(d.body.starts_with("Body line"), "{:?}", d.body);
 }
+
+/// Walking into small private chunks and appending them gives the same history as one walk,
+/// including commits outside the commit-graph (overflow entries).
+#[test]
+fn append_chunks_matches_single_walk() {
+    let f = Fixture::new();
+    build_history(&f);
+    f.git(&["commit-graph", "write", "--reachable"]);
+    f.commit("after graph 1", 1_700_000_600);
+    f.commit("after graph 2", 1_700_000_700);
+    let repo = Repo::open(f.path()).unwrap();
+    let h = repo.handle();
+    let refs = h.refs().unwrap();
+    let mut w = h.walker(&refs.tips(HistoryScope::AllRefs)).unwrap();
+    let mut shared = w.new_history();
+    loop {
+        let mut chunk = w.new_history();
+        let more = w.step(&h, &mut chunk, 2).unwrap();
+        shared.append(&mut chunk);
+        assert!(chunk.is_empty());
+        if !more {
+            break;
+        }
+    }
+    assert_eq!(shared.ids(0..shared.len()), git_order(&f));
+}
