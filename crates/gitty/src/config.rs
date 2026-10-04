@@ -62,7 +62,14 @@ impl Config {
     pub fn load(path: &Path) -> (Config, Vec<String>) {
         let mut c = Config::default();
         let mut w = Vec::new();
-        let Ok(text) = std::fs::read_to_string(path) else { return (c, w) };
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (c, w),
+            Err(e) => {
+                w.push(format!("config: {}: {e}", path.display()));
+                return (c, w);
+            }
+        };
         let table: toml::Table = match toml::from_str(&text) {
             Ok(t) => t,
             Err(e) => {
@@ -127,7 +134,12 @@ impl Config {
 
     /// Persists `theme = "<name>"`, keeping the rest of the file byte-for-byte.
     pub fn save_theme(path: &Path, name: &str) -> std::io::Result<()> {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
+        // only a missing file counts as empty; never overwrite a config we could not read
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e),
+        };
         let value = toml::Value::String(name.to_string()).to_string();
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -336,6 +348,18 @@ mod tests {
         let (c, w) = Config::load(&p);
         assert!(w.is_empty());
         assert_eq!((c.theme.as_str(), c.tab_size), ("rose-pine", 2));
+    }
+
+    #[test]
+    fn save_theme_never_clobbers_an_unreadable_config() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("config.toml");
+        let original = b"tab_size = 2\n# \xff\xfe not utf-8\n".to_vec();
+        std::fs::write(&p, &original).unwrap();
+        assert!(Config::save_theme(&p, "dracula").is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), original);
+        let (_, w) = Config::load(&p);
+        assert_eq!(w.len(), 1, "an unreadable config is reported");
     }
 
     #[test]

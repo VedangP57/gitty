@@ -66,6 +66,25 @@ pub fn layout(line: &[u8], tab: u8, out: &mut Vec<Glyph>) {
         let valid = chunk.valid();
         for (i, g) in valid.grapheme_indices(true) {
             let byte = (base + i) as u32;
+            // a cluster holding control bytes (e.g. "\r\n" is one grapheme) is escaped char by char
+            if g.len() > 1 && g.bytes().any(|b| b < 0x20 || b == 0x7f) {
+                for (ci, c) in g.char_indices() {
+                    let byte = (base + i + ci) as u32;
+                    let (sym, width, ctrl) = if (c as u32) < 0x20 || c == '\x7f' {
+                        (sym_of(&format!("^{}", ((c as u8) ^ 0x40) as char)), 2, true)
+                    } else {
+                        let mut b = [0u8; 4];
+                        let s: &str = c.encode_utf8(&mut b);
+                        match UnicodeWidthStr::width(s) as u32 {
+                            0 => continue,
+                            w => (sym_of(s), w, false),
+                        }
+                    };
+                    out.push(Glyph { byte, col, width: width as u8, ctrl, sym });
+                    col += width;
+                }
+                continue;
+            }
             let first = g.as_bytes()[0];
             let (sym, width, ctrl) = if g == "\t" {
                 (Sym::Byte(b' '), tab - col % tab, false)
@@ -203,6 +222,15 @@ mod tests {
         assert!(g.iter().all(|g| !g.sym().contains('\x1b')));
         let g = lay(b"\x00\x7f");
         assert_eq!(syms(&g), ["^@", "^?"]);
+    }
+
+    #[test]
+    fn crlf_grapheme_is_escaped() {
+        assert_eq!(syms(&lay(b"a\r\nb")), ["a", "^M", "^J", "b"]);
+        assert_eq!(syms(&lay("x\u{1b}\u{301}y".as_bytes())).concat(), "x^[y");
+        for g in lay("a\r\nb\x07".as_bytes()) {
+            assert!(!g.sym().chars().any(char::is_control), "{:?}", g.sym());
+        }
     }
 
     #[test]

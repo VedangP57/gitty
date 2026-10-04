@@ -241,8 +241,9 @@ fn prefetch_neighbors_issued() {
     }
     assert_eq!(prefetched, 10, "the 10 commits after the newest (none before it)");
     t.ch('j');
+    assert!(t.app.files.is_some(), "the prefetched file list shows immediately");
     let r = t.app.take_requests();
-    assert!(!r.iter().any(|r| matches!(r, Request::Files { prefetch: false, .. })), "neighbour was prefetched");
+    assert!(r.iter().any(|r| matches!(r, Request::Files { prefetch: false, .. })), "stats are computed on selection");
 }
 
 #[test]
@@ -277,7 +278,7 @@ fn three_hunks() -> FileDiff {
     FileDiff::from_bytes("f.txt", None, old.into_bytes(), new.into_bytes(), 0o100644, 0o100644, DiffOptions::default())
 }
 fn key() -> DiffKey {
-    DiffKey { old: None, new: None, path: "f.txt".into(), opts: DiffOptions::default(), force_text: false }
+    DiffKey { old: None, new: None, path: "f.txt".into(), old_path: None, old_mode: 0, new_mode: 0, opts: DiffOptions::default(), force_text: false }
 }
 fn row_kind(d: &DiffState, i: usize) -> String {
     match d.vrow(i, false) {
@@ -539,4 +540,129 @@ fn hold_j_through_200_commits_final_state_matches_selection() {
     assert_eq!(t.app.detail.as_ref().unwrap().row.id, sel);
     let files = t.app.files.as_ref().unwrap();
     assert_eq!(t.app.diff.as_ref().unwrap().key.path, files[t.app.file_sel].path);
+}
+
+#[test]
+fn diff_cache_distinguishes_mode_changes() {
+    let f = Fixture::new();
+    f.write("a.sh", "echo\n");
+    f.commit("add", 1_700_000_000);
+    f.git(&["update-index", "--chmod=+x", "a.sh"]);
+    f.git_env(&["commit", "-q", "-m", "exec"], &[("GIT_AUTHOR_DATE", "1700000100 +0000".into()), ("GIT_COMMITTER_DATE", "1700000100 +0000".into())]);
+    f.git(&["update-index", "--chmod=-x", "a.sh"]);
+    f.git_env(&["commit", "-q", "-m", "unexec"], &[("GIT_AUTHOR_DATE", "1700000200 +0000".into()), ("GIT_COMMITTER_DATE", "1700000200 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.diff.as_ref().unwrap().diff.modes(), (0o100755, 0o100644));
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.diff.as_ref().unwrap().diff.modes(), (0o100644, 0o100755), "a cached diff with other modes must not be reused");
+}
+
+#[test]
+fn uncached_commit_shows_loading_not_previous_diff() {
+    let f = Fixture::new();
+    commits(&f, 15);
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.diff.is_some());
+    t.ch('G');
+    let _withheld = t.app.take_requests();
+    assert!(t.app.files.is_none());
+    assert!(t.app.diff.is_none(), "the previous commit's diff must not stay on screen");
+    assert!(t.app.diff_loading());
+}
+
+#[test]
+fn files_error_is_shown_and_prefetch_errors_are_quiet() {
+    let f = Fixture::new();
+    let ids = commits(&f, 15);
+    let mut t = H::new(&f);
+    let _ = t.app.take_requests();
+    for m in t.exec_all(vec![Request::Refs]) {
+        t.app.handle_msg(m);
+    }
+    // run the walk etc. but withhold prefetch results
+    for _ in 0..50 {
+        let r: Vec<Request> = t.app.take_requests().into_iter().filter(|r| !matches!(r, Request::Files { prefetch: true, .. })).collect();
+        if r.is_empty() {
+            match t.app.next_deadline() {
+                Some(d) => t.app.tick(d),
+                None => break,
+            }
+            continue;
+        }
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+    }
+    let in_flight = t.app.prefetch_in_flight();
+    assert_eq!(in_flight, 10);
+    t.app.handle_msg(Msg::FilesError { generation: 0, id: id(&ids[13]), prefetch: true, detail: "boom".into() });
+    assert_eq!(t.app.prefetch_in_flight(), 9, "a failed prefetch frees its slot");
+    assert!(t.app.toast.is_none(), "prefetch failures are not the user's problem");
+    t.ch('G');
+    let generation = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
+    let sel = t.selected_id();
+    t.app.handle_msg(Msg::FilesError { generation, id: sel, prefetch: false, detail: "object not found".into() });
+    assert_eq!(t.app.files_error.as_deref(), Some("object not found"));
+    assert!(!t.app.diff_loading());
+}
+
+fn many(f: &Fixture, n: usize) {
+    let mut s = String::new();
+    for i in 0..n {
+        s.push_str(&format!("commit refs/heads/main\nmark :{}\ncommitter T <t@t> {} +0000\ndata 3\nmsg\n", i + 1, 1_700_000_000 + i));
+        if i > 0 {
+            s.push_str(&format!("from :{i}\n"));
+        }
+        s.push('\n');
+    }
+    let mut c = std::process::Command::new("git");
+    c.current_dir(f.path()).args(["fast-import", "--quiet"]).stdin(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn user_navigation_beats_pending_reselect() {
+    let f = Fixture::new();
+    many(&f, 300);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(280);
+    t.pump();
+    let target = t.selected_id();
+    t.ch('r');
+    assert!(t.app.files.is_none() && t.app.diff.is_none(), "nothing from the old selection is shown while re-walking");
+    let walk: Vec<Request> = t.app.take_requests();
+    let mut msgs = t.exec_all(walk).into_iter();
+    // HistoryStarted and the first 256-row chunk (target is at 280: not yet found)
+    t.app.handle_msg(msgs.next().unwrap());
+    t.app.handle_msg(msgs.next().unwrap());
+    t.ch('j');
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(t.app.selected, 1, "the user's choice wins over the pending reselect");
+    assert_ne!(t.selected_id(), target);
+}
+
+#[test]
+fn double_scope_toggle_keeps_target() {
+    let f = Fixture::new();
+    many(&f, 300);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(280);
+    t.pump();
+    let target = t.selected_id();
+    t.ch('r');
+    t.ch('r');
+    t.pump();
+    assert_eq!(t.selected_id(), target);
+    assert_eq!(t.app.selected, 280);
 }

@@ -89,9 +89,13 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             }
             let files = match h.commit_files(id, true) {
                 Ok(f) => Arc::new(f),
-                Err(e) => return sink(error(format!("listing files of {}", id.short(7)), &e)),
+                Err(e) => return sink(Msg::FilesError { generation, id, prefetch, detail: format!("{e:#}") }),
             };
             sink(Msg::Files { generation, id, files: files.clone(), prefetch });
+            if prefetch {
+                // prefetch fills the file-list cache only; stats are computed on selection
+                return;
+            }
             let mut start = 0;
             for chunk in files.chunks(STATS_CHUNK) {
                 if stale() {

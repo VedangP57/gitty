@@ -37,11 +37,16 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
     for i in 0..n {
         let (high_rx, low_rx, repo, gens, wtx) = (high_rx.clone(), low_rx.clone(), repo.clone(), gens.clone(), tx.clone());
         let spawned = std::thread::Builder::new().name(format!("gitty-{name}-{i}")).spawn(move || {
+            crate::term::mark_thread_panics_caught();
             let h = repo.handle();
             if warm {
                 h.warm();
             }
             while let Some(req) = next(&high_rx, &low_rx) {
+                let files_req = match &req {
+                    Request::Files { generation, id, prefetch } => Some((*generation, *id, *prefetch)),
+                    _ => None,
+                };
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     exec(&h, req, &mut |m| {
                         let _ = wtx.send(m);
@@ -53,7 +58,10 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                         .map(|s| s.to_string())
                         .or_else(|| p.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".into());
-                    let _ = wtx.send(Msg::Error { what: "internal error in a worker".into(), detail });
+                    let _ = match files_req {
+                        Some((generation, id, prefetch)) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
+                        None => wtx.send(Msg::Error { what: "internal error in a worker".into(), detail }),
+                    };
                 }
             }
         });

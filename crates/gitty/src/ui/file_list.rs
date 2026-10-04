@@ -22,6 +22,16 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     app.hits.files_rows = Some(rows);
     app.hits.files_first = app.file_scroll;
     let Some(files) = app.files.clone() else {
+        if let Some(err) = app.files_error.clone() {
+            title(app, buf, r, "Files", focused, "");
+            if rows.height > 0 {
+                text(buf, rows.x + 1, rows.y, rows.right(), "Could not list files", base.fg(ui.error).add_modifier(Modifier::BOLD));
+            }
+            if rows.height > 1 {
+                text(buf, rows.x + 1, rows.y + 1, rows.right(), err.lines().next().unwrap_or(""), base.fg(ui.muted));
+            }
+            return;
+        }
         let label = if app.selected_id().is_some() { "Loading files…" } else { "Files" };
         title(app, buf, r, label, focused, "");
         return;

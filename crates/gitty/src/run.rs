@@ -206,13 +206,21 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
         let mut fired = false;
         match timeout {
             Some(t) => select! {
-                recv(in_rx) -> b => if let Ok(b) = b { on_input(&mut app, b, &mut terminal)? },
+                recv(in_rx) -> b => match b {
+                    Ok(b) => on_input(&mut app, b, &mut terminal)?,
+                    // the terminal is gone (input thread ended): quit instead of spinning
+                    Err(_) => break,
+                },
                 recv(msg_rx) -> m => if let Ok(m) = m { trace!("msg {m:?}"); app.handle_msg(m) },
                 recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; break },
                 default(t) => fired = true,
             },
             None => select! {
-                recv(in_rx) -> b => if let Ok(b) = b { on_input(&mut app, b, &mut terminal)? },
+                recv(in_rx) -> b => match b {
+                    Ok(b) => on_input(&mut app, b, &mut terminal)?,
+                    // the terminal is gone (input thread ended): quit instead of spinning
+                    Err(_) => break,
+                },
                 recv(msg_rx) -> m => if let Ok(m) = m { trace!("msg {m:?}"); app.handle_msg(m) },
                 recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; break },
             },

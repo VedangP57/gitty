@@ -170,6 +170,8 @@ pub struct App {
     files_id: Option<CommitId>,
     pub stats: Vec<Option<LineStats>>,
     pub stats_done: bool,
+    /// Listing the selected commit's files failed.
+    pub files_error: Option<String>,
     pub file_sel: usize,
     pub file_scroll: usize,
     file_cache: Lru<CommitId, CachedFiles>,
@@ -245,6 +247,7 @@ impl App {
             files_id: None,
             stats: Vec::new(),
             stats_done: false,
+            files_error: None,
             file_sel: 0,
             file_scroll: 0,
             file_cache: Lru::new(1024),
@@ -293,7 +296,12 @@ impl App {
         self.diff_error.as_ref().filter(|(k, _)| Some(k) == self.diff_wanted.as_ref()).map(|(_, e)| e.as_str())
     }
     pub fn diff_loading(&self) -> bool {
-        self.wanted_diff_error().is_none() && self.diff_wanted.is_some() && self.diff.as_ref().map(|d| &d.key) != self.diff_wanted.as_ref()
+        let files_pending = self.selected_id.is_some() && self.files.is_none() && self.files_error.is_none();
+        let diff_pending = self.wanted_diff_error().is_none() && self.diff_wanted.is_some() && self.diff.as_ref().map(|d| &d.key) != self.diff_wanted.as_ref();
+        files_pending || diff_pending
+    }
+    pub fn prefetch_in_flight(&self) -> usize {
+        self.prefetching.len()
     }
 
     // ---- layout ----
@@ -395,13 +403,13 @@ impl App {
                     });
                     if let Some(i) = found {
                         self.reselect = None;
-                        self.select(i);
+                        self.select_at(i);
                     } else if done {
                         self.reselect = None;
                     }
                 }
                 if self.reselect.is_none() && self.selected_id.is_none() && len > 0 {
-                    self.select(0);
+                    self.select_at(0);
                 }
                 self.request_visible_rows();
             }
@@ -435,6 +443,13 @@ impl App {
                     if let Some(c) = cached {
                         self.install_files(id, c);
                     }
+                }
+            }
+            Msg::FilesError { generation, id, prefetch, detail } => {
+                if prefetch {
+                    self.prefetching.remove(&id);
+                } else if generation == self.commit_gen && Some(id) == self.selected_id {
+                    self.files_error = Some(detail);
                 }
             }
             Msg::Stats { id, start, stats, done } => {
@@ -536,8 +551,19 @@ impl App {
         };
         self.ui_state.scope_all = self.scope == HistoryScope::AllRefs;
         self.save_state();
-        self.reselect = self.selected_id.take();
+        // a second toggle before the first walk found the commit keeps the original target
+        self.reselect = self.selected_id.take().or(self.reselect.take());
         self.selected = 0;
+        self.detail = None;
+        self.files = None;
+        self.files_id = None;
+        self.files_error = None;
+        self.stats.clear();
+        self.diff = None;
+        self.diff_wanted = None;
+        self.diff_deadline = None;
+        self.commit_gen = Gens::bump(&self.gens.commit);
+        self.file_gen = Gens::bump(&self.gens.file);
         self.list_scroll = 0;
         self.start_walk();
     }
@@ -547,7 +573,13 @@ impl App {
         (i < h.len()).then(|| h.id(i))
     }
 
+    /// Selects history row `idx` on the user's behalf (cancels a pending re-selection).
     pub fn select(&mut self, idx: usize) {
+        self.reselect = None;
+        self.select_at(idx);
+    }
+
+    fn select_at(&mut self, idx: usize) {
         if self.history_len == 0 {
             return;
         }
@@ -566,6 +598,7 @@ impl App {
         self.files_id = None;
         self.stats.clear();
         self.stats_done = false;
+        self.files_error = None;
         self.file_sel = 0;
         self.file_scroll = 0;
         self.force_text = false;
@@ -577,7 +610,14 @@ impl App {
                 }
                 self.install_files(id, c);
             }
-            None => self.outbox.push(Request::Files { generation: self.commit_gen, id, prefetch: false }),
+            None => {
+                // nothing to show for this commit yet: drop the previous commit's diff
+                self.diff = None;
+                self.diff_wanted = None;
+                self.diff_deadline = None;
+                self.file_gen = Gens::bump(&self.gens.file);
+                self.outbox.push(Request::Files { generation: self.commit_gen, id, prefetch: false });
+            }
         }
     }
 

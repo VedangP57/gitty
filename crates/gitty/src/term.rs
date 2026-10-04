@@ -58,12 +58,18 @@ pub fn parse_probe(bytes: &[u8]) -> Probe {
     p
 }
 
-/// Queries the terminal on stdin/stdout (raw mode must be on). Waits up to `timeout`.
-pub fn probe(timeout: Duration) -> Probe {
-    let mut out = std::io::stdout();
-    if out.write_all(b"\x1b]11;?\x1b\\\x1b[?u\x1b[c").and_then(|_| out.flush()).is_err() {
-        return Probe::default();
+/// The fd terminal input arrives on: stdin when it is a terminal, else `/dev/tty` (as crossterm does).
+pub fn tty_fd() -> i32 {
+    if unsafe { libc::isatty(0) } == 1 {
+        return 0;
     }
+    use std::os::fd::IntoRawFd;
+    std::fs::File::open("/dev/tty").map_or(0, IntoRawFd::into_raw_fd)
+}
+
+/// Reads probe replies one byte at a time until the DA1 reply ends them or `timeout` passes, so
+/// that keys typed after the replies stay queued for the input reader.
+pub fn drain_replies(fd: i32, timeout: Duration) -> Probe {
     let start = Instant::now();
     let mut buf = Vec::new();
     loop {
@@ -71,22 +77,29 @@ pub fn probe(timeout: Duration) -> Probe {
         if left.is_zero() {
             break;
         }
-        let mut pfd = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
-        let r = unsafe { libc::poll(&mut pfd, 1, left.as_millis().max(1) as i32) };
-        if r <= 0 {
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        if unsafe { libc::poll(&mut pfd, 1, left.as_millis().max(1) as i32) } <= 0 {
             break;
         }
-        let mut chunk = [0u8; 256];
-        let n = unsafe { libc::read(0, chunk.as_mut_ptr().cast(), chunk.len()) };
-        if n <= 0 {
+        let mut b = 0u8;
+        if unsafe { libc::read(fd, (&mut b as *mut u8).cast(), 1) } != 1 {
             break;
         }
-        buf.extend_from_slice(&chunk[..n as usize]);
-        if parse_probe(&buf).complete {
+        buf.push(b);
+        if b == b'c' && parse_probe(&buf).complete {
             break;
         }
     }
     parse_probe(&buf)
+}
+
+/// Queries the terminal (raw mode must be on) and waits up to `timeout` for the replies.
+pub fn probe(timeout: Duration) -> Probe {
+    let mut out = std::io::stdout();
+    if out.write_all(b"\x1b]11;?\x1b\\\x1b[?u\x1b[c").and_then(|_| out.flush()).is_err() {
+        return Probe::default();
+    }
+    drain_replies(tty_fd(), timeout)
 }
 
 const ENTER: &str = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h";
@@ -106,13 +119,7 @@ impl Guard {
         }
         out.flush()?;
         ACTIVE.store(true, Ordering::SeqCst);
-        if !HOOKED.swap(true, Ordering::SeqCst) {
-            let prev = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                restore();
-                prev(info);
-            }));
-        }
+        install_panic_hook();
         Ok(Guard)
     }
 
@@ -129,6 +136,30 @@ impl Drop for Guard {
     fn drop(&mut self) {
         restore();
     }
+}
+
+pub fn install_panic_hook() {
+    if !HOOKED.swap(true, Ordering::SeqCst) {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // worker threads catch their panics and report them as a toast: keep the terminal
+            // and keep the panic message off the screen
+            if CAUGHT.with(std::cell::Cell::get) {
+                return;
+            }
+            restore();
+            prev(info);
+        }));
+    }
+}
+
+thread_local! {
+    static CAUGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Declares that the calling thread catches its own panics (worker pools do).
+pub fn mark_thread_panics_caught() {
+    CAUGHT.with(|c| c.set(true));
 }
 
 /// Idempotent: leaves the alternate screen and turns off every mode gitty enabled.
@@ -149,6 +180,37 @@ pub fn restore() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caught_worker_panic_keeps_terminal() {
+        install_panic_hook();
+        ACTIVE.store(true, Ordering::SeqCst);
+        std::thread::spawn(|| {
+            mark_thread_panics_caught();
+            let _ = std::panic::catch_unwind(|| panic!("worker bug"));
+        })
+        .join()
+        .unwrap();
+        let still = ACTIVE.swap(false, Ordering::SeqCst);
+        assert!(still, "a caught worker panic must not restore the terminal");
+    }
+
+    #[test]
+    fn late_replies_are_drained_but_keys_after_them_survive() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let reply = b"\x1b]11;rgb:0000/0000/0000\x1b\\\x1b[?62;22cj";
+        assert_eq!(unsafe { libc::write(fds[1], reply.as_ptr().cast(), reply.len()) }, reply.len() as isize);
+        let p = drain_replies(fds[0], Duration::from_millis(200));
+        assert!(p.complete);
+        let mut rest = [0u8; 8];
+        let n = unsafe { libc::read(fds[0], rest.as_mut_ptr().cast(), rest.len()) };
+        assert_eq!(&rest[..n as usize], b"j", "the key typed after the reply is left for the input reader");
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
 
     #[test]
     fn parse_probe_dark_and_light() {

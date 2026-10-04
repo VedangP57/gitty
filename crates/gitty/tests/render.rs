@@ -520,3 +520,13 @@ fn missing_blob_shows_error_in_diff_pane() {
     assert!(!s.contains("loading…"), "{s}");
     assert!(!s.contains("+0 −0"), "unknown stats are not shown as zero:\n{s}");
 }
+
+#[test]
+fn files_error_rendered() {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (180, 30));
+    t.app.files = None;
+    t.app.files_error = Some("object abc could not be found".into());
+    let s = text(&t.render(180, 30));
+    assert!(s.contains("Could not list files"), "{s}");
+}

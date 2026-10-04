@@ -186,7 +186,7 @@ fn intraline_request_finishes_partial_diff() {
     let d = gitty_core::diff::FileDiff::from_bytes("a", None, b"a\nb\n".to_vec(), b"a\nc\n".to_vec(), 0o100644, 0o100644, DiffOptions::default());
     let d = Arc::new(d);
     let f = Fixture::new();
-    let key = gitty::msg::DiffKey { old: None, new: None, path: "a".into(), opts: DiffOptions::default(), force_text: false };
+    let key = gitty::msg::DiffKey { old: None, new: None, path: "a".into(), old_path: None, old_mode: 0, new_mode: 0, opts: DiffOptions::default(), force_text: false };
     let msgs = run(&f, Request::Intraline { generation: 0, key: key.clone(), diff: d.clone() });
     assert!(matches!(&msgs[0], Msg::IntralineDone { key: k } if *k == key));
     assert!(d.intraline_ready(0).is_some());
@@ -241,6 +241,10 @@ fn bad_id_reports_error_not_panic() {
     ] {
         let msgs = run(&f, req);
         assert!(msgs.iter().all(|m| !matches!(m, Msg::Files { .. } | Msg::Detail { .. })), "{msgs:?}");
+    }
+    let msgs = run(&f, Request::Files { generation: 0, id: bogus, prefetch: true });
+    assert!(matches!(&msgs[..], [Msg::FilesError { prefetch: true, .. }]), "{msgs:?}");
+    {
     }
 }
 
@@ -325,4 +329,12 @@ fn walk_never_starves_readers() {
     reader.unwrap().join().unwrap();
     let w = *worst.lock().unwrap();
     assert!(w < Duration::from_millis(5), "a reader waited {w:?} for the history lock");
+}
+
+#[test]
+fn prefetch_lists_files_without_stats() {
+    let f = Fixture::new();
+    let ids = five(&f);
+    let msgs = run(&f, Request::Files { generation: 0, id: id(&ids[1]), prefetch: true });
+    assert!(matches!(&msgs[..], [Msg::Files { prefetch: true, .. }]), "{msgs:?}");
 }
