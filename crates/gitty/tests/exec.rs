@@ -470,3 +470,28 @@ fn refresh_index_keeps_status_and_tolerates_changes() {
     assert_eq!(r, Ok(None));
     assert_eq!(f.git(&["status", "--porcelain"]), before);
 }
+
+#[test]
+fn staging_every_line_refuses_a_worktree_saved_since_the_diff() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\nb\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nB\nb\n");
+    let (entry, _, diff, texts, staged, _) = change_diff(&f, "a.txt");
+    let flags = vec![true; staged.unwrap().len()];
+    f.write("a.txt", "a\nB\nb\nSECRET\n");
+    let (r, _) = write(&f, gitty::msg::WriteOp::SetStaged { entry, texts, diff, flags });
+    assert!(r.as_ref().is_err_and(|e| e.contains("changed")), "{r:?}");
+    assert_eq!(f.git(&["show", ":a.txt"]), "a\nb", "index untouched");
+}
+
+#[test]
+fn symlink_diffs_offer_no_line_staging() {
+    let f = Fixture::new();
+    std::os::unix::fs::symlink("old-target", f.path().join("link")).unwrap();
+    f.commit("base", 1_700_000_000);
+    std::fs::remove_file(f.path().join("link")).unwrap();
+    std::os::unix::fs::symlink("new-target", f.path().join("link")).unwrap();
+    let (_, _, _, _, staged, _) = change_diff(&f, "link");
+    assert_eq!(staged, None);
+}

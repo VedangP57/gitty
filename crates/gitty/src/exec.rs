@@ -41,7 +41,8 @@ fn change_diff(h: &Handle, e: &gitty_core::status::StatusEntry, opts: gitty_core
     if force_text {
         diff = diff.force_text();
     }
-    let lines_ok = diff.is_text() && opts.ws == WsMode::Show && !e.is_conflicted();
+    // symlinks, submodules and type changes are whole-file only (an untracked symlink shows only in wt_mode)
+    let lines_ok = diff.is_text() && opts.ws == WsMode::Show && e.line_stageable() && texts.wt_mode & 0o170000 != 0o120000;
     let derived = lines_ok.then(|| gitty_core::stage::staged_set(&texts, &diff.ops));
     let divergent = matches!(derived, Some(None));
     let key = DiffKey {

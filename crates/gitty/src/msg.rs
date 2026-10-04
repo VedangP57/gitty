@@ -94,6 +94,8 @@ pub enum WriteOp {
     /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
     /// re-hashing racily clean files.
     RefreshIndex,
+    /// Runs in order and stops at the first failure (a line discard that unstages first).
+    Seq(Vec<WriteOp>),
 }
 
 impl WriteOp {
@@ -107,6 +109,7 @@ impl WriteOp {
             WriteOp::Commit { amend: true, .. } => "amending",
             WriteOp::UndoCommit => "undoing the commit",
             WriteOp::RefreshIndex => "refreshing the index",
+            WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
     /// Commits and undo move HEAD; refs and history refresh after them.

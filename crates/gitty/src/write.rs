@@ -47,12 +47,23 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         WriteOp::Unstage(paths) => cli.unstage_paths(paths)?,
         WriteOp::StageAll => cli.stage_all()?,
         WriteOp::UnstageAll => cli.unstage_all()?,
-        WriteOp::SetStaged { entry, texts, diff, flags } => match plan(entry, texts, &diff.ops, flags) {
-            Plan::Nothing => {}
-            Plan::StageFile(paths) => cli.stage_paths(&paths)?,
-            Plan::UnstageFile(paths) => cli.unstage_paths(&paths)?,
-            Plan::Patch { patch, expect } => cli.apply_cached(&patch, &entry.path, expect)?,
-        },
+        WriteOp::SetStaged { entry, texts, diff, flags } => {
+            // whole-file plans run `git add`/`restore`, which take the file as it is now: refuse
+            // if it is not what the user saw (an autosave or formatter in between)
+            let now = h.stage_texts(entry)?;
+            if now.wt_blob != texts.wt_blob {
+                bail!("{} changed on disk since its diff was loaded; refreshing", entry.path);
+            }
+            if cli.index_blob(&entry.path)? != entry.index_blob {
+                bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
+            }
+            match plan(entry, texts, &diff.ops, flags) {
+                Plan::Nothing => {}
+                Plan::StageFile(paths) => cli.stage_paths(&paths)?,
+                Plan::UnstageFile(paths) => cli.unstage_paths(&paths)?,
+                Plan::Patch { patch, expect } => cli.apply_cached(&patch, &entry.path, expect)?,
+            }
+        }
         WriteOp::WriteFile { path, bytes, expect } => {
             let full = workdir(h)?.join(path);
             let now = std::fs::read(&full).with_context(|| format!("reading {path}"))?;
@@ -75,7 +86,7 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 cli.run(cmd, None, log)?;
             }
             if !remove.is_empty() {
-                let mut args = vec!["--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch", "--"];
+                let mut args = vec!["--literal-pathspecs", "rm", "--cached", "-f", "-q", "--ignore-unmatch", "--"];
                 args.extend(remove.iter().map(String::as_str));
                 let cmd = cli.cmd(gitty_core::git_cli::Kind::Write, &args);
                 cli.run(cmd, None, log)?;
@@ -93,6 +104,11 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             return Ok(Some(String::from_utf8_lossy(&head).trim().to_string()));
         }
         WriteOp::UndoCommit => return Ok(Some(cli.undo_commit()?)),
+        WriteOp::Seq(ops) => {
+            for op in ops {
+                run(h, op, log)?;
+            }
+        }
         WriteOp::RefreshIndex => {
             // exit 1 just means some files differ from the index; that is not a failure
             let mut cmd = cli.cmd(gitty_core::git_cli::Kind::Write, &["update-index", "-q", "--refresh"]);

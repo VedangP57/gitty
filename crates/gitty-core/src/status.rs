@@ -48,6 +48,16 @@ impl StatusEntry {
             _ => Check::Partial,
         }
     }
+    /// Lines can be staged or discarded one by one: not conflicted, and no symlink or file-type
+    /// change on any side (those are whole-file only).
+    pub fn line_stageable(&self) -> bool {
+        const TYPE: u32 = 0o170000;
+        let modes = [self.head_mode, self.index_mode, self.wt_mode];
+        let special = modes.iter().any(|m| matches!(m & TYPE, 0o120000 | 0o160000));
+        let mut kinds = modes.iter().filter(|m| **m != 0).map(|m| m & TYPE);
+        let first = kinds.next();
+        !self.is_conflicted() && !special && kinds.all(|k| Some(k) == first)
+    }
     pub fn is_conflicted(&self) -> bool {
         self.kind == EntryKind::Unmerged
     }
@@ -151,11 +161,13 @@ pub fn parse(out: &[u8]) -> Status {
                 x,
                 y,
                 kind: EntryKind::Unmerged,
-                head_mode: mode(f[2]),
+                // stage 1 is the merge base, stage 2 is HEAD ("ours"); there is no single index
+                // entry to guard a patch against, so index_blob stays None
+                head_mode: mode(f[3]),
                 index_mode: mode(f[3]),
                 wt_mode: mode(f[5]),
-                head_blob: blob(f[6]),
-                index_blob: blob(f[7]),
+                head_blob: blob(f[7]),
+                index_blob: None,
             });
         } else if let Some(p) = r.strip_prefix("? ") {
             st.entries.push(StatusEntry {

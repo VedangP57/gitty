@@ -10,7 +10,10 @@ use gitty_core::status::{Status, StatusEntry};
 use gitty_core::watch::{Changed, IndexMark};
 
 use gitty_core::diff::view::{Row, SplitRow};
-use gitty_core::stage::{build, change_lines};
+use gitty_core::commit_files::BlobId;
+use gitty_core::diff::text::Text;
+use gitty_core::stage::{Plan, build, change_lines, plan};
+use gitty_core::status::EntryKind;
 
 use super::diffstate::{DiffState, VRow};
 use super::{App, Overlay, Tab, Toast};
@@ -373,6 +376,8 @@ impl App {
         }
         Some(if v.entry.is_conflicted() {
             "Conflicted: resolve it, then stage the whole file".into()
+        } else if !v.entry.line_stageable() || v.texts.wt_mode & 0o170000 == 0o120000 {
+            "Symlinks, submodules and file-type changes are staged as whole files".into()
         } else if v.divergent {
             "The index holds a version of its own (staged elsewhere): stage or unstage the whole file".into()
         } else {
@@ -452,6 +457,17 @@ impl App {
             }
         }
         let op = WriteOp::SetStaged { entry: v.entry.clone(), texts: v.texts.clone(), diff: v.diff.clone(), flags: staged.clone() };
+        // the writer runs ops in order: the next toggle builds on this one's index, not on the
+        // status/diff round trip still in flight
+        let in_index = match plan(&v.entry, &v.texts, &v.diff.ops, staged) {
+            Plan::Nothing => v.entry.index_blob.is_some(),
+            Plan::StageFile(_) => v.texts.wt_mode != 0,
+            Plan::UnstageFile(_) => v.entry.head_blob.is_some(),
+            Plan::Patch { .. } => true,
+        };
+        let target = build(&v.texts.head, &v.texts.wt, &v.diff.ops, staged);
+        v.entry.index_blob = in_index.then(|| BlobId::hash_of(&target));
+        v.texts.index = Arc::new(Text::new(target));
         self.changes.visual = None;
         self.write(op);
     }
@@ -477,10 +493,16 @@ impl App {
     pub fn confirm_discard_file(&mut self) {
         let Some(e) = self.changes.selected().cloned() else { return };
         let in_head = e.head_blob.is_some() || e.head_mode != 0;
-        let (restore, remove) = if in_head { (vec![e.path.clone()], Vec::new()) } else { (Vec::new(), vec![e.path.clone()]) };
-        let what = if in_head { "Discard all changes to" } else { "Delete the new file" };
+        let path = e.path.clone();
+        // a rename's HEAD content lives at the original path; a copy leaves the original alone
+        let (restore, remove, title) = match (&e.orig_path, e.kind) {
+            (Some(orig), EntryKind::Renamed) => (vec![orig.clone()], vec![path.clone()], format!("Undo the rename and changes: {path} back to {orig}?")),
+            (Some(_), _) => (Vec::new(), vec![path.clone()], format!("Delete the copy {path}?")),
+            (None, _) if in_head => (vec![path.clone()], Vec::new(), format!("Discard all changes to {path}?")),
+            (None, _) => (Vec::new(), vec![path.clone()], format!("Delete the new file {path}?")),
+        };
         self.overlay = Some(Overlay::Confirm {
-            title: format!("{what} {}?", e.path),
+            title,
             body: "A copy goes to the Trash.".into(),
             op: WriteOp::DiscardFiles { restore, remove },
         });
@@ -507,10 +529,22 @@ impl App {
         let keep: Vec<bool> = (0..n).map(|k| !ks.contains(&k)).collect();
         let bytes = build(&v.diff.old, &v.diff.new, &v.diff.ops, &keep);
         let lines = if ks.len() == 1 { "line".to_string() } else { format!("{} lines", ks.len()) };
+        let mut op = WriteOp::WriteFile { path: v.entry.path.clone(), bytes, expect: v.texts.wt_blob };
+        // a staged line would still be committed after leaving the worktree: unstage it first
+        if let Some(staged) = v.staged.as_ref().filter(|s| ks.iter().any(|&k| s.get(k).copied().unwrap_or(false))) {
+            let mut flags = staged.clone();
+            for &k in &ks {
+                if let Some(f) = flags.get_mut(k) {
+                    *f = false;
+                }
+            }
+            let unstage = WriteOp::SetStaged { entry: v.entry.clone(), texts: v.texts.clone(), diff: v.diff.clone(), flags };
+            op = WriteOp::Seq(vec![unstage, op]);
+        }
         self.overlay = Some(Overlay::Confirm {
             title: format!("Discard the selected {lines} in {}?", v.entry.path),
             body: "A copy of the file goes to the Trash.".into(),
-            op: WriteOp::WriteFile { path: v.entry.path.clone(), bytes, expect: v.texts.wt_blob },
+            op,
         });
         self.changes.visual = None;
     }

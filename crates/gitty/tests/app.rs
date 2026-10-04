@@ -948,6 +948,7 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
                 gitty::msg::WriteOp::UndoCommit => "undo".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
+                gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
             }),
             _ => None,
         })
@@ -1038,11 +1039,22 @@ fn whitespace_hidden_or_divergent_files_refuse_line_staging() {
     assert!(t.app.toast.as_ref().unwrap().what.to_lowercase().contains("whitespace"), "{:?}", t.app.toast.as_ref().map(|t| &t.what));
 }
 
+/// One Trash directory for the whole test binary: the variable is process-wide and tests run in
+/// parallel. Tests that count copies use file names no other test discards.
+fn trash_dir() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let d = tempfile::tempdir().unwrap();
+        // SAFETY: set once, before any write in this binary reads it
+        unsafe { std::env::set_var("GITTY_TRASH_DIR", d.path()) };
+        d
+    })
+    .path()
+}
+
 #[test]
 fn discard_asks_first_and_keeps_a_trash_copy() {
-    let trash = tempfile::tempdir().unwrap();
-    // SAFETY: every test in this binary that sets GITTY_TRASH_DIR runs its writes in-process
-    unsafe { std::env::set_var("GITTY_TRASH_DIR", trash.path()) };
+    let trash = trash_dir();
     let f = Fixture::new();
     f.write("a.txt", "1\n2\n3\n");
     f.commit("base", 1_700_000_000);
@@ -1060,7 +1072,8 @@ fn discard_asks_first_and_keeps_a_trash_copy() {
     assert_eq!(writes(t.app.take_requests_peek()), ["write a.txt"]);
     t.pump();
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "1\nTWO\n3\n");
-    assert_eq!(std::fs::read_dir(trash.path()).unwrap().count(), 1);
+    let copies = std::fs::read_dir(trash).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("a.txt (discarded")).count();
+    assert_eq!(copies, 1);
     // whole file from the file list
     t.key(KeyCode::Esc);
     assert_eq!(t.app.focus, Focus::Files);
@@ -1235,4 +1248,61 @@ fn slow_status_refreshes_the_index_at_most_once_a_minute() {
     t.app.tick(t.clock + Duration::from_secs(61));
     t.app.handle_msg(Msg::StatusSlow);
     assert_eq!(writes(t.app.take_requests_peek()), ["refresh index"]);
+}
+
+#[test]
+fn discarding_a_staged_rename_restores_the_original() {
+    let _ = trash_dir();
+    let f = Fixture::new();
+    f.write("old.txt", "one\ntwo\nthree\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["mv", "old.txt", "new.txt"]);
+    f.write("new.txt", "one\ntwo\nthree\nfour\n");
+    let mut t = changes_tab(&f);
+    let entries = t.app.changes.entries().to_vec();
+    let pos = t.app.changes.visible().iter().position(|&i| entries[i].path == "new.txt").unwrap();
+    t.app.select_change(pos);
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
+    assert_eq!(std::fs::read_to_string(f.path().join("old.txt")).unwrap(), "one\ntwo\nthree\n");
+    assert!(!f.path().join("new.txt").exists());
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "back to HEAD");
+}
+
+#[test]
+fn quick_successive_line_toggles_all_apply() {
+    let f = Fixture::new();
+    f.write("a.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "1\nX\n2\n3\n4\n5\n6\n7\n8\n9\nY\n10\nZ\n");
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add1");
+    t.ch(' ');
+    // the second toggle comes before the first write's status/diff round trip
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add10");
+    t.ch(' ');
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast);
+    assert_eq!(f.git(&["show", ":a.txt"]), "1\nX\n2\n3\n4\n5\n6\n7\n8\n9\nY\n10", "X and Y staged, Z not");
+}
+
+#[test]
+fn discarding_a_staged_line_unstages_it_too() {
+    let _ = trash_dir();
+    let f = Fixture::new();
+    f.write("b.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.write("b.txt", "1\n2\n3\nfour\n");
+    f.git(&["add", "b.txt"]);
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "1\n2\n3\n");
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the discarded line is not left staged");
 }

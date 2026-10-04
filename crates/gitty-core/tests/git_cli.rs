@@ -154,3 +154,47 @@ fn children_run_in_their_own_session() {
     let ours = unsafe { libc::getpgrp() };
     assert_ne!(child, ours);
 }
+
+#[test]
+fn conflict_entries_take_head_from_stage_two() {
+    let f = Fixture::new();
+    f.write("f.txt", "base\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("f.txt", "side\n");
+    f.write("g.txt", "side g\n");
+    f.commit("side", 1_700_000_100);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("f.txt", "main\n");
+    f.write("g.txt", "main g\n");
+    f.commit("main", 1_700_000_200);
+    let _ = std::process::Command::new("git").current_dir(f.path()).args(["merge", "-q", "side"]).output().unwrap();
+    let st = status(&f);
+    for p in ["f.txt", "g.txt"] {
+        let e = st.entries.iter().find(|e| e.path == p).unwrap();
+        assert!(e.is_conflicted(), "{p}");
+        let want = f.git(&["rev-parse", &format!("HEAD:{p}")]);
+        let got: String = e.head_blob.expect("HEAD has it (add/add too)").0.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(got, want, "{p}: HEAD is stage 2, not the merge base");
+        assert_eq!(e.head_mode, 0o100644);
+    }
+}
+
+#[test]
+fn symlinks_and_type_changes_are_whole_file_only() {
+    let f = Fixture::new();
+    f.write("plain.txt", "a\n");
+    f.write("t.txt", "text\n");
+    std::os::unix::fs::symlink("old-target", f.path().join("link")).unwrap();
+    f.commit("base", 1_700_000_000);
+    std::fs::remove_file(f.path().join("link")).unwrap();
+    std::os::unix::fs::symlink("new-target", f.path().join("link")).unwrap();
+    std::fs::remove_file(f.path().join("t.txt")).unwrap();
+    std::os::unix::fs::symlink("plain.txt", f.path().join("t.txt")).unwrap();
+    f.write("plain.txt", "a\nb\n");
+    let st = status(&f);
+    let e = |p: &str| st.entries.iter().find(|e| e.path == p).unwrap().clone();
+    assert!(!e("link").line_stageable(), "symlink retarget");
+    assert!(!e("t.txt").line_stageable(), "file → symlink");
+    assert!(e("plain.txt").line_stageable());
+}
