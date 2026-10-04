@@ -381,12 +381,12 @@ fn empty_view_rows_zero_no_panic() {
         d.toggle_whole_file(split);
         d.next_hunk(split, 1);
         d.next_hunk(split, -1);
-        d.apply_ready_pairing();
+        d.apply_ready_pairing(split);
         let _ = d.rows(split);
     }
 }
 
-const ALL_KEYS: &[char] = &['j', 'k', 'g', 'G', 'h', 'l', '[', ']', '{', '}', 'e', 'E', 's', 'w', 'F', 'o', 'D', 'z', 'r', 'y', 'Y', '<', '>', '1', '2', '?', 'T', '!'];
+const ALL_KEYS: &[char] = &['j', 'k', 'g', 'G', 'h', 'l', '[', ']', '{', '}', 'e', 'E', 's', 'w', 'W', 'F', 'o', 'D', 'z', 'r', 'y', 'Y', '<', '>', '1', '2', '?', 'T', '!'];
 
 fn mash(t: &mut H) {
     for focus in [Focus::History, Focus::Files, Focus::Diff] {
@@ -738,4 +738,29 @@ fn cancelled_or_foreign_highlights_are_not_used() {
     t.pump();
     assert!(t.highlights.contains(&key), "a cancelled highlight is requested again");
     assert!(t.app.diff_highlights().1.is_some());
+}
+
+#[test]
+fn split_cursor_stays_on_content_when_pairing_arrives() {
+    let mut old = String::from("head\n");
+    let mut new = old.clone();
+    old.push_str("alpha alpha alpha alpha\nlet value = compute(1, 2);\n");
+    new.push_str("let value = compute(1, 3);\nzzz qqq www eee\n");
+    for i in 0..10 {
+        old.push_str(&format!("tail {i}\n"));
+        new.push_str(&format!("tail {i}\n"));
+    }
+    let fd = Arc::new(FileDiff::from_bytes("f.txt", None, old.into_bytes(), new.into_bytes(), 0o100644, 0o100644, DiffOptions::default()));
+    let mut d = DiffState::new(key(), fd.clone());
+    let before = d.rows(true);
+    let tail = (0..before).find(|&i| matches!(d.vrow(i, true), Some(VRow::Split(gitty_core::diff::view::SplitRow::Context { new: 5, .. })))).unwrap();
+    d.cursor = tail;
+    d.scroll = 1;
+    for c in 0..fd.changes.len() {
+        fd.intraline(c);
+    }
+    d.apply_ready_pairing(true);
+    assert_ne!(d.rows(true), before, "fixture: pairing must change the split layout");
+    assert!(matches!(d.vrow(d.cursor, true), Some(VRow::Split(gitty_core::diff::view::SplitRow::Context { new: 5, .. }))), "cursor stays on tail 3");
+    assert_eq!(d.cursor - d.scroll, tail - 1, "and at the same screen offset");
 }

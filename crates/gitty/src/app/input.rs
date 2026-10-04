@@ -116,6 +116,13 @@ impl App {
                 };
                 self.refresh_diff();
             }
+            (KeyCode::Char('W'), _) => {
+                self.wrap = !self.wrap;
+                if let Some(d) = self.diff.as_mut() {
+                    d.hscroll = 0;
+                }
+                self.ensure_diff_visible();
+            }
             (KeyCode::Char('F'), _) => {
                 self.fullscreen = !self.fullscreen;
                 if self.fullscreen {
@@ -213,8 +220,8 @@ impl App {
                 let cap = self.diff_capacity();
                 if let Some(d) = self.diff.as_mut() {
                     d.cursor = target(d.cursor, d.rows(split), cap, m);
-                    d.ensure_visible(cap);
                 }
+                self.ensure_diff_visible();
             }
         }
     }
@@ -246,7 +253,7 @@ impl App {
     }
 
     fn hscroll(&mut self, by: i32) {
-        if let Some(d) = self.diff.as_mut() {
+        if let Some(d) = self.diff.as_mut().filter(|_| !self.wrap) {
             d.hscroll = (i32::from(d.hscroll) + by).clamp(0, 10_000) as u16;
         }
     }
@@ -327,7 +334,7 @@ impl App {
         } else if let Some(r) = inside(self.hits.diff_rows, x, y) {
             self.focus = Focus::Diff;
             let split = self.split_active();
-            let i = self.hits.diff_first + (y - r.y) as usize;
+            let Some(&i) = self.hits.diff_lines.get((y - r.y) as usize) else { return };
             let (og, ng) = (self.hits.diff_old_gutter, self.hits.diff_new_gutter);
             let Some(d) = self.diff.as_mut() else { return };
             let gap = match d.vrow(i, split) {

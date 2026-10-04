@@ -555,3 +555,48 @@ fn syntax_colours_keep_diff_backgrounds_and_follow_theme() {
     let (x, y) = find(&b, "fn b").unwrap();
     assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw2, t.app.theme.diff.add_bg));
 }
+
+#[test]
+fn wrap_breaks_long_lines_and_maps_screen_lines_to_rows() {
+    let f = Fixture::new();
+    let long: String = (0..60).map(|i| format!("w{i:02} ")).collect();
+    let body = |extra: &str| format!("first\n{extra}\nlast\n");
+    f.write("a.txt", body("short"));
+    f.commit("one", NOW - DAY);
+    f.write("a.txt", body(&long));
+    f.commit("two", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (120, 30));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    assert!(t.app.wrap);
+    let b = t.render(120, 30);
+    let s = text(&b);
+    insta::assert_snapshot!("wrap_120", s);
+    assert!(s.contains("w00") && s.contains("w59"), "the whole line is visible: {s}");
+    let (_, y0) = find(&b, "w00").unwrap();
+    let (_, y1) = find(&b, "w59").unwrap();
+    assert!(y1 > y0, "continuation lines below");
+    let r = t.app.hits.diff_rows.unwrap();
+    let lines = t.app.hits.diff_lines.clone();
+    let row = lines[(y0 - r.y) as usize];
+    assert_eq!(lines[(y1 - r.y) as usize], row, "every screen line of a wrapped row maps to it");
+    t.click(r.x + 20, y1);
+    assert_eq!(t.app.diff.as_ref().unwrap().cursor, row);
+    let (_, ylast) = find(&b, "last").unwrap();
+    t.click(r.x + 20, ylast);
+    assert_eq!(t.app.diff.as_ref().unwrap().cursor, lines[(ylast - r.y) as usize]);
+    assert!(t.app.diff.as_ref().unwrap().cursor > row);
+    // the cursor's lines stay on screen when moving through wrapped rows in a short pane
+    let mut t = H::new(&f, "github-dark", (120, 12));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    for _ in 0..8 {
+        t.key(KeyCode::Char('j'));
+        t.render(120, 12);
+        let d = t.app.diff.as_ref().unwrap();
+        let n = t.app.hits.diff_lines.iter().filter(|&&v| v == d.cursor).count();
+        assert!(n > 0, "cursor row {} visible in {:?}", d.cursor, t.app.hits.diff_lines);
+    }
+    t.key(KeyCode::Char('W'));
+    assert!(!t.app.wrap);
+}

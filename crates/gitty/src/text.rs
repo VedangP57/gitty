@@ -48,10 +48,18 @@ fn sym_of(s: &str) -> Sym {
 
 /// Lays out `line` into `out` (cleared first). Tabs expand to the next multiple of `tab`.
 pub fn layout(line: &[u8], tab: u8, out: &mut Vec<Glyph>) {
+    layout_until(line, tab, u32::MAX, out);
+}
+
+/// [`layout`], stopping once glyphs reach display column `max_col` (so drawing the visible part
+/// of a very long line costs only the visible part).
+pub fn layout_until(line: &[u8], tab: u8, max_col: u32, out: &mut Vec<Glyph>) {
     out.clear();
     let tab = tab.max(1) as u32;
-    if line.iter().all(|&b| (0x20..0x7f).contains(&b)) {
-        out.extend(line.iter().enumerate().map(|(i, &b)| Glyph {
+    let ascii = &line[..line.len().min(max_col as usize)];
+    // a non-ASCII byte right after the cut could be a combining mark joining the last glyph
+    if ascii.iter().all(|&b| (0x20..0x7f).contains(&b)) && line.get(ascii.len()).is_none_or(u8::is_ascii) {
+        out.extend(ascii.iter().enumerate().map(|(i, &b)| Glyph {
             byte: i as u32,
             col: i as u32,
             width: 1,
@@ -65,6 +73,9 @@ pub fn layout(line: &[u8], tab: u8, out: &mut Vec<Glyph>) {
     for chunk in line.utf8_chunks() {
         let valid = chunk.valid();
         for (i, g) in valid.grapheme_indices(true) {
+            if col >= max_col {
+                return;
+            }
             let byte = (base + i) as u32;
             // a cluster holding control bytes (e.g. "\r\n" is one grapheme) is escaped char by char
             if g.len() > 1 && g.bytes().any(|b| b < 0x20 || b == 0x7f) {
@@ -107,6 +118,21 @@ pub fn layout(line: &[u8], tab: u8, out: &mut Vec<Glyph>) {
             out.push(Glyph { byte: base as u32, col, width: 1, ctrl: false, sym: sym_of("\u{fffd}") });
             col += 1;
             base += chunk.invalid().len();
+        }
+    }
+}
+
+/// Splits laid-out glyphs into screen lines of `width` columns, breaking only between glyphs.
+/// `out` gets the glyph index each line starts at; there is always at least one line.
+pub fn wrap_starts(gs: &[Glyph], width: u32, out: &mut Vec<usize>) {
+    out.clear();
+    out.push(0);
+    let width = width.max(1);
+    let mut line_col = 0;
+    for (i, g) in gs.iter().enumerate() {
+        if i > 0 && g.col + u32::from(g.width) - line_col > width {
+            out.push(i);
+            line_col = g.col;
         }
     }
 }
@@ -317,5 +343,33 @@ mod tests {
             let t = truncate_end("日本語のテキスト", w);
             assert!(display_width(&t) <= w, "{w}: {t}");
         }
+    }
+
+    #[test]
+    fn layout_until_stops_at_the_column() {
+        let mut v = Vec::new();
+        layout_until(&[b'a'; 100_000], 4, 200, &mut v);
+        assert_eq!(v.len(), 200);
+        let s = "é".repeat(50_000);
+        layout_until(s.as_bytes(), 4, 200, &mut v);
+        assert_eq!(v.len(), 200);
+        let mut full = Vec::new();
+        layout(s.as_bytes(), 4, &mut full);
+        assert_eq!(&full[..200], &v[..]);
+    }
+
+    #[test]
+    fn wrap_starts_break_at_glyph_boundaries() {
+        let mut gs = Vec::new();
+        let mut starts = Vec::new();
+        layout("ab世cd".as_bytes(), 4, &mut gs);
+        wrap_starts(&gs, 3, &mut starts);
+        assert_eq!(starts, vec![0, 2, 4], "the wide glyph moves to the next line whole");
+        layout(b"", 4, &mut gs);
+        wrap_starts(&gs, 3, &mut starts);
+        assert_eq!(starts, vec![0]);
+        layout(b"abcdef", 4, &mut gs);
+        wrap_starts(&gs, 3, &mut starts);
+        assert_eq!(starts, vec![0, 3]);
     }
 }

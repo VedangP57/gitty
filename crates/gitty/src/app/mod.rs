@@ -24,7 +24,7 @@ use crate::dates::{DateMode, next_threshold};
 use crate::msg::{DiffKey, Gens, HlKey, Msg, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
 use crate::ui::layout::{self, LayoutInput, Mode, Panes, Sep};
-use diffstate::DiffState;
+use diffstate::{DiffState, Wrap};
 
 pub use crate::ui::layout::Focus;
 
@@ -65,7 +65,8 @@ pub struct Hits {
     pub files_rows: Option<Rect>,
     pub files_first: usize,
     pub diff_rows: Option<Rect>,
-    pub diff_first: usize,
+    /// Row index of each screen line of `diff_rows` (wrapped rows repeat).
+    pub diff_lines: Vec<usize>,
     /// (x, width) of the old and new line-number gutters of the (left) diff side.
     pub diff_old_gutter: (u16, u16),
     pub diff_new_gutter: (u16, u16),
@@ -194,6 +195,8 @@ pub struct App {
     pub date_mode: DateMode,
     pub density: Density,
     pub split_pref: Option<bool>,
+    /// `W`: wrap long diff lines instead of scrolling horizontally.
+    pub wrap: bool,
     pub ws: WsMode,
 
     pub overlay: Option<Overlay>,
@@ -267,6 +270,7 @@ impl App {
             file_gen: 0,
             force_text: false,
             split_pref: None,
+            wrap: false,
             overlay: None,
             toast: None,
             quit: false,
@@ -483,8 +487,9 @@ impl App {
                 }
             }
             Msg::IntralineDone { key } => {
+                let split = self.split_active();
                 if let Some(d) = self.diff.as_mut().filter(|d| d.key == key) {
-                    d.apply_ready_pairing();
+                    d.apply_ready_pairing(split);
                 }
             }
             Msg::DiffError { generation, key, detail } => {
@@ -692,10 +697,28 @@ impl App {
     }
 
     pub fn ensure_diff_visible(&mut self) {
-        let cap = self.diff_capacity();
+        let (cap, split, wrap) = (self.diff_capacity(), self.split_active(), self.diff_wrap());
         if let Some(d) = self.diff.as_mut() {
-            d.ensure_visible(cap);
+            d.ensure_visible(cap, split, wrap);
         }
+    }
+
+    /// Text widths of wrapped diff rows, matching `ui::diff`'s layout; None when not wrapping.
+    pub fn diff_wrap(&self) -> Option<Wrap> {
+        if !self.wrap {
+            return None;
+        }
+        let width = u32::from(self.panes().diff?.width);
+        let gutter = digits(self.diff.as_ref().map_or(1, |d| d.diff.old.len().max(d.diff.new.len()))) as u32 + 2;
+        let text = |w: u32, gutters: u32| w.saturating_sub(gutters * gutter + 1).max(1);
+        let tab = self.config.tab_size;
+        Some(if self.split_active() {
+            let left = width.saturating_sub(1) / 2;
+            Wrap { left: text(left, 1), right: text(width.saturating_sub(left + 1), 1), tab }
+        } else {
+            let w = text(width, 2);
+            Wrap { left: w, right: w, tab }
+        })
     }
 
     /// Requests decoding for undecoded rows in and around the viewport.
