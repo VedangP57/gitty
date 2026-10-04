@@ -947,6 +947,7 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
                 gitty::msg::WriteOp::UndoCommit => "undo".into(),
+                gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
             }),
             _ => None,
         })
@@ -1219,4 +1220,19 @@ fn hook_failure_opens_a_modal_and_keeps_the_message() {
     }
     assert_eq!(t.app.changes.commit.summary.text(), "Will fail");
     assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+}
+
+#[test]
+fn slow_status_refreshes_the_index_at_most_once_a_minute() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.app.handle_msg(Msg::StatusSlow);
+    assert_eq!(writes(t.app.take_requests_peek()), ["refresh index"]);
+    t.pump();
+    assert_eq!(t.app.changes.busy, 0, "a refresh does not show as work");
+    t.app.handle_msg(Msg::StatusSlow);
+    assert!(writes(t.app.take_requests_peek()).is_empty(), "throttled");
+    t.app.tick(t.clock + Duration::from_secs(61));
+    t.app.handle_msg(Msg::StatusSlow);
+    assert_eq!(writes(t.app.take_requests_peek()), ["refresh index"]);
 }

@@ -57,6 +57,9 @@ fn change_diff(h: &Handle, e: &gitty_core::status::StatusEntry, opts: gitty_core
     Ok((key, Arc::new(diff), texts, derived.flatten(), divergent))
 }
 
+/// A clean status this slow usually means racily clean index entries being re-hashed each run.
+const SLOW_STATUS: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
     match req {
         Request::Refs => match h.refs() {
@@ -177,8 +180,13 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             sink(Msg::Highlighted { key, spans: spans.map(Arc::new), cancelled });
         }
         Request::Status { generation } => {
+            let t = std::time::Instant::now();
             let result = gitty_core::git_cli::GitCli::new(h.owner()).status().map_err(|e| format!("{e:#}"));
+            let slow = result.is_ok() && t.elapsed() >= SLOW_STATUS;
             sink(Msg::Status { generation, result });
+            if slow {
+                sink(Msg::StatusSlow);
+            }
         }
         Request::ChangeDiff { generation, entry, opts, force_text } => match change_diff(h, &entry, opts, force_text) {
             Ok((key, diff, texts, staged, divergent)) => sink(Msg::ChangeDiff { generation, entry, key, diff, texts, staged, divergent }),

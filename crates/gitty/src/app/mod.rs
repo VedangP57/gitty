@@ -535,7 +535,7 @@ impl App {
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
         }
     }
 

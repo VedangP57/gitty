@@ -19,6 +19,8 @@ use crate::msg::{DiffKey, Msg, Request, WriteOp};
 /// While focused, status is re-read at least this often (spec §5.4).
 pub const BACKSTOP: Duration = Duration::from_secs(60);
 const LOG_LINES: usize = 500;
+/// Slow statuses trigger an index refresh at most this often.
+const REFRESH_EVERY: Duration = Duration::from_secs(60);
 
 /// File-list filter (`F`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,6 +141,7 @@ pub struct Changes {
     /// A gutter drag (mouse) is selecting lines.
     pub(super) gutter_drag: bool,
     pub commit: super::commit::CommitBox,
+    last_refresh: Option<Instant>,
 }
 
 impl Changes {
@@ -292,6 +295,7 @@ impl App {
                     self.changes.log.push(line);
                 }
             }
+            Msg::WriteDone { op: WriteOp::RefreshIndex, .. } => {}
             Msg::WriteDone { op, result } => {
                 self.changes.busy = self.changes.busy.saturating_sub(1);
                 match result {
@@ -308,6 +312,13 @@ impl App {
                 }
             }
             Msg::HeadMessage { result } => self.install_head_message(result),
+            Msg::StatusSlow => {
+                if self.changes.last_refresh.is_none_or(|t| self.clock.saturating_duration_since(t) >= REFRESH_EVERY) {
+                    self.changes.last_refresh = Some(self.clock);
+                    // not counted in `busy`: it is housekeeping, not the user's work
+                    self.outbox.push(Request::Write(WriteOp::RefreshIndex));
+                }
+            }
             Msg::Changed(c) => {
                 if c.intersects(Changed::WORKTREE | Changed::INDEX | Changed::IGNORE_RULES | Changed::STATE) {
                     self.request_status();

@@ -456,3 +456,17 @@ fn discards_copy_to_trash_and_refuse_changed_files() {
         assert!(saved.iter().any(|s| s == want), "{want:?} not in trash: {saved:?}");
     }
 }
+
+#[test]
+fn refresh_index_keeps_status_and_tolerates_changes() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.write("b.txt", "b\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "changed\n");
+    std::fs::remove_file(f.path().join("b.txt")).unwrap();
+    let before = f.git(&["status", "--porcelain"]);
+    let (r, _) = write(&f, gitty::msg::WriteOp::RefreshIndex);
+    assert_eq!(r, Ok(None));
+    assert_eq!(f.git(&["status", "--porcelain"]), before);
+}

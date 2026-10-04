@@ -93,6 +93,11 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             return Ok(Some(String::from_utf8_lossy(&head).trim().to_string()));
         }
         WriteOp::UndoCommit => return Ok(Some(cli.undo_commit()?)),
+        WriteOp::RefreshIndex => {
+            // exit 1 just means some files differ from the index; that is not a failure
+            let mut cmd = cli.cmd(gitty_core::git_cli::Kind::Write, &["update-index", "-q", "--refresh"]);
+            let _ = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()?;
+        }
     }
     Ok(None)
 }

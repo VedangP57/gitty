@@ -91,6 +91,9 @@ pub enum WriteOp {
     DiscardFiles { restore: Vec<String>, remove: Vec<String> },
     Commit { message: String, amend: bool },
     UndoCommit,
+    /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
+    /// re-hashing racily clean files.
+    RefreshIndex,
 }
 
 impl WriteOp {
@@ -103,6 +106,7 @@ impl WriteOp {
             WriteOp::Commit { amend: false, .. } => "committing",
             WriteOp::Commit { amend: true, .. } => "amending",
             WriteOp::UndoCommit => "undoing the commit",
+            WriteOp::RefreshIndex => "refreshing the index",
         }
     }
     /// Commits and undo move HEAD; refs and history refresh after them.
@@ -170,6 +174,8 @@ pub enum Msg {
     WriteDone { op: WriteOp, result: Result<Option<String>, String> },
     /// The watcher saw these kinds of change.
     Changed(Changed),
+    /// A status run was slow enough that refreshing the index is worth a try.
+    StatusSlow,
     HeadMessage { result: Result<String, String> },
     Error { what: String, detail: String },
 }
@@ -201,6 +207,7 @@ impl std::fmt::Debug for Msg {
             Msg::WriteLog { line } => write!(f, "WriteLog {{ {line} }}"),
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
+            Msg::StatusSlow => write!(f, "StatusSlow"),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
