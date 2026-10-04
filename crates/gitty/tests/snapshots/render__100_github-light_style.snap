@@ -1,0 +1,34 @@
+---
+source: crates/gitty/tests/render.rs
+expression: digest(&b)
+---
+ 0 7:0969da/f6f8fa 12:1f2328/f6f8fa 4:9a6700/f6f8fa 3:1b7c83/f6f8fa 49:1f2328/f6f8fa 11:656d76/f6f8fa 2:1f2328/f6f8fa 11:0969da/f6f8fa 1:1f2328/f6f8fa
+ 1 1:1f2328/ffffff 7:0969da/ffffff 4:656d76/ffffff 88:1f2328/ffffff
+ 2 1:1f2328/ffffff 1:9a6700/ffffff 1:1f2328/ffffff 20:656d76/ffffff 63:1f2328/ffffff 6:ffffff/0969da 1:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 3:656d76/ffffff 1:1f2328/ffffff
+ 3 1:1f2328/c9def7 1:9a6700/c9def7 92:1f2328/c9def7 2:cf222e/c9def7 1:1f2328/c9def7 2:656d76/c9def7 1:1f2328/c9def7
+ 4 73:1f2328/ffffff 13:0969da/d3e4f8 1:1f2328/ffffff 6:9a6700/ede4d1 1:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 2:656d76/ffffff 1:1f2328/ffffff
+ 5 90:1f2328/ffffff 2:cf222e/ffffff 1:1f2328/ffffff 6:656d76/ffffff 1:1f2328/ffffff
+ 6 100:1f2328/ffffff
+ 7 100:1f2328/ffffff
+ 8 100:1f2328/ffffff
+ 9 100:1f2328/ffffff
+10 100:1f2328/ffffff
+11 100:1f2328/ffffff
+12 100:1f2328/ffffff
+13 100:1f2328/ffffff
+14 100:1f2328/ffffff
+15 100:1f2328/ffffff
+16 100:1f2328/ffffff
+17 100:1f2328/ffffff
+18 100:1f2328/ffffff
+19 100:1f2328/ffffff
+20 100:1f2328/ffffff
+21 100:1f2328/ffffff
+22 100:1f2328/ffffff
+23 100:1f2328/ffffff
+24 100:1f2328/ffffff
+25 100:1f2328/ffffff
+26 100:1f2328/ffffff
+27 100:1f2328/ffffff
+28 100:1f2328/ffffff
+29 1:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 5:0969da/f6f8fa 8:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 10:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 19:656d76/f6f8fa

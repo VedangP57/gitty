@@ -346,7 +346,7 @@ impl App {
     fn split_fits(&self) -> bool {
         let Some(diff) = self.panes().diff else { return false };
         let digits = self.diff.as_ref().map_or(4, |d| digits(d.diff.old.len().max(d.diff.new.len())));
-        let half = digits + 2 + 50;
+        let half = digits + 3 + 50;
         diff.width as usize > 2 * half
     }
 
@@ -466,6 +466,9 @@ impl App {
     }
 
     pub fn handle_resize(&mut self, w: u16, h: u16) {
+        if self.size == (w, h) {
+            return;
+        }
         let before = self.split_active();
         self.size = (w, h);
         let after = self.split_active();

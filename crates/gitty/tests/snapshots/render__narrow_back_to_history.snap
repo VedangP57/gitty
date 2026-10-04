@@ -1,0 +1,34 @@
+---
+source: crates/gitty/tests/render.rs
+expression: insta_narrow
+---
+ gitty repo  ⎇ main  ↑2 ↓0                                                 [1] Changes  [2] History
+ History · 4
+ ↑ Empty commit message                                                                main  TU 12m
+ ↑ Describe the project                                                                       TU 5h
+   Add compute helper and print the total at the end of main              origin/main   v1.0  TU 3d
+   Initial commit                                                                         TU Aug 23
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ j/k move  enter files  tab pane  r scope  D dates  z density  T theme  ? help  q quit

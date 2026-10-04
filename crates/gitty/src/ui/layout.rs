@@ -72,6 +72,7 @@ pub const MIN_DIFF: u16 = 40;
 pub fn history_width(width: u16, ui: &UiState) -> u16 {
     let default = match Mode::of(width) {
         Mode::Medium => width * 2 / 5,
+        _ if width >= 200 => width / 4,
         _ => width * 32 / 100,
     };
     let right_min = match Mode::of(width) {
@@ -129,7 +130,8 @@ pub fn compute(i: &LayoutInput) -> Panes {
             p.seps.push((sep, Sep::History));
             let (hd, rest) = split_v(right, header_h);
             p.header = Some(hd);
-            let default_fw = (right.width * 30 / 100).clamp(MIN_FILES, MAX_FILES);
+            let pct = if w >= 200 { 22 } else { 30 };
+            let default_fw = (right.width * pct / 100).clamp(MIN_FILES, MAX_FILES);
             let fw = i.ui.files_width.unwrap_or(default_fw).clamp(MIN_FILES, MAX_FILES.min(rest.width.saturating_sub(MIN_DIFF + 1)).max(MIN_FILES));
             let (files, sep2, diff) = split_h(rest, fw);
             p.files = Some(files);
