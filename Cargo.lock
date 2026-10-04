@@ -864,6 +864,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "gix",
+ "libc",
  "proptest",
  "smallvec",
  "tempfile",
