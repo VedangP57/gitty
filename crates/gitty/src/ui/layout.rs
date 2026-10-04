@@ -40,6 +40,8 @@ pub enum Sep {
     Files,
     /// The diff title row below the file list (medium layout).
     FilesBelow,
+    /// Vertical line right of the Changes tab's left column.
+    Changes,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub struct Panes {
     pub header: Option<Rect>,
     pub files: Option<Rect>,
     pub diff: Option<Rect>,
+    /// Changes tab: the commit box under the file list.
+    pub commit: Option<Rect>,
     pub seps: Vec<(Rect, Sep)>,
 }
 
@@ -139,6 +143,49 @@ pub fn compute(i: &LayoutInput) -> Panes {
             p.diff = Some(diff);
         }
     }
+    p
+}
+
+/// Height of the Changes tab's commit box.
+pub const COMMIT_HEIGHT: u16 = 8;
+
+pub fn changes_width(width: u16, ui: &UiState) -> u16 {
+    let max = width.saturating_sub(MIN_DIFF + 1).max(MIN_FILES);
+    ui.changes_width.unwrap_or((width * 30 / 100).clamp(30, MAX_FILES)).clamp(MIN_FILES, max)
+}
+
+/// Changes tab: file list over the commit box on the left, the diff on the right. Narrow
+/// terminals show the left column or the diff.
+pub fn compute_changes(i: &LayoutInput) -> Panes {
+    let (w, h) = (i.width, i.height);
+    let top = Rect::new(0, 0, w, h.min(1));
+    let bottom = Rect::new(0, h.saturating_sub(1), w, u16::from(h >= 2));
+    let body = Rect::new(0, top.height, w, h.saturating_sub(top.height + bottom.height));
+    let mut p = Panes { top, bottom, body, ..Panes::default() };
+    if body.height == 0 || body.width == 0 {
+        return p;
+    }
+    if i.fullscreen {
+        p.diff = Some(body);
+        return p;
+    }
+    let left = match Mode::of(w) {
+        Mode::Narrow if i.focus == Focus::Diff => {
+            p.diff = Some(body);
+            return p;
+        }
+        Mode::Narrow => body,
+        _ => {
+            let (left, sep, right) = split_h(body, changes_width(w, i.ui));
+            p.seps.push((sep, Sep::Changes));
+            p.diff = Some(right);
+            left
+        }
+    };
+    let ch = COMMIT_HEIGHT.min(left.height / 2);
+    let (files, commit) = split_v(left, left.height - ch);
+    p.files = Some(files);
+    p.commit = (commit.height > 0).then_some(commit);
     p
 }
 
@@ -232,6 +279,29 @@ mod tests {
         for w in [120u16, 160, 200] {
             for h in 0..=8 {
                 let _ = inp(w, h, Focus::Diff);
+            }
+        }
+    }
+
+    #[test]
+    fn changes_layout_tiles_and_drills() {
+        let inp = |w, focus| compute_changes(&LayoutInput { width: w, height: 30, focus, fullscreen: false, header_height: 3, file_count: 4, ui: &UiState::default() });
+        let p = inp(140, Focus::Files);
+        let (files, commit, diff) = (p.files.unwrap(), p.commit.unwrap(), p.diff.unwrap());
+        assert_eq!(files.width + 1 + diff.width, 140);
+        assert_eq!((commit.x, commit.width, commit.height), (files.x, files.width, COMMIT_HEIGHT));
+        assert_eq!(files.bottom(), commit.y);
+        assert_eq!(commit.bottom(), diff.bottom());
+        let p = inp(100, Focus::Files);
+        assert!(p.diff.is_none() && p.files.unwrap().width == 100);
+        let p = inp(100, Focus::Diff);
+        assert!(p.files.is_none() && p.diff.unwrap().width == 100);
+        for w in 0..=45 {
+            for h in 0..=8 {
+                let p = compute_changes(&LayoutInput { width: w, height: h, focus: Focus::Files, fullscreen: false, header_height: 3, file_count: 0, ui: &UiState::default() });
+                for r in [p.files, p.commit, p.diff].into_iter().flatten() {
+                    assert!(r.right() <= w && r.bottom() <= h);
+                }
             }
         }
     }

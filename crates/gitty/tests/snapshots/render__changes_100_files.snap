@@ -1,0 +1,34 @@
+---
+source: crates/gitty/tests/render.rs
+expression: s
+---
+ gitty repo  ⎇ main                                                    [1] Changes (3)  [2] History
+ [~] 3 changed files
+ [ ] A new file.txt
+ [ ] M notes.txt
+ [~] M src/main.rs
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+ space stage  a all  d discard  F filter  enter diff  2 history  ? help  q quit

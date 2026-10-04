@@ -47,6 +47,8 @@ pub enum Overlay {
     ThemePicker { sel: usize, original: Theme },
     Help,
     ErrorDetail,
+    /// A destructive write waiting for Enter (or `y`); Esc cancels.
+    Confirm { title: String, body: String, op: crate::msg::WriteOp },
 }
 
 #[derive(Debug, Clone)]
@@ -336,7 +338,7 @@ impl App {
     }
 
     pub fn panes(&self) -> Panes {
-        layout::compute(&LayoutInput {
+        let input = LayoutInput {
             width: self.size.0,
             height: self.size.1,
             focus: self.focus,
@@ -344,7 +346,11 @@ impl App {
             header_height: self.header_height(),
             file_count: self.files.as_ref().map_or(0, |f| f.len()),
             ui: &self.ui_state,
-        })
+        };
+        match self.tab {
+            Tab::History => layout::compute(&input),
+            Tab::Changes => layout::compute_changes(&input),
+        }
     }
 
     pub fn mode(&self) -> Mode {
@@ -372,7 +378,7 @@ impl App {
 
     pub fn diff_capacity(&self) -> usize {
         let p = self.panes();
-        let banners = self.diff.as_ref().map_or(0, |d| d.banners().len());
+        let banners = self.diff.as_ref().map_or(0, |d| d.banners().len()) + usize::from(self.changes_notice().is_some());
         p.diff.map_or(1, |r| (r.height as usize).saturating_sub(1 + banners)).max(1)
     }
 
@@ -855,7 +861,9 @@ impl App {
 
     /// Re-requests the current file's diff with new options (whitespace mode, force text).
     pub fn refresh_diff(&mut self) {
-        if self.current_file().is_some() {
+        if self.tab == Tab::Changes {
+            self.request_change_diff();
+        } else if self.current_file().is_some() {
             self.schedule_diff();
         }
     }

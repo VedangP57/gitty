@@ -9,8 +9,11 @@ use gitty_core::stage::Texts;
 use gitty_core::status::{Status, StatusEntry};
 use gitty_core::watch::{Changed, IndexMark};
 
-use super::diffstate::DiffState;
-use super::{App, Tab, Toast};
+use gitty_core::diff::view::{Row, SplitRow};
+use gitty_core::stage::{build, change_lines};
+
+use super::diffstate::{DiffState, VRow};
+use super::{App, Overlay, Tab, Toast};
 use crate::msg::{DiffKey, Msg, Request, WriteOp};
 
 /// While focused, status is re-read at least this often (spec §5.4).
@@ -71,6 +74,44 @@ pub struct ChangeView {
     /// Staged flag per changed line; None when only whole-file staging applies.
     pub staged: Option<Vec<bool>>,
     pub divergent: bool,
+    /// Flag index of each old (HEAD) and new (worktree) line that changed.
+    old_flag: Vec<Option<u32>>,
+    new_flag: Vec<Option<u32>>,
+}
+
+impl ChangeView {
+    pub fn new(entry: StatusEntry, texts: Texts, diff: Arc<FileDiff>, staged: Option<Vec<bool>>, divergent: bool) -> ChangeView {
+        let mut old_flag = vec![None; diff.old.len() as usize];
+        let mut new_flag = vec![None; diff.new.len() as usize];
+        for (k, c) in change_lines(&diff.ops).iter().enumerate() {
+            match (c.old, c.new) {
+                (Some(o), _) => old_flag[o as usize] = Some(k as u32),
+                (_, Some(n)) => new_flag[n as usize] = Some(k as u32),
+                _ => {}
+            }
+        }
+        ChangeView { entry, texts, diff, staged, divergent, old_flag, new_flag }
+    }
+
+    /// Flag indices of the changed lines a diff row shows.
+    pub fn flags_of(&self, row: &VRow) -> Vec<usize> {
+        let (o, n) = match row {
+            VRow::Row(Row::Del { old, .. }) => (Some(*old), None),
+            VRow::Row(Row::Add { new, .. }) => (None, Some(*new)),
+            VRow::Split(SplitRow::Change { old, new, .. }) => (*old, *new),
+            _ => (None, None),
+        };
+        let o = o.and_then(|o| self.old_flag.get(o as usize).copied().flatten());
+        let n = n.and_then(|n| self.new_flag.get(n as usize).copied().flatten());
+        o.into_iter().chain(n).map(|k| k as usize).collect()
+    }
+
+    /// Whether the old/new line is staged (`old` picks the side).
+    pub fn is_staged(&self, line: u32, old: bool) -> bool {
+        let map = if old { &self.old_flag } else { &self.new_flag };
+        let k = map.get(line as usize).copied().flatten();
+        k.zip(self.staged.as_ref()).is_some_and(|(k, s)| s.get(k as usize).copied().unwrap_or(false))
+    }
 }
 
 #[derive(Default)]
@@ -92,7 +133,11 @@ pub struct Changes {
     status_again: bool,
     last_status: Option<Instant>,
     diff_gen: u64,
-    force_text: bool,
+    pub(super) force_text: bool,
+    /// `v`: the other end of the line range.
+    pub visual: Option<usize>,
+    /// A gutter drag (mouse) is selecting lines.
+    pub(super) gutter_drag: bool,
 }
 
 impl Changes {
@@ -232,7 +277,7 @@ impl App {
                     return None;
                 }
                 self.changes.diff_error = None;
-                self.install_change_diff(key, ChangeView { entry, texts, diff, staged, divergent });
+                self.install_change_diff(key, ChangeView::new(entry, texts, diff, staged, divergent));
             }
             Msg::ChangeDiffError { generation, path, detail } => {
                 if generation == self.changes.diff_gen {
@@ -303,6 +348,156 @@ impl App {
         self.diff = Some(d);
         self.changes.current = Some(view);
         self.request_highlights();
+    }
+
+    /// Why lines of the current file cannot be staged one by one (shown above the diff).
+    pub fn changes_notice(&self) -> Option<String> {
+        let v = self.changes.current.as_ref().filter(|_| self.tab == Tab::Changes)?;
+        if v.staged.is_some() || !v.diff.is_text() {
+            return None;
+        }
+        Some(if v.entry.is_conflicted() {
+            "Conflicted: resolve it, then stage the whole file".into()
+        } else if v.divergent {
+            "The index holds a version of its own (staged elsewhere): stage or unstage the whole file".into()
+        } else {
+            "Whitespace is hidden (w): only whole files can be staged".into()
+        })
+    }
+
+    fn whole_file_paths(e: &StatusEntry) -> Vec<String> {
+        let mut v = vec![e.path.clone()];
+        v.extend(e.orig_path.clone());
+        v
+    }
+
+    /// Space / checkbox: stage a whole file, or unstage it when fully staged.
+    pub fn toggle_file(&mut self, visible_pos: usize) {
+        let Some(e) = self.changes.visible().get(visible_pos).map(|&i| self.changes.entries()[i].clone()) else { return };
+        let paths = Self::whole_file_paths(&e);
+        if e.check() == gitty_core::status::Check::Staged {
+            self.write(WriteOp::Unstage(paths));
+        } else {
+            self.write(WriteOp::Stage(paths));
+        }
+    }
+
+    /// `a` in the file list / header checkbox: everything staged, or nothing.
+    pub fn toggle_all_files(&mut self) {
+        let all = !self.changes.entries().is_empty() && self.changes.entries().iter().all(|e| e.check() == gitty_core::status::Check::Staged);
+        self.write(if all { WriteOp::UnstageAll } else { WriteOp::StageAll });
+    }
+
+    /// Diff rows the next line action applies to: the `v` range, or the cursor row.
+    fn target_rows(&self) -> std::ops::RangeInclusive<usize> {
+        let c = self.diff.as_ref().map_or(0, |d| d.cursor);
+        match self.changes.visual {
+            Some(a) => a.min(c)..=a.max(c),
+            None => c..=c,
+        }
+    }
+
+    /// The hunk around the cursor: rows between the surrounding gap/header rows.
+    fn hunk_rows(&self) -> std::ops::RangeInclusive<usize> {
+        let Some(d) = &self.diff else { return 0..=0 };
+        let split = self.split_active();
+        let is_edge = |i: usize| matches!(d.vrow(i, split), None | Some(VRow::Header(_)) | Some(VRow::Row(Row::Gap { .. })) | Some(VRow::Split(SplitRow::Gap { .. })));
+        let mut lo = d.cursor;
+        while lo > 0 && !is_edge(lo - 1) {
+            lo -= 1;
+        }
+        let mut hi = d.cursor;
+        while !is_edge(hi + 1) {
+            hi += 1;
+        }
+        lo..=hi
+    }
+
+    fn flags_in(&self, rows: std::ops::RangeInclusive<usize>) -> Vec<usize> {
+        let (Some(d), Some(v)) = (&self.diff, &self.changes.current) else { return Vec::new() };
+        let split = self.split_active();
+        rows.filter_map(|i| d.vrow(i, split)).flat_map(|r| v.flags_of(&r)).collect()
+    }
+
+    /// Stages the lines, or unstages them when all are staged already.
+    fn toggle_flags(&mut self, ks: Vec<usize>) {
+        let Some(v) = self.changes.current.as_mut() else { return };
+        let Some(staged) = v.staged.as_mut() else {
+            let what = self.changes_notice().unwrap_or_else(|| "Only whole files can be staged here".into());
+            self.toast = Some(Toast { what, detail: String::new(), error: false });
+            return;
+        };
+        if ks.is_empty() {
+            return;
+        }
+        let on = !ks.iter().all(|&k| staged.get(k).copied().unwrap_or(false));
+        for &k in &ks {
+            if let Some(f) = staged.get_mut(k) {
+                *f = on;
+            }
+        }
+        let op = WriteOp::SetStaged { entry: v.entry.clone(), texts: v.texts.clone(), diff: v.diff.clone(), flags: staged.clone() };
+        self.changes.visual = None;
+        self.write(op);
+    }
+
+    /// Space in the diff.
+    pub fn toggle_lines(&mut self) {
+        let ks = self.flags_in(self.target_rows());
+        self.toggle_flags(ks);
+    }
+
+    /// `H`.
+    pub fn toggle_hunk(&mut self) {
+        let ks = self.flags_in(self.hunk_rows());
+        self.toggle_flags(ks);
+    }
+
+    /// `a` in the diff: the whole current file.
+    pub fn toggle_current_file(&mut self) {
+        self.toggle_file(self.changes.sel);
+    }
+
+    /// `d` in the file list: discard all changes to the selected file, after confirmation.
+    pub fn confirm_discard_file(&mut self) {
+        let Some(e) = self.changes.selected().cloned() else { return };
+        let in_head = e.head_blob.is_some() || e.head_mode != 0;
+        let (restore, remove) = if in_head { (vec![e.path.clone()], Vec::new()) } else { (Vec::new(), vec![e.path.clone()]) };
+        let what = if in_head { "Discard all changes to" } else { "Delete the new file" };
+        self.overlay = Some(Overlay::Confirm {
+            title: format!("{what} {}?", e.path),
+            body: "A copy goes to the Trash.".into(),
+            op: WriteOp::DiscardFiles { restore, remove },
+        });
+    }
+
+    /// `d` in the diff: discard the target lines from the working tree, after confirmation.
+    pub fn confirm_discard_lines(&mut self) {
+        let ks = self.flags_in(self.target_rows());
+        let Some(v) = &self.changes.current else { return };
+        if ks.is_empty() {
+            return;
+        }
+        if v.staged.is_none() || !v.texts.wt_is_raw {
+            let what = if !v.texts.wt_is_raw {
+                "This file is converted on checkout (line endings or filters): discard the whole file from the file list"
+            } else {
+                "Only whole files can be discarded here: use d in the file list"
+            };
+            self.toast = Some(Toast { what: what.into(), detail: String::new(), error: false });
+            return;
+        }
+        // keep every change except the discarded ones
+        let n = change_lines(&v.diff.ops).len();
+        let keep: Vec<bool> = (0..n).map(|k| !ks.contains(&k)).collect();
+        let bytes = build(&v.diff.old, &v.diff.new, &v.diff.ops, &keep);
+        let lines = if ks.len() == 1 { "line".to_string() } else { format!("{} lines", ks.len()) };
+        self.overlay = Some(Overlay::Confirm {
+            title: format!("Discard the selected {lines} in {}?", v.entry.path),
+            body: "A copy of the file goes to the Trash.".into(),
+            op: WriteOp::WriteFile { path: v.entry.path.clone(), bytes, expect: v.texts.wt_blob },
+        });
+        self.changes.visual = None;
     }
 
     /// Lets status runs mark the index state they saw, so the watcher skips it.

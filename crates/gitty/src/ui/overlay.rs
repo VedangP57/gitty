@@ -1,4 +1,4 @@
-//! Centered overlays: theme picker, help, error detail.
+//! Centered overlays: theme picker, help, error detail, confirmations.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -25,6 +25,9 @@ const HELP: &[(&str, &str)] = &[
     ("< >", "resize the focused pane"),
     ("T", "theme picker"),
     ("1 2", "Changes / History"),
+    ("Space a", "Changes: stage line or file / all"),
+    ("v H", "Changes: line range / hunk"),
+    ("d F", "Changes: discard (asks first) / filter files"),
     ("!", "error details"),
     ("q", "quit"),
 ];
@@ -82,6 +85,15 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 let y = inner.y + k as u16;
                 text(buf, inner.x, y, inner.right(), keys, st.fg(ui.accent));
                 text(buf, inner.x + 22, y, inner.right(), what, st);
+            }
+        }
+        Overlay::Confirm { title, body, .. } => {
+            let w = (crate::text::display_width(title).max(crate::text::display_width(body)) as u16 + 6).clamp(40, area.width.saturating_sub(4).max(40));
+            let inner = boxed(app, buf, area, w, 6, "Confirm");
+            text(buf, inner.x, inner.y, inner.right(), title, st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
+            if inner.height > 3 {
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (" discard · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::ErrorDetail => {

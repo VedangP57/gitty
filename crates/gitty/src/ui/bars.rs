@@ -18,7 +18,11 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
     fill(buf, r, base);
     let muted = base.fg(ui.muted);
     let y = r.y;
-    let tabs = [(Tab::Changes, "[1] Changes"), (Tab::History, "[2] History")];
+    let changes = match app.changes.entries().len() {
+        0 => "[1] Changes".to_string(),
+        n => format!("[1] Changes ({n})"),
+    };
+    let tabs = [(Tab::Changes, changes.as_str()), (Tab::History, "[2] History")];
     let tabs_w: u16 = tabs.iter().map(|t| width(t.1) + 2).sum();
     let right = r.right();
     let mut tx = right.saturating_sub(tabs_w);
@@ -56,7 +60,10 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
 
 fn hints(app: &App) -> &'static [(&'static str, &'static str)] {
     if app.tab == Tab::Changes {
-        return &[("2", "history"), ("T", "theme"), ("?", "help"), ("q", "quit")];
+        return match app.focus {
+            Focus::Diff => &[("space", "stage line"), ("v", "range"), ("H", "hunk"), ("a", "file"), ("d", "discard"), ("[ ]", "hunk"), ("esc", "back")],
+            _ => &[("space", "stage"), ("a", "all"), ("d", "discard"), ("F", "filter"), ("enter", "diff"), ("2", "history"), ("?", "help"), ("q", "quit")],
+        };
     }
     match app.focus {
         Focus::History => &[("j/k", "move"), ("enter", "files"), ("tab", "pane"), ("r", "scope"), ("D", "dates"), ("z", "density"), ("T", "theme"), ("?", "help"), ("q", "quit")],

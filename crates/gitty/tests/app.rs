@@ -924,3 +924,164 @@ fn focus_gained_and_backstop_refresh_status() {
     t.app.handle_focus(false);
     assert_eq!(t.app.next_deadline(), None, "no backstop while unfocused");
 }
+
+/// Changes tab with `a.txt` selected and its diff loaded.
+fn changes_tab(f: &Fixture) -> H {
+    let mut t = H::new(f);
+    t.pump();
+    t.app.set_tab(gitty::app::Tab::Changes);
+    t.pump();
+    t
+}
+
+fn writes(r: &[Request]) -> Vec<String> {
+    r.iter()
+        .filter_map(|r| match r {
+            Request::Write(op) => Some(match op {
+                gitty::msg::WriteOp::Stage(p) => format!("stage {p:?}"),
+                gitty::msg::WriteOp::Unstage(p) => format!("unstage {p:?}"),
+                gitty::msg::WriteOp::StageAll => "stage all".into(),
+                gitty::msg::WriteOp::UnstageAll => "unstage all".into(),
+                gitty::msg::WriteOp::SetStaged { flags, .. } => format!("lines {flags:?}"),
+                gitty::msg::WriteOp::WriteFile { path, .. } => format!("write {path}"),
+                gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
+                gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
+                gitty::msg::WriteOp::UndoCommit => "undo".into(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn index_of(f: &Fixture, p: &str) -> String {
+    f.git(&["show", &format!(":{p}")])
+}
+
+fn diff_row(t: &H, want: &str) -> usize {
+    let d = t.app.diff.as_ref().unwrap();
+    (0..d.rows(false)).find(|&i| row_kind(d, i) == want).unwrap_or_else(|| panic!("no {want} row"))
+}
+
+#[test]
+fn space_and_a_toggle_whole_files() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch(' ');
+    assert_eq!(writes(t.app.take_requests_peek()), ["stage [\"a.txt\"]"]);
+    t.pump();
+    assert_eq!(t.app.changes.selected().unwrap().check(), gitty_core::status::Check::Staged);
+    t.ch(' ');
+    assert_eq!(writes(t.app.take_requests_peek()), ["unstage [\"a.txt\"]"]);
+    t.pump();
+    t.ch('a');
+    assert_eq!(writes(t.app.take_requests_peek()), ["stage all"]);
+    t.pump();
+    t.ch('a');
+    assert_eq!(writes(t.app.take_requests_peek()), ["unstage all"]);
+}
+
+#[test]
+fn space_stages_the_line_under_the_cursor_and_range_and_hunk() {
+    let base: Vec<String> = (1..=12).map(|i| i.to_string()).collect();
+    let mut wt = base.clone();
+    wt[1] = "TWO".into();
+    wt.extend(["x13".to_string(), "x14".to_string()]);
+    let text = |v: &[String]| v.iter().map(|l| format!("{l}\n")).collect::<String>();
+    let f = Fixture::new();
+    f.write("a.txt", text(&base));
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", text(&wt));
+    let index = |f: &Fixture| format!("{}\n", index_of(f, "a.txt"));
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add1");
+    t.ch(' ');
+    assert_eq!(writes(t.app.take_requests_peek()), ["lines [false, true, false, false]"]);
+    assert_eq!(t.app.changes.current.as_ref().unwrap().staged, Some(vec![false, true, false, false]), "marks update at once");
+    t.pump();
+    let mut want = base.clone();
+    want.insert(2, "TWO".into());
+    assert_eq!(index(&f), text(&want), "unstaged deletion stays, staged addition follows it");
+    // v + j + space: both added lines at the end
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add12");
+    t.ch('v');
+    t.ch('j');
+    t.ch(' ');
+    t.pump();
+    want.extend(["x13".to_string(), "x14".to_string()]);
+    assert_eq!(index(&f), text(&want));
+    // H on the first hunk stages its deletion too; H again unstages that hunk only
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "del1");
+    t.ch('H');
+    t.pump();
+    assert_eq!(index(&f), text(&wt));
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "del1");
+    t.ch('H');
+    t.pump();
+    let mut want = base.clone();
+    want.extend(["x13".to_string(), "x14".to_string()]);
+    assert_eq!(index(&f), text(&want));
+}
+
+#[test]
+fn whitespace_hidden_or_divergent_files_refuse_line_staging() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.ch('w');
+    t.pump();
+    t.app.diff.as_mut().unwrap().cursor = 1;
+    t.ch(' ');
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+    assert!(t.app.toast.as_ref().unwrap().what.to_lowercase().contains("whitespace"), "{:?}", t.app.toast.as_ref().map(|t| &t.what));
+}
+
+#[test]
+fn discard_asks_first_and_keeps_a_trash_copy() {
+    let trash = tempfile::tempdir().unwrap();
+    // SAFETY: every test in this binary that sets GITTY_TRASH_DIR runs its writes in-process
+    unsafe { std::env::set_var("GITTY_TRASH_DIR", trash.path()) };
+    let f = Fixture::new();
+    f.write("a.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "1\nTWO\n3\nfour\n");
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch('d');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })));
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert!(writes(t.app.take_requests_peek()).is_empty(), "cancelled");
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    assert_eq!(writes(t.app.take_requests_peek()), ["write a.txt"]);
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "1\nTWO\n3\n");
+    assert_eq!(std::fs::read_dir(trash.path()).unwrap().count(), 1);
+    // whole file from the file list
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "1\n2\n3\n");
+    assert!(t.app.changes.entries().is_empty());
+}
+
+#[test]
+fn filter_cycles_what_the_list_shows() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    assert_eq!(t.app.changes.visible().len(), 2);
+    t.ch('F');
+    assert_eq!(t.app.changes.filter, gitty::app::changes::Filter::Included);
+    assert_eq!(t.app.changes.visible().len(), 0);
+    t.ch('F');
+    t.ch('F');
+    assert_eq!(t.app.changes.filter, gitty::app::changes::Filter::New);
+    t.pump();
+    assert_eq!(t.app.changes.selected().unwrap().path, "new.txt");
+    assert_eq!(t.app.diff.as_ref().unwrap().key.path, "new.txt");
+}

@@ -1,0 +1,34 @@
+---
+source: crates/gitty/tests/render.rs
+expression: s
+---
+ gitty repo  ⎇ main                                                    [1] Changes (3)  [2] History
+ src/main.rs  +2 −2
+ ↑        ⋯ 5 lines   @@ -6,7 +6,7 @@ fn main() {
+  6   6       step(2);
+  7   7       step(3);
+  8   8       step(4);
+✓ 9     -     step(5);
+✓     9 +     let total = compute(5, 7);
+ 10  10       step(6);
+ 11  11       step(7);
+ 12  12       step(8);
+ ↑   ↓    ⋯ 10 lines   @@ -23,7 +23,7 @@ fn main() {
+ 23  23       step(19);
+ 24  24       step(20);
+ 25  25       step(21);
+ 26     -     step(22);
+     26 +     println!("done: {}", total);
+ 27  27       step(23);
+ 28  28       step(24);
+ 29  29       step(25);
+     ↓    ⋯ 5 lines
+
+
+
+
+
+
+
+
+ space stage line  v range  H hunk  a file  d discard  [ ] hunk  esc back
