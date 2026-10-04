@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod commit;
+pub mod net;
 pub mod diffstate;
 mod input;
 
@@ -52,6 +53,10 @@ pub enum Overlay {
     Confirm { title: String, body: String, op: crate::msg::WriteOp },
     /// Full output of a failed write (hooks), shown until dismissed.
     Log { title: String, body: String },
+    /// git or ssh asks for input (masked unless it is a username).
+    Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
+    /// A pull found local and upstream commits: merge, rebase or cancel.
+    Diverged,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +226,20 @@ pub struct App {
     /// The terminal has focus (FocusGained/FocusLost); the status backstop runs only then.
     pub focused: bool,
     index_mark: Option<gitty_core::watch::IndexMark>,
+    pub net: Option<net::NetJob>,
+    /// (gitty executable, trampoline socket) for interactive network jobs.
+    pub askpass: Option<(PathBuf, PathBuf)>,
+    pub ask_handle: Option<crate::askpass::AskHandle>,
+    asks: std::collections::VecDeque<crate::askpass::Ask>,
+    /// The last fetch (or launch); auto-fetch runs `auto_fetch_minutes` after it.
+    last_fetch: Instant,
+    /// A remote whose credentials auto-fetch could not supply; auto-fetch is off until a manual
+    /// fetch succeeds.
+    pub needs_auth: Option<String>,
+    /// When a repository counts as large enough to tune (lowered in tests).
+    pub tune_thresholds: gitty_core::tune::Thresholds,
+    last_tune: Option<Instant>,
+    tune_announced: bool,
 }
 
 impl App {
@@ -295,6 +314,15 @@ impl App {
             changes: changes::Changes::default(),
             focused: false,
             index_mark: None,
+            net: None,
+            askpass: None,
+            ask_handle: None,
+            asks: Default::default(),
+            last_fetch: i.clock,
+            needs_auth: None,
+            tune_thresholds: gitty_core::tune::Thresholds::DEFAULT,
+            last_tune: None,
+            tune_announced: false,
         };
         app.request_status();
         app
@@ -408,6 +436,7 @@ impl App {
     pub fn handle_msg(&mut self, m: Msg) {
         self.dirty = true;
         let Some(m) = self.handle_changes_msg(m) else { return };
+        let Some(m) = self.handle_net_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
@@ -434,8 +463,12 @@ impl App {
                     return;
                 }
                 let old = self.history_len;
+                let finished = done && !self.history_done;
                 self.history_len = len;
                 self.history_done = done;
+                if finished {
+                    self.request_tune();
+                }
                 if let Some(want) = self.reselect {
                     let found = self.history.as_ref().and_then(|h| {
                         let h = h.read().unwrap_or_else(PoisonError::into_inner);
@@ -536,6 +569,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
+            Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
         }
     }
 
@@ -562,10 +596,11 @@ impl App {
             self.fire_diff();
         }
         self.tick_changes(at);
+        self.tick_net(at);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.diff_deadline, self.status_deadline()].into_iter().flatten().min()
+        [self.diff_deadline, self.status_deadline(), self.auto_fetch_deadline()].into_iter().flatten().min()
     }
 
     /// Earliest epoch second at which a visible relative date changes.

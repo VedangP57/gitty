@@ -783,3 +783,30 @@ fn amend_shows_a_warning_banner_and_clicking_a_field_focuses_it() {
     assert_eq!(t.app.focus, Focus::Commit);
     assert_eq!(t.app.changes.commit.field, gitty::app::commit::Field::CoAuthors);
 }
+
+#[test]
+fn password_prompt_is_masked_and_progress_shows_in_the_top_bar() {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (120, 30));
+    t.app.handle_msg(Msg::NetStarted { op: gitty::msg::NetOp::Fetch, label: "Fetching origin".into(), remote: Some("origin".into()), cancel: None });
+    t.app.handle_msg(Msg::NetProgress { op: gitty::msg::NetOp::Fetch, fraction: 0.425 });
+    let ask = gitty::askpass::Ask { id: 7, prompt: "Password for 'https://ann@example.com': ".into(), kind: gitty::askpass::AskKind::Secret };
+    t.app.handle_msg(Msg::Ask(ask));
+    type_str(&mut t, "hunter2");
+    let s = text(&t.render(120, 30));
+    assert!(s.contains("Fetching origin 42%"), "{s}");
+    assert!(s.contains("•••••••") && !s.contains("hunter2"), "{s}");
+    insta::assert_snapshot!("password_prompt", s);
+}
+
+#[test]
+fn host_key_prompt_shows_the_fingerprint_and_the_question() {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (100, 30));
+    let prompt = "The authenticity of host 'github.com (140.82.121.4)' can't be established.\nED25519 key fingerprint is SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU.\nThis key is not known by any other names.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ";
+    t.app.handle_msg(Msg::Ask(gitty::askpass::Ask { id: 1, prompt: prompt.into(), kind: gitty::askpass::classify(prompt) }));
+    let s = text(&t.render(100, 30));
+    assert!(s.contains("SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"), "{s}");
+    assert!(s.contains("continue connecting"), "{s}");
+    assert!(s.contains("y yes"), "{s}");
+}

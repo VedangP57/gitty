@@ -20,7 +20,7 @@ use crate::theme::{ColorDepth, Registry};
 use crate::workers::Workers;
 use crate::{input, term, ui};
 
-const USAGE: &str = "usage: gitty [--theme NAME] [PATH]\n\nA fast terminal git client. Press ? inside for keys.";
+const USAGE: &str = "usage: gitty [--theme NAME] [PATH]\n       gitty untune [PATH]   undo the config gitty set on a large repo\n\nA fast terminal git client. Press ? inside for keys.";
 const PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 const OUTPUT_BUFFER: usize = 256 * 1024;
 
@@ -64,7 +64,23 @@ fn epoch() -> i64 {
 }
 
 /// Runs gitty; returns the process exit code.
+/// `gitty untune [PATH]`: unsets the config keys auto-tuning set, and nothing else.
+fn untune(args: &[String]) -> anyhow::Result<i32> {
+    let path = args.first().map_or(".", String::as_str);
+    let repo = Repo::open(path)?;
+    let keys = gitty_core::tune::untune(&gitty_core::git_cli::GitCli::new(&repo))?;
+    if keys.is_empty() {
+        println!("gitty untune: nothing to undo (gitty has not tuned this repository)");
+    } else {
+        println!("gitty untune: unset {}", keys.join(", "));
+    }
+    Ok(0)
+}
+
 pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
+    if args.first().map(String::as_str) == Some("untune") {
+        return untune(&args[1..]);
+    }
     let args = match parse(args) {
         Ok(a) => a,
         Err(code) => return Ok(code),
@@ -118,6 +134,10 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
     let watcher = gitty_core::watch::Watcher::spawn(&repo, move |c| {
         let _ = watch_tx.send(crate::msg::Msg::Changed(c));
     });
+    let ask_tx = msg_tx.clone();
+    let asker = crate::askpass::AskServer::start(move |a| {
+        let _ = ask_tx.send(crate::msg::Msg::Ask(a));
+    });
     let workers = Workers::spawn(repo.clone(), gens.clone(), msg_tx);
     input::spawn(in_tx);
 
@@ -138,6 +158,14 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
     // focus reports arrive only on change, so assume the terminal is focused at launch
     app.focused = true;
     let mut problems: Vec<String> = warnings;
+    match (&asker, std::env::current_exe()) {
+        (Ok(s), Ok(exe)) => {
+            app.set_askpass(exe, s.socket().to_path_buf());
+            app.ask_handle = Some(s.handle());
+        }
+        (Err(e), _) => problems.push(format!("password prompts are unavailable; network jobs that need one will fail: {e:#}")),
+        (_, Err(e)) => problems.push(format!("password prompts are unavailable (gitty cannot find its own executable): {e}")),
+    }
     match &watcher {
         Ok(w) => app.set_index_mark(w.index_mark()),
         Err(e) => problems.push(format!("watching the repository for changes failed; refresh on focus only: {e:#}")),

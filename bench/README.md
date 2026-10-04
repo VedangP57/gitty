@@ -110,3 +110,17 @@ staging one line the way Space does (change diff load, then `SetStaged` → `git
   minute (`slow_status_refreshes_the_index_at_most_once_a_minute`).
 - Save → watcher is dominated by the 50 ms quiet window of the debouncer (FSEvents itself delivers in
   ~10–15 ms); bursts such as a formatter rewriting many files still produce one status run.
+
+## Network (M5) — 2026-10-04, release build, 140×30 pty (pyte), local bare remote, load average ~5
+
+Driven end to end through the real binary: fetch, a diverged pull (rebase), push, a password prompt
+answered through the askpass trampoline by a real `ext::` transport that calls `$GIT_ASKPASS`, and
+cancel on a hanging remote.
+
+| Operation | Time | Budget |
+|---|---|---|
+| `f` → progress in the top bar | 38 ms | < 100 ms ✅ |
+| fetch of a 20 MB commit (local remote) | 0.95 s | — |
+| prompt request → masked prompt on screen | 0.24 s (includes the transport starting) | — |
+| `x` → "Fetch cancelled" (process group killed, nothing left running) | 7 ms | < 1 s ✅ |
+| `git commit-graph write --reachable --changed-paths`, git/git (85k commits), maintenance thread | 6.3 s | off the UI and writer threads ✅ |

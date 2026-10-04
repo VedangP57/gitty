@@ -138,6 +138,34 @@ pub enum Request {
     Write(WriteOp),
     /// HEAD's full message, for amend.
     HeadMessage,
+    /// A network job, on the single network thread. `background` jobs (auto-fetch) report quietly.
+    Net { op: NetOp, mode: gitty_core::net::Mode, background: bool },
+    /// Auto-tuning check (and apply) on the maintenance thread.
+    Tune { history_len: usize, th: gitty_core::tune::Thresholds },
+}
+
+/// What the user asked the network thread to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetOp {
+    Fetch,
+    /// Fetch the upstream remote, then fast-forward.
+    Pull,
+    /// After a diverged pull: merge or rebase onto the upstream.
+    PullMerge,
+    PullRebase,
+    Push,
+}
+
+impl NetOp {
+    pub fn verb(self) -> &'static str {
+        match self {
+            NetOp::Fetch => "Fetch",
+            NetOp::Pull => "Pull",
+            NetOp::PullMerge => "Merge",
+            NetOp::PullRebase => "Rebase",
+            NetOp::Push => "Push",
+        }
+    }
 }
 
 impl Request {
@@ -177,6 +205,14 @@ pub enum Msg {
     WriteDone { op: WriteOp, result: Result<Option<String>, String> },
     /// The watcher saw these kinds of change.
     Changed(Changed),
+    /// A network step started; `cancel` is None for local steps that must not be interrupted.
+    NetStarted { op: NetOp, label: String, remote: Option<String>, cancel: Option<gitty_core::net::Cancel> },
+    NetProgress { op: NetOp, fraction: f32 },
+    NetDone { op: NetOp, background: bool, outcome: gitty_core::net::Outcome },
+    /// git or ssh asks for a username, password, passphrase or yes/no through the trampoline.
+    Ask(crate::askpass::Ask),
+    /// What auto-tuning applied (empty when nothing was needed).
+    Tuned { applied: Vec<gitty_core::tune::Action>, error: Option<String> },
     /// A status run was slow enough that refreshing the index is worth a try.
     StatusSlow,
     HeadMessage { result: Result<String, String> },
@@ -211,6 +247,11 @@ impl std::fmt::Debug for Msg {
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
             Msg::StatusSlow => write!(f, "StatusSlow"),
+            Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
+            Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
+            Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),
+            Msg::Tuned { applied, error } => write!(f, "Tuned {{ {applied:?}, error: {} }}", error.is_some()),
+            Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }

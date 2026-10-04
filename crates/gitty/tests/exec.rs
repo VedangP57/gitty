@@ -495,3 +495,37 @@ fn symlink_diffs_offer_no_line_staging() {
     let (_, _, _, _, staged, _) = change_diff(&f, "link");
     assert_eq!(staged, None);
 }
+
+#[test]
+fn local_pull_steps_wait_for_the_writer() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let bare = f.add_bare_upstream();
+    common::push_as_someone_else(&bare, "b.txt");
+    f.git(&["fetch", "-q"]);
+    let guard = gitty::write::lock();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = f.path();
+    std::thread::spawn(move || {
+        let h = gitty_core::Repo::open(&path).unwrap().handle();
+        let req = Request::Net { op: gitty::msg::NetOp::Pull, mode: gitty_core::net::Mode::Background, background: false };
+        exec(&h, req, &mut |m| {
+            let _ = tx.send(m);
+        }, &Gens::default());
+    });
+    // the fetch half may run; the fast-forward must not start while a write holds the lock
+    let mut seen = Vec::new();
+    while let Ok(m) = rx.recv_timeout(Duration::from_millis(500)) {
+        seen.push(format!("{m:?}"));
+    }
+    assert!(!seen.iter().any(|m| m.contains("Updating")), "{seen:?}");
+    drop(guard);
+    let done = loop {
+        let m = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        if matches!(m, Msg::NetDone { .. }) {
+            break m;
+        }
+    };
+    assert!(format!("{done:?}").contains("Ok"), "{done:?}");
+}

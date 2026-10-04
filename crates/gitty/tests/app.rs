@@ -1306,3 +1306,298 @@ fn discarding_a_staged_line_unstages_it_too() {
     assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "1\n2\n3\n");
     assert_eq!(f.git(&["status", "--porcelain"]), "", "the discarded line is not left staged");
 }
+
+// ---- network ----
+
+fn remote_fixture() -> (Fixture, std::path::PathBuf) {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let bare = f.add_bare_upstream();
+    (f, bare)
+}
+
+fn toast_text(t: &H) -> String {
+    t.app.toast.as_ref().map(|t| format!("{} | {}", t.what, t.detail)).unwrap_or_default()
+}
+
+#[test]
+fn f_fetches_and_p_fast_forwards() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "b.txt");
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('f');
+    t.pump();
+    assert_eq!(f.git(&["rev-list", "--count", "HEAD..origin/main"]), "1");
+    assert!(toast_text(&t).contains("Fetched"), "{}", toast_text(&t));
+    assert_eq!(t.app.behind.len(), 1, "refs and ahead/behind refreshed");
+    assert!(t.app.net.is_none());
+    t.ch('p');
+    t.pump();
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), f.git(&["rev-parse", "origin/main"]));
+    assert!(f.path().join("b.txt").exists());
+}
+
+#[test]
+fn diverged_pull_offers_merge_or_rebase() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "b.txt");
+    f.write("c.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('p');
+    t.pump();
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Diverged)), "{}", toast_text(&t));
+    t.ch('r');
+    t.pump();
+    assert_eq!(f.git(&["rev-list", "--count", "HEAD..origin/main"]), "0");
+    assert_eq!(f.git(&["rev-list", "--count", "origin/main..HEAD"]), "1");
+    assert!(t.app.overlay.is_none());
+}
+
+#[test]
+fn shift_p_publishes_a_new_branch() {
+    let (f, _bare) = remote_fixture();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('P');
+    t.pump();
+    assert_eq!(f.git(&["config", "branch.topic.merge"]), "refs/heads/topic");
+    assert!(toast_text(&t).contains("Pushed"), "{}", toast_text(&t));
+}
+
+#[test]
+fn rejected_push_says_pull_first() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "b.txt");
+    f.write("c.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('P');
+    t.pump();
+    let toast = t.app.toast.clone().unwrap();
+    assert!(toast.error && toast.what.contains("pull first"), "{toast:?}");
+}
+
+#[test]
+fn one_job_at_a_time_and_x_cancels() {
+    let (f, _) = remote_fixture();
+    f.script_remote("hang", "sleep 30");
+    f.git(&["config", "branch.main.remote", "hang"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('f');
+    let reqs: Vec<Request> = t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Net { .. })).collect();
+    assert_eq!(reqs.len(), 1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (path, gens) = (f.path(), t.gens.clone());
+    let req = reqs.into_iter().next().unwrap();
+    std::thread::spawn(move || {
+        let h = gitty_core::Repo::open(&path).unwrap().handle();
+        exec(&h, req, &mut |m| {
+            let _ = tx.send(m);
+        }, &gens)
+    });
+    let started = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(matches!(started, Msg::NetStarted { .. }), "{started:?}");
+    t.app.handle_msg(started);
+    assert!(t.app.net_bar().is_some_and(|b| b.contains("x cancel")), "{:?}", t.app.net_bar());
+    t.ch('p');
+    assert!(toast_text(&t).contains("Wait for"), "{}", toast_text(&t));
+    assert!(t.app.take_requests().iter().all(|r| !matches!(r, Request::Net { .. })));
+    t.ch('x');
+    let done = loop {
+        match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            m @ Msg::NetDone { .. } => break m,
+            m => t.app.handle_msg(m),
+        }
+    };
+    t.app.handle_msg(done);
+    assert!(t.app.net.is_none());
+    assert!(toast_text(&t).contains("cancelled"), "{}", toast_text(&t));
+    assert!(!t.app.toast.as_ref().unwrap().error, "cancel is not an error");
+}
+
+#[test]
+fn prompt_overlay_relays_the_answer_and_esc_cancels() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let server = gitty::askpass::AskServer::start(move |a| {
+        let _ = tx.send(a);
+    })
+    .unwrap();
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.ask_handle = Some(server.handle());
+    let helper = |prompt: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_gitty")).arg(prompt).env("GITTY_ASKPASS_SOCK", server.socket()).stdout(std::process::Stdio::piped()).spawn().unwrap()
+    };
+    let child = helper("Password for 'https://ann@example.com': ");
+    t.app.handle_msg(Msg::Ask(rx.recv_timeout(Duration::from_secs(5)).unwrap()));
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })));
+    for c in "hunter2q".chars() {
+        t.ch(c);
+    }
+    t.key(KeyCode::Backspace);
+    assert!(!t.app.quit, "typing q into a prompt does not quit");
+    t.key(KeyCode::Enter);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hunter2\n");
+    assert!(t.app.overlay.is_none());
+    let child = helper("Username for 'https://example.com': ");
+    t.app.handle_msg(Msg::Ask(rx.recv_timeout(Duration::from_secs(5)).unwrap()));
+    t.key(KeyCode::Esc);
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+}
+
+// ---- auto-fetch ----
+
+fn net_requests(t: &mut H) -> Vec<Request> {
+    t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Net { .. })).collect()
+}
+
+/// Runs only the network requests (with their follow-ups' messages), never the clock.
+fn run_net(t: &mut H, reqs: Vec<Request>) {
+    for m in t.exec_all(reqs) {
+        t.app.handle_msg(m);
+    }
+    t.app.focused = false;
+    t.pump();
+    t.app.focused = true;
+}
+
+const FIVE_MIN: Duration = Duration::from_secs(300);
+
+#[test]
+fn auto_fetch_waits_for_focus_and_idleness() {
+    let (f, _) = remote_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.auto_fetch_deadline(), None, "unfocused");
+    t.app.focused = true;
+    let d = t.app.auto_fetch_deadline().expect("focused, idle, with an upstream");
+    assert!(d >= t.clock + FIVE_MIN - Duration::from_secs(1) && d <= t.clock + FIVE_MIN + Duration::from_secs(1));
+    t.app.config.auto_fetch_minutes = 0;
+    assert_eq!(t.app.auto_fetch_deadline(), None, "disabled");
+    t.app.config.auto_fetch_minutes = 5;
+    t.app.start_net(gitty::msg::NetOp::Push);
+    assert_eq!(t.app.auto_fetch_deadline(), None, "a job is running");
+}
+
+#[test]
+fn auto_fetch_runs_quietly_and_keeps_the_selection() {
+    let (f, bare) = remote_fixture();
+    f.write("b.txt", "b\n");
+    f.commit("second", 1_700_000_100);
+    f.git(&["push", "-q"]);
+    common::push_as_someone_else(&bare, "c.txt");
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    let selected = t.selected_id();
+    t.app.focused = true;
+    t.app.tick(t.clock + FIVE_MIN + Duration::from_secs(1));
+    let reqs = net_requests(&mut t);
+    assert!(matches!(reqs.as_slice(), [Request::Net { background: true, .. }]), "{} requests", reqs.len());
+    assert_eq!(t.app.net_bar().as_deref(), Some("fetching…"));
+    run_net(&mut t, reqs);
+    assert_eq!(f.git(&["rev-list", "--count", "HEAD..origin/main"]), "1");
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
+    assert_eq!(t.selected_id(), selected);
+    assert_eq!(t.app.focus, Focus::History);
+}
+
+#[test]
+fn needs_auth_stops_auto_fetch_until_a_manual_fetch_works() {
+    let (f, bare) = remote_fixture();
+    f.script_remote("locked", "echo \"fatal: could not read Username for 'https://example.com': terminal prompts disabled\" >&2; exit 128");
+    let locked = f.git(&["remote", "get-url", "locked"]);
+    f.git(&["remote", "set-url", "origin", &locked]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.focused = true;
+    t.app.tick(t.clock + FIVE_MIN + Duration::from_secs(1));
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert_eq!(t.app.needs_auth.as_deref(), Some("origin"));
+    assert!(t.app.toast.is_none(), "quiet: the top bar says it");
+    assert_eq!(t.app.auto_fetch_deadline(), None);
+    f.git(&["remote", "set-url", "origin", bare.to_str().unwrap()]);
+    t.ch('f');
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert_eq!(t.app.needs_auth, None);
+    assert!(t.app.auto_fetch_deadline().is_some());
+}
+
+// ---- auto-tuning ----
+
+fn many_commits_fixture() -> Fixture {
+    let f = Fixture::new();
+    for i in 0..3 {
+        f.write("a.txt", format!("{i}\n"));
+        f.commit(&format!("c{i}"), 1_700_000_000 + i);
+    }
+    f
+}
+
+#[test]
+fn large_history_gets_a_commit_graph_and_one_notice() {
+    let f = many_commits_fixture();
+    let mut t = H::new(&f);
+    // only the commit-graph: fsmonitor would start a daemon for this temp repo
+    t.app.tune_thresholds = gitty_core::tune::Thresholds { commits: 2, index_entries: usize::MAX };
+    t.pump();
+    let graph = f.path().join(".git/objects/info");
+    assert!(graph.join("commit-graph").exists() || graph.join("commit-graphs").exists());
+    assert!(toast_text(&t).contains("commit-graph") && toast_text(&t).contains("gitty untune"), "{}", toast_text(&t));
+}
+
+#[test]
+fn auto_tune_off_changes_nothing() {
+    let f = many_commits_fixture();
+    let mut t = H::new(&f);
+    t.app.config.auto_tune = false;
+    t.app.tune_thresholds = gitty_core::tune::Thresholds { commits: 2, index_entries: usize::MAX };
+    t.pump();
+    assert!(!f.path().join(".git/objects/info/commit-graph").exists());
+    assert!(t.app.toast.is_none());
+}
+
+#[test]
+fn untune_subcommand_reverts_what_gitty_set() {
+    let f = many_commits_fixture();
+    f.git(&["config", "core.untrackedCache", "true"]);
+    f.git(&["config", "--add", "gitty.tuned", "core.untrackedCache"]);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_gitty")).args(["untune", f.path().to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("core.untrackedCache"));
+    assert!(std::process::Command::new("git").current_dir(f.path()).args(["config", "core.untrackedCache"]).output().unwrap().stdout.is_empty());
+    let again = std::process::Command::new(env!("CARGO_BIN_EXE_gitty")).args(["untune", f.path().to_str().unwrap()]).output().unwrap();
+    assert!(String::from_utf8_lossy(&again.stdout).contains("nothing to undo"));
+}
+
+#[test]
+fn a_conflicting_merge_says_what_to_do() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "a.txt");
+    f.write("a.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('p');
+    t.pump();
+    t.ch('m');
+    t.pump();
+    let toast = t.app.toast.clone().unwrap();
+    assert!(toast.what.contains("conflict") && toast.what.contains("git merge --abort"), "{toast:?}");
+    assert!(toast.detail.contains("CONFLICT"), "{toast:?}");
+}

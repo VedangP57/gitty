@@ -50,7 +50,11 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
             x = spans(buf, x, y, max_x, &[(&ahead, base.fg(ui.ahead)), (&behind, base.fg(ui.behind))]);
         }
     }
-    if let Some(t) = app.fetched_at {
+    if let Some(r) = app.needs_auth.as_deref().filter(|_| app.net.is_none()) {
+        text(buf, x, y, max_x, &format!("  {r} needs auth · f"), base.fg(ui.warning));
+    } else if let Some(bar) = app.net_bar() {
+        text(buf, x, y, max_x, &format!("  {bar}"), base.fg(ui.accent));
+    } else if let Some(t) = app.fetched_at {
         let ago = format_date(t, 0, app.now, DateMode::Relative);
         let s = if ago == "now" { "  fetched just now".to_string() } else { format!("  fetched {ago} ago") };
         text(buf, x, y, max_x, &s, muted);

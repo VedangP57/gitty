@@ -10,6 +10,13 @@ use gitty_core::stage::{Plan, plan};
 
 use crate::msg::WriteOp;
 
+/// Held by every index or worktree write: the writer thread's ops, and the network thread's local
+/// steps (fast-forward, merge, rebase), so they never race for `index.lock` (spec §12.1).
+pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Where discarded files are copied first: `$GITTY_TRASH_DIR`, else the macOS Trash.
 fn trash_dir() -> Option<PathBuf> {
     std::env::var_os("GITTY_TRASH_DIR").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".Trash")))

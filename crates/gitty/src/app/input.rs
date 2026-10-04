@@ -55,7 +55,9 @@ impl App {
             }
         }
         if let Some(ov) = self.overlay.take() {
-            return self.overlay_key(ov, k);
+            self.overlay_key(ov, k);
+            self.next_ask();
+            return;
         }
         if self.tab == Tab::Changes && self.focus == Focus::Commit {
             return self.commit_key(k);
@@ -65,6 +67,10 @@ impl App {
             KeyCode::Char('1') => return self.set_tab(Tab::Changes),
             KeyCode::Char('2') => return self.set_tab(Tab::History),
             KeyCode::Char('T') => return self.open_theme_picker(),
+            KeyCode::Char('f') if !ctrl => return self.start_net(crate::msg::NetOp::Fetch),
+            KeyCode::Char('p') if !ctrl => return self.start_net(crate::msg::NetOp::Pull),
+            KeyCode::Char('P') => return self.start_net(crate::msg::NetOp::Push),
+            KeyCode::Char('x') if !ctrl => return self.cancel_net(),
             KeyCode::Char('?') => return self.overlay = Some(Overlay::Help),
             KeyCode::Char('!') if self.toast.is_some() => return self.overlay = Some(Overlay::ErrorDetail),
             _ => {}
@@ -194,6 +200,13 @@ impl App {
             Overlay::Confirm { op, .. } if matches!(k.code, KeyCode::Enter | KeyCode::Char('y')) => self.write(op),
             Overlay::Confirm { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Char('n' | 'q')) => {}
             Overlay::Confirm { .. } => self.overlay = Some(ov),
+            Overlay::Prompt { ask, input } => self.prompt_key(ask, input, k),
+            Overlay::Diverged => match k.code {
+                KeyCode::Char('m') => self.start_net(crate::msg::NetOp::PullMerge),
+                KeyCode::Char('r') => self.start_net(crate::msg::NetOp::PullRebase),
+                KeyCode::Esc | KeyCode::Char('n' | 'q') => {}
+                _ => self.overlay = Some(ov),
+            },
             Overlay::Log { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) => {}
             Overlay::Log { .. } => self.overlay = Some(ov),
             Overlay::Help | Overlay::ErrorDetail => {
