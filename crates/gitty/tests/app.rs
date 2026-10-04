@@ -1584,3 +1584,20 @@ fn untune_subcommand_reverts_what_gitty_set() {
     let again = std::process::Command::new(env!("CARGO_BIN_EXE_gitty")).args(["untune", f.path().to_str().unwrap()]).output().unwrap();
     assert!(String::from_utf8_lossy(&again.stdout).contains("nothing to undo"));
 }
+
+#[test]
+fn a_conflicting_merge_says_what_to_do() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "a.txt");
+    f.write("a.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('p');
+    t.pump();
+    t.ch('m');
+    t.pump();
+    let toast = t.app.toast.clone().unwrap();
+    assert!(toast.what.contains("conflict") && toast.what.contains("git merge --abort"), "{toast:?}");
+    assert!(toast.detail.contains("CONFLICT"), "{toast:?}");
+}

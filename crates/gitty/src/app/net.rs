@@ -136,6 +136,14 @@ impl App {
                 toast("Push rejected: the remote has commits you don't have; pull first (p)".into(), detail, true)
             }
             Outcome::NeedsAuth { detail } => toast(format!("{} failed: the remote refused the credentials", op.verb()), detail, true),
+            Outcome::Failed { detail } if detail.contains("CONFLICT") => {
+                let what = if op == NetOp::PullRebase {
+                    "Rebase stopped on conflicts: resolve them in Changes, then `git rebase --continue` (or `git rebase --abort`)"
+                } else {
+                    "Merge stopped on conflicts: resolve them in Changes and commit (or `git merge --abort`)"
+                };
+                toast(what.into(), detail, true)
+            }
             Outcome::Failed { detail } => {
                 let first = detail.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();
                 let what = if first.is_empty() || first.len() > 90 { format!("{} failed", op.verb()) } else { format!("{} failed: {}", op.verb(), first.trim_start_matches("fatal: ")) };

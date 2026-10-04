@@ -119,3 +119,79 @@ fn background_auth_failure_is_needs_auth() {
     let (out, _) = run(&f, NetCmd::Fetch { remote: "locked".into() }, Mode::Background);
     assert!(matches!(out, Outcome::NeedsAuth { .. }), "{out:?}");
 }
+
+#[test]
+fn a_branch_tracking_another_name_never_pushes_onto_it() {
+    let (f, bare) = base();
+    f.git(&["fetch", "-q", "origin"]);
+    f.git(&["checkout", "-q", "-b", "feature", "origin/main"]);
+    assert_eq!(f.git(&["config", "branch.feature.merge"]), "refs/heads/main");
+    f.write("feat.txt", "f\n");
+    f.commit("feature work", 1_700_000_100);
+    let main_before = std::process::Command::new("git").arg("--git-dir").arg(&bare).args(["rev-parse", "main"]).output().unwrap().stdout;
+    let t = push_target(&cli(&f), "feature").unwrap();
+    assert_eq!(t.refspec, "refs/heads/feature:refs/heads/feature");
+    let (out, _) = run(&f, NetCmd::Push(t), Mode::Background);
+    assert!(matches!(out, Outcome::Ok { .. }), "{out:?}");
+    let main_after = std::process::Command::new("git").arg("--git-dir").arg(&bare).args(["rev-parse", "main"]).output().unwrap().stdout;
+    assert_eq!(main_after, main_before, "the remote's main is untouched");
+    assert_eq!(f.git(&["config", "branch.feature.merge"]), "refs/heads/main", "tracking left as the user set it");
+}
+
+#[test]
+fn push_remote_settings_are_honoured() {
+    let (f, _) = base();
+    let other = f.path().parent().unwrap().join("other.git");
+    assert!(std::process::Command::new("git").args(["init", "-q", "--bare"]).arg(&other).status().unwrap().success());
+    f.git(&["remote", "add", "fork", other.to_str().unwrap()]);
+    f.git(&["config", "remote.pushDefault", "fork"]);
+    assert_eq!(push_target(&cli(&f), "main").unwrap().remote, "fork");
+    f.git(&["config", "branch.main.pushRemote", "origin"]);
+    assert_eq!(push_target(&cli(&f), "main").unwrap().remote, "origin");
+}
+
+#[test]
+fn merge_conflicts_are_explained() {
+    let (f, bare) = base();
+    common::push_as_someone_else(&bare, "a.txt");
+    f.write("a.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    match run(&f, NetCmd::Merge, Mode::Background).0 {
+        Outcome::Failed { detail } => assert!(detail.contains("CONFLICT"), "{detail:?}"),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn rebase_detail_drops_progress_repaints() {
+    let (f, bare) = base();
+    common::push_as_someone_else(&bare, "a.txt");
+    f.write("a.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    match run(&f, NetCmd::Rebase, Mode::Background).0 {
+        Outcome::Failed { detail } => {
+            assert!(!detail.lines().next().unwrap_or("").starts_with("Rebasing ("), "{detail:?}");
+            assert!(detail.contains("CONFLICT"), "{detail:?}");
+        }
+        o => panic!("{o:?}"),
+    }
+    f.git(&["rebase", "--abort"]);
+}
+
+#[test]
+fn background_jobs_never_fall_back_to_core_askpass() {
+    let (f, _) = base();
+    let marker = f.path().join("asked");
+    let ask = f.path().join("ask.sh");
+    std::fs::write(&ask, format!("#!/bin/sh\ntouch {}\necho x\n", marker.display())).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ask, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.git(&["config", "core.askPass", ask.to_str().unwrap()]);
+    // the transport asks git for credentials, as an https remote would
+    f.script_remote("needs", "printf 'protocol=https\\nhost=example.com\\n\\n' | git credential fill >/dev/null 2>&1; echo 'fatal: Authentication failed' >&2; exit 128");
+    let (out, _) = run(&f, NetCmd::Fetch { remote: "needs".into() }, Mode::Background);
+    assert!(matches!(out, Outcome::NeedsAuth { .. }), "{out:?}");
+    assert!(!marker.exists(), "core.askPass was run by a background job");
+}

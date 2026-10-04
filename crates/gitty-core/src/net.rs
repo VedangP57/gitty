@@ -210,15 +210,27 @@ pub fn remote_of(cli: &GitCli, branch: Option<&str>) -> Option<String> {
     }
 }
 
-/// The upstream when the branch has one, else the same name on [`remote_of`] with `-u`.
+/// Where `P` pushes, as `git push` with the default `push.default=simple` would, but publishing
+/// instead of refusing:
+/// - the remote is `branch.<b>.pushRemote`, else `remote.pushDefault`, else the upstream's remote,
+///   else [`remote_of`];
+/// - the branch goes to its own name; only `push.default=upstream` sends it to a differently named
+///   upstream (a branch made with `git checkout -b feature origin/main` must never land on main);
+/// - a branch without an upstream gets `-u`.
 pub fn push_target(cli: &GitCli, branch: &str) -> anyhow::Result<PushTarget> {
-    let remote = config(cli, &format!("branch.{branch}.remote")).filter(|r| r != ".");
+    let up_remote = config(cli, &format!("branch.{branch}.remote")).filter(|r| r != ".");
     let merge = config(cli, &format!("branch.{branch}.merge"));
-    if let (Some(remote), Some(merge)) = (remote, merge) {
-        return Ok(PushTarget { remote, refspec: format!("refs/heads/{branch}:{merge}"), set_upstream: false });
-    }
-    let Some(remote) = remote_of(cli, None) else { bail!("no remote to push to: add one with `git remote add`") };
-    Ok(PushTarget { remote, refspec: format!("refs/heads/{branch}:refs/heads/{branch}"), set_upstream: true })
+    let push_remote = config(cli, &format!("branch.{branch}.pushRemote")).or_else(|| config(cli, "remote.pushDefault"));
+    let Some(remote) = push_remote.clone().or_else(|| up_remote.clone()).or_else(|| remote_of(cli, None)) else {
+        bail!("no remote to push to: add one with `git remote add`")
+    };
+    let own = format!("refs/heads/{branch}");
+    let tracked = up_remote.is_some() && merge.is_some();
+    let to = match merge {
+        Some(m) if tracked && push_remote.is_none() && config(cli, "push.default").as_deref() == Some("upstream") => m,
+        _ => own.clone(),
+    };
+    Ok(PushTarget { remote, refspec: format!("{own}:{to}"), set_upstream: !tracked })
 }
 
 /// Cancels a running job by killing its process group: SIGTERM, then SIGKILL after 2 s.
@@ -272,7 +284,8 @@ impl Job {
                 }
             }
             Mode::Background => {
-                c.env_remove("GIT_ASKPASS").env_remove("SSH_ASKPASS").env_remove("GITTY_ASKPASS_SOCK");
+                // empty, not unset: unset GIT_ASKPASS falls back to core.askPass (a GUI dialog)
+                c.env("GIT_ASKPASS", "").env("SSH_ASKPASS", "").env("SSH_ASKPASS_REQUIRE", "never").env("GCM_INTERACTIVE", "never").env_remove("GITTY_ASKPASS_SOCK");
                 if std::env::var_os("GIT_SSH_COMMAND").is_none() && config(cli, "core.sshCommand").is_none() {
                     c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
                 }
@@ -310,12 +323,13 @@ impl Job {
             pending.extend_from_slice(&buf[..n]);
             while let Some(i) = pending.iter().position(|b| *b == b'\r' || *b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=i).collect();
+                let repaint = line[line.len() - 1] == b'\r';
                 let line = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
                 if let Some(p) = tracker.update(&line) {
                     on_progress(p);
                 }
-                // keep the last lines that are not progress repaint (the end says why it failed)
-                if !line.is_empty() && parse_progress(&line).is_none_or(|(_, n)| n.is_none_or(|(c, t)| c == t)) {
+                // keep finished lines only: `\r` ends a repaint (progress, "Rebasing (1/2)")
+                if !repaint && !line.is_empty() && parse_progress(&line).is_none_or(|(_, n)| n.is_none_or(|(c, t)| c == t)) {
                     stderr.push_str(&line);
                     stderr.push('\n');
                     if stderr.len() > STDERR_CAP {
@@ -334,7 +348,11 @@ impl Job {
         }
         let ok = status.as_ref().is_ok_and(|s| s.success());
         let refs = matches!(self.cmd, NetCmd::Push(_)).then(|| parse_push_porcelain(&stdout)).unwrap_or_default();
-        let detail = stderr.trim_end().to_string();
+        // merge and rebase explain conflicts on stdout
+        let detail = match &self.cmd {
+            NetCmd::Push(_) => stderr.trim_end().to_string(),
+            _ => format!("{}\n{}", stdout.trim_end(), stderr.trim_end()).trim().to_string(),
+        };
         if ok {
             let summary = match &self.cmd {
                 NetCmd::Push(_) => refs.iter().map(|r| format!("{} {}", r.remote, r.summary)).collect::<Vec<_>>().join(", "),

@@ -102,8 +102,15 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             }
         }
         Overlay::Prompt { ask, input } => {
-            let inner = boxed(app, buf, area, 64.min(area.width.saturating_sub(4)).max(30), 7, "git asks");
-            text(buf, inner.x, inner.y, inner.right(), ask.prompt.trim(), st.add_modifier(Modifier::BOLD));
+            // ssh's host-key question is several lines; the fingerprint must be readable
+            let w = area.width.saturating_sub(8).clamp(30, 96);
+            let lines: Vec<String> = ask.prompt.trim().lines().flat_map(|l| wrap_text(l, w.saturating_sub(4) as usize)).collect();
+            let n = lines.len() as u16;
+            let inner = boxed(app, buf, area, w, n + 6, "git asks");
+            for (k, l) in lines.iter().enumerate().take(inner.height.saturating_sub(4) as usize) {
+                text(buf, inner.x, inner.y + k as u16, inner.right(), l, st.add_modifier(Modifier::BOLD));
+            }
+            let inner = Rect::new(inner.x, inner.y + n.saturating_sub(1), inner.width, inner.height.saturating_sub(n.saturating_sub(1)));
             if inner.height > 2 {
                 let field = Rect::new(inner.x, inner.y + 2, inner.width, 1);
                 fill(buf, field, Style::new().bg(ui.bg).fg(ui.fg));
@@ -154,4 +161,42 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             }
         }
     }
+}
+
+/// Breaks `s` into pieces at most `w` display columns wide, at spaces when possible.
+fn wrap_text(s: &str, w: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    let mut out = Vec::new();
+    let mut line = String::new();
+    for word in s.split(' ') {
+        let mut word = word.to_string();
+        loop {
+            let need = if line.is_empty() { word.width() } else { line.width() + 1 + word.width() };
+            if need <= w {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(&word);
+                break;
+            }
+            if !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+                continue;
+            }
+            // a word longer than the line (a fingerprint on a narrow screen): hard break
+            let cut = word.char_indices().scan(0, |acc, (i, c)| {
+                *acc += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                Some((i, *acc))
+            }).find(|(_, acc)| *acc > w).map_or(word.len(), |(i, _)| i);
+            out.push(word[..cut].to_string());
+            word = word[cut..].to_string();
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !line.is_empty() || out.is_empty() {
+        out.push(line);
+    }
+    out
 }

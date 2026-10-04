@@ -33,6 +33,9 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
         NetCmd::Push(t) => Some(t.remote.clone()),
         _ => None,
     };
+    // fast-forward, merge and rebase write the index and worktree: never alongside the writer
+    let local = matches!(cmd, NetCmd::FfMerge | NetCmd::Merge | NetCmd::Rebase);
+    let _write = local.then(crate::write::lock);
     let job = match Job::spawn(cli, cmd, mode.clone()) {
         Ok(j) => j,
         Err(e) => return failed(format!("{e:#}")),
