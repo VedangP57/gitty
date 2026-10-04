@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use anyhow::Context;
 
 use crate::GitError;
+use crate::commit_files::BlobId;
 use crate::repo::Repo;
 use crate::status::{self, Status};
 
@@ -154,6 +155,24 @@ impl GitCli {
         } else {
             self.quiet(Kind::Write, &["rm", "--cached", "-q", "-r", "--ignore-unmatch", "."], None).map(|_| ())
         }
+    }
+
+    /// The index entry (stage 0) for `path`, if any.
+    pub fn index_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
+        let out = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-files", "-s", "-z", "--", path], None)?;
+        let rec = out.split(|&b| b == 0).next().unwrap_or(&[]);
+        let s = String::from_utf8_lossy(rec);
+        // "<mode> <hex> <stage>\t<path>"
+        Ok(s.split(' ').nth(1).and_then(BlobId::from_hex))
+    }
+
+    /// Applies a patch to the index after checking `path`'s entry is still `expect` (spec §12.2
+    /// TOCTOU guard): a mismatch means the index changed since the diff was made.
+    pub fn apply_cached(&self, patch: &[u8], path: &str, expect: Option<BlobId>) -> anyhow::Result<()> {
+        if self.index_blob(path)? != expect {
+            anyhow::bail!("{path} changed in the index since its diff was loaded; refreshing");
+        }
+        self.quiet(Kind::Write, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(patch)).map(|_| ())
     }
 
     /// `git commit -F -`; hook output streams through `on_stderr`.

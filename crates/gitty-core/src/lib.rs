@@ -10,6 +10,7 @@ pub mod git_cli;
 pub mod history;
 pub mod refs;
 pub mod repo;
+pub mod stage;
 pub mod status;
 pub mod types;
 

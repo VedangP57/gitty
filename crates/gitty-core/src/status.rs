@@ -79,17 +79,7 @@ pub struct Status {
 }
 
 fn blob(hex: &str) -> Option<BlobId> {
-    if hex.bytes().all(|b| b == b'0') {
-        return None;
-    }
-    let mut b = [0u8; 20];
-    if hex.len() != 40 {
-        return None;
-    }
-    for (i, out) in b.iter_mut().enumerate() {
-        *out = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
-    }
-    Some(BlobId(b))
+    BlobId::from_hex(hex)
 }
 
 fn mode(s: &str) -> u32 {

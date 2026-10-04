@@ -12,6 +12,17 @@ impl BlobId {
         b.copy_from_slice(o.as_bytes());
         BlobId(b)
     }
+    /// Parses 40 hex digits; the all-zero id (git's "absent") is None.
+    pub fn from_hex(hex: &str) -> Option<BlobId> {
+        if hex.len() != 40 || hex.bytes().all(|b| b == b'0') {
+            return None;
+        }
+        let mut b = [0u8; 20];
+        for (i, out) in b.iter_mut().enumerate() {
+            *out = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(BlobId(b))
+    }
     pub(crate) fn oid(&self) -> gix::ObjectId {
         gix::ObjectId::from_bytes_or_panic(&self.0)
     }

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 80dc06fe1d1488b4986bd129d4509f60a6902325f6994c3054116126528bb85b # shrinks to head = Some([97]), wt = Some([97, 10]), mask = [false, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], mask2 = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
+cc 1c56889973fe5bb86746069e2b16e218d65648877808b0ad114c591aafc58ba7 # shrinks to head = Some([97, 10, 97, 10, 97, 10, 97, 10, 97, 10, 97, 10, 97, 10, 98]), wt = Some([98, 10, 99]), mask = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false], mask2 = [false, false, false, false, false, false, false, true, true, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false]
