@@ -1085,3 +1085,138 @@ fn filter_cycles_what_the_list_shows() {
     assert_eq!(t.app.changes.selected().unwrap().path, "new.txt");
     assert_eq!(t.app.diff.as_ref().unwrap().key.path, "new.txt");
 }
+
+// ---- commit box ----
+
+fn typed(t: &mut H, s: &str) {
+    for c in s.chars() {
+        t.ch(c);
+    }
+}
+
+fn commit_key(t: &mut H, m: KeyModifiers) {
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, m));
+}
+
+/// One modified, staged file in a repo with one commit ("base").
+fn staged_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nb\n");
+    f.git(&["add", "a.txt"]);
+    f
+}
+
+#[test]
+fn commit_box_commits_with_trailers_and_undo_restores_the_message() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    assert_eq!(t.app.focus, Focus::Commit);
+    typed(&mut t, "Add b quickly");
+    t.key(KeyCode::Tab);
+    typed(&mut t, "Because b matters.");
+    t.key(KeyCode::Tab);
+    typed(&mut t, "Ann <ann@example.org>");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%B"]), "Add b quickly\n\nBecause b matters.\n\nCo-authored-by: Ann <ann@example.org>");
+    assert_eq!(t.app.changes.commit.summary.text(), "", "box cleared after a commit");
+    assert!(t.app.commit_bar().is_some_and(|b| b.contains("Committed just now")), "{:?}", t.app.commit_bar());
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('u');
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "a.txt", "changes stay staged");
+    assert_eq!(t.app.changes.commit.summary.text(), "Add b quickly");
+    assert_eq!(t.app.changes.commit.body.text(), "Because b matters.");
+    assert_eq!(t.app.changes.commit.coauthors.text(), "Ann <ann@example.org>");
+    assert_eq!(t.app.commit_bar(), None);
+}
+
+#[test]
+fn typing_in_the_commit_box_does_not_trigger_shortcuts() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "q12?T a");
+    assert!(!t.app.quit);
+    assert_eq!(t.app.tab, gitty::app::Tab::Changes);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(t.app.changes.commit.summary.text(), "q12?T a");
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+}
+
+#[test]
+fn empty_summary_uses_the_placeholder_and_nothing_staged_refuses() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    assert_eq!(t.app.commit_placeholder(), "Update a.txt");
+    t.ch('c');
+    commit_key(&mut t, KeyModifiers::CONTROL);
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Update a.txt");
+    t.ch('c');
+    typed(&mut t, "nothing here");
+    commit_key(&mut t, KeyModifiers::ALT);
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+    assert!(t.app.toast.as_ref().is_some_and(|t| t.what.contains("Nothing staged")), "{:?}", t.app.toast);
+}
+
+#[test]
+fn amend_loads_the_head_message_and_rewrites_it() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('A');
+    t.pump();
+    assert!(t.app.changes.commit.amend);
+    assert_eq!(t.app.changes.commit.summary.text(), "base");
+    assert_eq!(t.app.commit_button(), "Amend last commit");
+    t.ch('c');
+    typed(&mut t, " v2");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base v2");
+    assert_eq!(f.git(&["rev-list", "--count", "HEAD"]), "1");
+    assert!(!t.app.changes.commit.amend, "amend is one-shot");
+}
+
+#[test]
+fn toggling_amend_off_restores_the_draft() {
+    let f = staged_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "my draft");
+    t.key(KeyCode::Esc);
+    t.ch('A');
+    t.pump();
+    assert_eq!(t.app.changes.commit.summary.text(), "base");
+    t.ch('A');
+    assert_eq!(t.app.changes.commit.summary.text(), "my draft");
+    assert_eq!(t.app.commit_button(), "Commit 1 file to main");
+}
+
+#[test]
+fn hook_failure_opens_a_modal_and_keeps_the_message() {
+    let f = staged_fixture();
+    let hook = f.path().join(".git/hooks/pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\necho 'lint failed: bad.rs' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "Will fail");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Log { title, body }) => {
+            assert!(title.contains("Commit failed"), "{title}");
+            assert!(body.contains("lint failed: bad.rs"), "{body}");
+        }
+        _ => panic!("expected the hook log modal"),
+    }
+    assert_eq!(t.app.changes.commit.summary.text(), "Will fail");
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+}

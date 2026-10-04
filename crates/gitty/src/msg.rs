@@ -129,6 +129,8 @@ pub enum Request {
     /// HEAD → worktree diff of one status entry, with its staged lines.
     ChangeDiff { generation: u64, entry: StatusEntry, opts: DiffOptions, force_text: bool },
     Write(WriteOp),
+    /// HEAD's full message, for amend.
+    HeadMessage,
 }
 
 impl Request {
@@ -164,10 +166,11 @@ pub enum Msg {
     ChangeDiffError { generation: u64, path: String, detail: String },
     /// A line of hook or git output from the running write.
     WriteLog { line: String },
-    /// `Ok(Some(message))` after an undo: the undone commit's message.
+    /// `Ok(Some(head))` after a commit; `Ok(Some(message))` after an undo: the undone commit's message.
     WriteDone { op: WriteOp, result: Result<Option<String>, String> },
     /// The watcher saw these kinds of change.
     Changed(Changed),
+    HeadMessage { result: Result<String, String> },
     Error { what: String, detail: String },
 }
 
@@ -198,6 +201,7 @@ impl std::fmt::Debug for Msg {
             Msg::WriteLog { line } => write!(f, "WriteLog {{ {line} }}"),
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
+            Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
     }

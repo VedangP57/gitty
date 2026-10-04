@@ -2,6 +2,7 @@
 //! outbox, and `ui::draw` renders. Nothing here touches git.
 
 pub mod changes;
+pub mod commit;
 pub mod diffstate;
 mod input;
 
@@ -49,6 +50,8 @@ pub enum Overlay {
     ErrorDetail,
     /// A destructive write waiting for Enter (or `y`); Esc cancels.
     Confirm { title: String, body: String, op: crate::msg::WriteOp },
+    /// Full output of a failed write (hooks), shown until dismissed.
+    Log { title: String, body: String },
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +77,8 @@ pub struct Hits {
     pub diff_old_gutter: (u16, u16),
     pub diff_new_gutter: (u16, u16),
     pub tabs: Vec<(Rect, Tab)>,
+    pub commit_fields: Vec<(Rect, commit::Field)>,
+    pub commit_button: Option<Rect>,
     pub dragging: Option<Sep>,
 }
 
@@ -530,7 +535,7 @@ impl App {
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } => {}
         }
     }
 

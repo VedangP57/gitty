@@ -209,7 +209,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                     }
                     Event::FocusGained => app.handle_focus(true),
                     Event::FocusLost => app.handle_focus(false),
-                    Event::Paste(_) => {}
+                    Event::Paste(s) => app.handle_paste(&s),
                 }
             }
             Ok(())

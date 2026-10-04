@@ -729,3 +729,57 @@ fn clicks_toggle_checkboxes_and_gutter_lines() {
     t.render(140, 30);
     assert!(t.app.changes.entries().iter().all(|e| e.check() == gitty_core::status::Check::Staged));
 }
+
+fn type_str(t: &mut H, s: &str) {
+    for c in s.chars() {
+        t.key(KeyCode::Char(c));
+    }
+}
+
+#[test]
+fn commit_box_renders_fields_counter_and_button() {
+    let f = changes_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("src/main.rs");
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("Update main.rs"), "placeholder:\n{s}");
+    assert!(s.contains("Commit 1 file to main"), "{s}");
+    t.key(KeyCode::Char('c'));
+    let summary = "Compute the total once and print it after the loop!";
+    assert!(summary.chars().count() > 50 && summary.chars().count() <= 72);
+    type_str(&mut t, summary);
+    t.key(KeyCode::Tab);
+    type_str(&mut t, "Saves a pass.");
+    let b = t.render(140, 30);
+    insta::assert_snapshot!("changes_commit_box", text(&b));
+    // the counter turns yellow past 50
+    let (_, y) = find(&b, "Compute the total").unwrap();
+    let n = summary.chars().count().to_string();
+    let w = t.app.hits.files_rows.unwrap().width;
+    let row: String = (0..w).map(|x| b[(x, y)].symbol().to_string()).collect();
+    let at = row.rfind(&n).unwrap_or_else(|| panic!("counter {n} in {row:?}")) as u16;
+    assert_eq!(b[(at, y)].fg, t.app.theme.ui.warning);
+    // clicking the button commits
+    let (bx, by) = find(&b, "Commit 1 file to main").unwrap();
+    t.click(bx, by);
+    let s = text(&t.render(140, 30));
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), summary);
+    assert!(s.contains("Committed just now · [u] Undo"), "{s}");
+}
+
+#[test]
+fn amend_shows_a_warning_banner_and_clicking_a_field_focuses_it() {
+    let f = changes_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.key(KeyCode::Char('A'));
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("Amending the last commit"), "{s}");
+    assert!(s.contains("Amend last commit"), "{s}");
+    let (x, y) = find(&b, "Co-authors").unwrap();
+    t.click(x, y);
+    assert_eq!(t.app.focus, Focus::Commit);
+    assert_eq!(t.app.changes.commit.field, gitty::app::commit::Field::CoAuthors);
+}

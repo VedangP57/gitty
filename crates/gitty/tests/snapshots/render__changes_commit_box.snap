@@ -1,7 +1,7 @@
 ---
 source: crates/gitty/tests/render.rs
-assertion_line: 686
-expression: s
+assertion_line: 755
+expression: text(&b)
 ---
  gitty repo  ⎇ main                                                                                            [1] Changes (3)  [2] History
  [~] 3 changed files                      │ src/main.rs  +2 −2
@@ -25,11 +25,11 @@ expression: s
                                           │ 29  29       step(25);
                                           │     ↓    ⋯ 5 lines
 ──────────────────────────────────────────│
- Update main.rs                           │
- Description                              │
+ Compute the total once and print it a 51 │
+ Saves a pass.                            │
                                           │
                                           │
  Co-authors Name <email>, …               │
   Commit 1 file to main                   │
                                           │
- space stage  a all  d discard  F filter  enter diff  2 history  ? help  q quit
+ alt+enter commit  tab field  esc leave

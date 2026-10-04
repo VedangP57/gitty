@@ -38,8 +38,8 @@ fn workdir(h: &Handle) -> anyhow::Result<PathBuf> {
     h.owner().workdir().map(Path::to_path_buf).context("bare repository")
 }
 
-/// Runs one write. `log` receives git and hook output as it arrives. Returns the undone
-/// commit's message for [`WriteOp::UndoCommit`].
+/// Runs one write. `log` receives git and hook output as it arrives. Returns the new HEAD for
+/// [`WriteOp::Commit`] and the undone commit's message for [`WriteOp::UndoCommit`].
 pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Result<Option<String>> {
     let cli = GitCli::new(h.owner());
     match op {
@@ -87,7 +87,11 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 }
             }
         }
-        WriteOp::Commit { message, amend } => cli.commit(message, *amend, log)?,
+        WriteOp::Commit { message, amend } => {
+            cli.commit(message, *amend, log)?;
+            let head = cli.run(cli.cmd(gitty_core::git_cli::Kind::Read, &["rev-parse", "HEAD"]), None, log)?;
+            return Ok(Some(String::from_utf8_lossy(&head).trim().to_string()));
+        }
         WriteOp::UndoCommit => return Ok(Some(cli.undo_commit()?)),
     }
     Ok(None)

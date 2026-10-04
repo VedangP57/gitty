@@ -420,7 +420,7 @@ fn commit_streams_hook_output_and_undo_returns_the_message() {
     let (r, _) = write(&f, gitty::msg::WriteOp::StageAll);
     assert_eq!(r, Ok(None));
     let (r, log) = write(&f, gitty::msg::WriteOp::Commit { message: "Add b".into(), amend: false });
-    assert_eq!(r, Ok(None));
+    assert_eq!(r, Ok(Some(f.git(&["rev-parse", "HEAD"]))), "the new HEAD");
     assert!(log.iter().any(|l| l.contains("checking style")), "{log:?}");
     let (r, _) = write(&f, gitty::msg::WriteOp::UndoCommit);
     assert_eq!(r, Ok(Some("Add b\n".into())));

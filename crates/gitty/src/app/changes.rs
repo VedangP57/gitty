@@ -138,6 +138,7 @@ pub struct Changes {
     pub visual: Option<usize>,
     /// A gutter drag (mouse) is selecting lines.
     pub(super) gutter_drag: bool,
+    pub commit: super::commit::CommitBox,
 }
 
 impl Changes {
@@ -294,6 +295,7 @@ impl App {
             Msg::WriteDone { op, result } => {
                 self.changes.busy = self.changes.busy.saturating_sub(1);
                 match result {
+                    _ if self.commit_done(&op, &result) => {}
                     Ok(_) => {}
                     Err(detail) => {
                         let what = format!("{} failed", op.label());
@@ -305,6 +307,7 @@ impl App {
                     self.outbox.push(Request::Refs);
                 }
             }
+            Msg::HeadMessage { result } => self.install_head_message(result),
             Msg::Changed(c) => {
                 if c.intersects(Changed::WORKTREE | Changed::INDEX | Changed::IGNORE_RULES | Changed::STATE) {
                     self.request_status();
@@ -319,6 +322,7 @@ impl App {
     }
 
     fn install_status(&mut self, st: Status) {
+        self.track_committed_head(st.head.as_deref());
         let keep = self.changes.selected().map(|e| e.path.clone());
         self.changes.status = Some(st);
         self.changes.status_error = None;

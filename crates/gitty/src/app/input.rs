@@ -57,6 +57,9 @@ impl App {
         if let Some(ov) = self.overlay.take() {
             return self.overlay_key(ov, k);
         }
+        if self.tab == Tab::Changes && self.focus == Focus::Commit {
+            return self.commit_key(k);
+        }
         match k.code {
             KeyCode::Char('q') => return self.quit = true,
             KeyCode::Char('1') => return self.set_tab(Tab::Changes),
@@ -191,6 +194,8 @@ impl App {
             Overlay::Confirm { op, .. } if matches!(k.code, KeyCode::Enter | KeyCode::Char('y')) => self.write(op),
             Overlay::Confirm { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Char('n' | 'q')) => {}
             Overlay::Confirm { .. } => self.overlay = Some(ov),
+            Overlay::Log { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) => {}
+            Overlay::Log { .. } => self.overlay = Some(ov),
             Overlay::Help | Overlay::ErrorDetail => {
                 if !matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?' | '!')) {
                     self.overlay = Some(ov);
@@ -221,6 +226,18 @@ impl App {
             (KeyCode::Char('G') | KeyCode::End, _) => Some(Move::Bottom),
             _ => None,
         };
+        match (k.code, ctrl) {
+            (KeyCode::Char('c'), false) => return self.focus_commit_or_true(),
+            (KeyCode::Char('A'), false) => {
+                self.toggle_amend();
+                return true;
+            }
+            (KeyCode::Char('u'), false) => {
+                self.undo_commit();
+                return true;
+            }
+            _ => {}
+        }
         match self.focus {
             Focus::Diff => match k.code {
                 KeyCode::Char(' ') => self.toggle_lines(),
@@ -286,6 +303,7 @@ impl App {
                 let t = target(self.file_sel, n, self.files_capacity(), m);
                 self.select_file(t);
             }
+            Focus::Commit => {}
             Focus::Diff => {
                 let split = self.split_active();
                 let (cap, wrap) = (self.diff_capacity(), self.diff_wrap());
@@ -318,6 +336,7 @@ impl App {
             Focus::History => self.focus = Focus::Files,
             Focus::Files => self.focus = Focus::Diff,
             Focus::Diff => self.force_show(),
+            Focus::Commit => {}
         }
     }
 
@@ -327,7 +346,7 @@ impl App {
             return;
         }
         match self.focus {
-            Focus::Diff => self.focus = Focus::Files,
+            Focus::Diff | Focus::Commit => self.focus = Focus::Files,
             Focus::Files => self.focus = Focus::History,
             Focus::History => self.toast = None,
         }
@@ -443,6 +462,14 @@ impl App {
 
     /// Changes tab: checkboxes toggle files; the diff gutter toggles lines (drag for a range).
     fn changes_click(&mut self, x: u16, y: u16) {
+        if inside(self.hits.commit_button, x, y).is_some() {
+            return self.commit();
+        }
+        if let Some((_, f)) = self.hits.commit_fields.iter().find(|(r, _)| r.contains(Position { x, y })) {
+            self.focus = Focus::Commit;
+            self.changes.commit.field = *f;
+            return;
+        }
         if let Some(r) = self.hits.files_rows {
             let in_box = x >= r.x && x < r.x + 4;
             if y + 1 == r.y && r.contains(Position { x, y: r.y }) && in_box {

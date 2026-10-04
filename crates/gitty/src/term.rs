@@ -103,8 +103,9 @@ pub fn probe(timeout: Duration) -> Probe {
 }
 
 // ?1004: focus in/out reports (status refresh on focus, backstop only while focused)
-const ENTER: &str = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h";
-const LEAVE: &str = "\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1049l";
+// >1u: kitty keyboard "disambiguate", so Ctrl+Enter commits (other terminals ignore it)
+const ENTER: &str = "\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[>1u";
+const LEAVE: &str = "\x1b[<u\x1b[?1004l\x1b[?2004l\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1049l";
 
 /// Owns the terminal modes; restores them when dropped.
 pub struct Guard;

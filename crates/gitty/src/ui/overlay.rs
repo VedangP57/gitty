@@ -28,6 +28,8 @@ const HELP: &[(&str, &str)] = &[
     ("Space a", "Changes: stage line or file / all"),
     ("v H", "Changes: line range / hunk"),
     ("d F", "Changes: discard (asks first) / filter files"),
+    ("c A u", "Changes: commit box / amend / undo commit"),
+    ("Alt+Enter", "commit (Ctrl+Enter in kitty)"),
     ("!", "error details"),
     ("q", "quit"),
 ];
@@ -94,6 +96,18 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
             if inner.height > 3 {
                 spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (" discard · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            }
+        }
+        Overlay::Log { title, body } => {
+            let lines: Vec<&str> = body.lines().collect();
+            let inner = boxed(app, buf, area, area.width.saturating_sub(8).min(100), (lines.len() as u16 + 4).min(area.height.saturating_sub(2)), title);
+            let room = inner.height.saturating_sub(2) as usize;
+            // the end of hook output says why it failed
+            for (k, l) in lines.iter().skip(lines.len().saturating_sub(room)).enumerate() {
+                text(buf, inner.x, inner.y + k as u16, inner.right(), l, st);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "Esc close · the message is kept", st.fg(ui.muted));
             }
         }
         Overlay::ErrorDetail => {

@@ -6,10 +6,14 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use super::commit_list::title;
-use super::paint::{centered, fill, spans, text};
+use super::paint::{centered, fill, spans, text, text_right};
 use crate::app::changes::Filter;
+use crate::app::commit::Field;
 use crate::app::{App, Focus};
+use crate::editor::Editor;
 use crate::text::truncate_middle;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 fn checkbox(c: Check) -> &'static str {
     match c {
@@ -102,13 +106,119 @@ pub fn draw_files(app: &mut App, buf: &mut Buffer, r: Rect) {
     }
 }
 
-pub fn draw_commit(app: &mut App, buf: &mut Buffer, r: Rect) {
-    let ui = &app.theme.ui;
-    fill(buf, r, Style::new().bg(ui.bg).fg(ui.fg));
-    if r.height == 0 {
+/// `s` without its first `cols` display columns.
+fn skip_cols(s: &str, cols: usize) -> &str {
+    let mut w = 0;
+    for (i, g) in s.grapheme_indices(true) {
+        if w >= cols {
+            return &s[i..];
+        }
+        w += g.width();
+    }
+    ""
+}
+
+/// One editor in `r`: scrolled so the cursor shows, placeholder when empty, cursor cell reversed.
+fn field(buf: &mut Buffer, r: Rect, ed: &Editor, placeholder: &str, active: bool, st: Style, muted: Style) {
+    fill(buf, r, st);
+    if r.width == 0 || r.height == 0 {
         return;
     }
-    for x in r.left()..r.right() {
-        buf[(x, r.y)].set_symbol("─").set_style(Style::new().bg(ui.bg).fg(ui.border));
+    let (line, col) = ed.position();
+    let w = r.width as usize - 1;
+    let top = if active { line.saturating_sub(r.height as usize - 1) } else { 0 };
+    let left = if active { col.saturating_sub(w) } else { 0 };
+    if ed.is_empty() {
+        text(buf, r.x, r.y, r.right(), placeholder, muted);
     }
+    for (k, l) in ed.lines().skip(top).take(r.height as usize).enumerate() {
+        let shown = if k + top == line { skip_cols(l, left) } else { skip_cols(l, 0) };
+        text(buf, r.x, r.y + k as u16, r.right(), shown, st);
+    }
+    if active {
+        let (cx, cy) = (r.x + (col - left) as u16, r.y + (line - top) as u16);
+        if cx < r.right() && cy < r.bottom() {
+            let cell = &mut buf[(cx, cy)];
+            if cell.symbol().is_empty() {
+                cell.set_symbol(" ");
+            }
+            cell.set_style(Style::new().add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+pub fn draw_commit(app: &mut App, buf: &mut Buffer, r: Rect) {
+    let ui = app.theme.ui.clone();
+    let base = Style::new().bg(ui.bg).fg(ui.fg);
+    fill(buf, r, base);
+    if r.height == 0 || r.width < 8 {
+        return;
+    }
+    let focused = app.focus == Focus::Commit;
+    let c = &app.changes.commit;
+    if c.amend {
+        let st = base.fg(ui.warning).add_modifier(Modifier::BOLD);
+        text(buf, r.x + 1, r.y, r.right(), "⚠ Amending the last commit · A cancels", st);
+    } else {
+        for x in r.left()..r.right() {
+            buf[(x, r.y)].set_symbol("─").set_style(base.fg(ui.border));
+        }
+    }
+    let (x, right) = (r.x + 1, r.right().saturating_sub(1));
+    let w = right.saturating_sub(x);
+    let rows = r.height - 1;
+    // summary, description (up to 3 lines), co-authors, button, bar
+    let body_h = rows.saturating_sub(4).min(3);
+    let fst = Style::new().bg(ui.panel).fg(ui.fg);
+    let muted = fst.fg(ui.muted);
+    let active = |f: Field| focused && c.field == f;
+    let mut y = r.y + 1;
+    let mut fields = Vec::new();
+    if y < r.bottom() {
+        let n = c.summary.text().chars().count();
+        let counter = if n == 0 { String::new() } else { n.to_string() };
+        let cst = match n {
+            0..=50 => base.fg(ui.muted),
+            51..=72 => base.fg(ui.warning),
+            _ => base.fg(ui.error).add_modifier(Modifier::BOLD),
+        };
+        let cw = counter.len() as u16;
+        let fr = Rect::new(x, y, w.saturating_sub(if cw > 0 { cw + 1 } else { 0 }), 1);
+        field(buf, fr, &c.summary, &app.commit_placeholder(), active(Field::Summary), fst.add_modifier(Modifier::BOLD), muted);
+        text_right(buf, x, right, y, &counter, cst);
+        fields.push((Rect::new(x, y, w, 1), Field::Summary));
+        y += 1;
+    }
+    if body_h > 0 {
+        let fr = Rect::new(x, y, w, body_h);
+        field(buf, fr, &c.body, "Description", active(Field::Body), fst, muted);
+        fields.push((fr, Field::Body));
+        y += body_h;
+    }
+    if y < r.bottom() {
+        let lx = text(buf, x, y, right, "Co-authors ", base.fg(ui.muted));
+        let fr = Rect::new(lx, y, right.saturating_sub(lx), 1);
+        field(buf, fr, &c.coauthors, "Name <email>, …", active(Field::CoAuthors), fst, muted);
+        fields.push((Rect::new(x, y, w, 1), Field::CoAuthors));
+        y += 1;
+    }
+    let mut button = None;
+    if y < r.bottom() {
+        let label = format!(" {} ", app.commit_button());
+        let ready = c.amend || app.changes.entries().iter().any(|e| e.check() != Check::Unstaged);
+        let st = if ready && !c.committing {
+            Style::new().bg(ui.accent).fg(ui.bg).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().bg(ui.panel).fg(ui.muted)
+        };
+        let end = text(buf, x, y, right, &label, st);
+        button = Some(Rect::new(x, y, end.saturating_sub(x), 1));
+        y += 1;
+    }
+    if let (Some(bar), true) = (app.commit_bar(), y < r.bottom()) {
+        let st = if c.committing { base.fg(ui.warning) } else { base.fg(ui.muted) };
+        text(buf, x, y, right, &bar, st);
+    }
+    app.hits.commit_fields = fields;
+    app.hits.commit_button = button;
 }

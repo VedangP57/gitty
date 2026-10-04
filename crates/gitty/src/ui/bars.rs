@@ -62,12 +62,14 @@ fn hints(app: &App) -> &'static [(&'static str, &'static str)] {
     if app.tab == Tab::Changes {
         return match app.focus {
             Focus::Diff => &[("space", "stage line"), ("v", "range"), ("H", "hunk"), ("a", "file"), ("d", "discard"), ("[ ]", "hunk"), ("esc", "back")],
+            Focus::Commit => &[("alt+enter", "commit"), ("tab", "field"), ("esc", "leave")],
             _ => &[("space", "stage"), ("a", "all"), ("d", "discard"), ("F", "filter"), ("enter", "diff"), ("2", "history"), ("?", "help"), ("q", "quit")],
         };
     }
     match app.focus {
         Focus::History => &[("j/k", "move"), ("enter", "files"), ("tab", "pane"), ("r", "scope"), ("D", "dates"), ("z", "density"), ("T", "theme"), ("?", "help"), ("q", "quit")],
         Focus::Files => &[("j/k", "file"), ("enter", "diff"), ("esc", "back"), ("{ }", "file"), ("[ ]", "hunk"), ("?", "help"), ("q", "quit")],
+        Focus::Commit => &[],
         Focus::Diff => &[("j/k", "line"), ("[ ]", "hunk"), ("e/E", "expand"), ("s", "split"), ("w", "whitespace"), ("h/l", "scroll"), ("F", "full"), ("esc", "back")],
     }
 }

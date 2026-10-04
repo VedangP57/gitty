@@ -29,6 +29,8 @@ pub enum Focus {
     History,
     Files,
     Diff,
+    /// Changes tab: the commit message editor.
+    Commit,
 }
 
 /// A draggable boundary.
@@ -109,7 +111,7 @@ pub fn compute(i: &LayoutInput) -> Panes {
                 p.header = Some(hd);
                 p.files = Some(rest);
             }
-            Focus::Diff => p.diff = Some(body),
+            Focus::Diff | Focus::Commit => p.diff = Some(body),
         },
         Mode::Medium => {
             let hw = history_width(w, i.ui);
