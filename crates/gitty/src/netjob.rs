@@ -28,12 +28,17 @@ fn failed(detail: impl Into<String>) -> Outcome {
 
 /// Runs one git step; `cancellable` steps hand their cancel handle to the UI.
 fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, mode: &Mode, sink: &mut dyn FnMut(Msg)) -> Outcome {
+    let remote = match &cmd {
+        NetCmd::Fetch { remote } => Some(remote.clone()),
+        NetCmd::Push(t) => Some(t.remote.clone()),
+        _ => None,
+    };
     let job = match Job::spawn(cli, cmd, mode.clone()) {
         Ok(j) => j,
         Err(e) => return failed(format!("{e:#}")),
     };
     let cancel = cancellable.then(|| job.cancel_handle());
-    sink(Msg::NetStarted { op, label, cancel });
+    sink(Msg::NetStarted { op, label, remote, cancel });
     let mut last: Option<Instant> = None;
     job.wait(&mut |fraction| {
         if last.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY || fraction >= 1.0) {

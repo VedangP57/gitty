@@ -2,6 +2,7 @@
 //! from the askpass trampoline, and what each outcome shows.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
 use gitty_core::net::{Cancel, Mode, Outcome};
@@ -19,6 +20,7 @@ pub struct NetJob {
     pub fraction: Option<f32>,
     pub cancel: Option<Cancel>,
     pub background: bool,
+    pub remote: Option<String>,
 }
 
 impl App {
@@ -47,7 +49,7 @@ impl App {
             NetOp::PullRebase => "Rebasing",
             NetOp::Push => "Pushing",
         };
-        self.net = Some(NetJob { op, label: label.into(), fraction: None, cancel: None, background: false });
+        self.net = Some(NetJob { op, label: label.into(), fraction: None, cancel: None, background: false, remote: None });
         let mode = self.net_mode(false);
         self.outbox.push(Request::Net { op, mode, background: false });
     }
@@ -75,9 +77,9 @@ impl App {
     /// Network and prompt messages. Returns the message when it is not one of them.
     pub(super) fn handle_net_msg(&mut self, m: Msg) -> Option<Msg> {
         match m {
-            Msg::NetStarted { op, label, cancel } => {
+            Msg::NetStarted { op, label, remote, cancel } => {
                 let background = self.net.as_ref().is_some_and(|j| j.background);
-                self.net = Some(NetJob { op, label, fraction: None, cancel, background });
+                self.net = Some(NetJob { op, label, fraction: None, cancel, background, remote });
             }
             Msg::NetProgress { op, fraction } => {
                 if let Some(j) = self.net.as_mut().filter(|j| j.op == op) {
@@ -95,12 +97,18 @@ impl App {
     }
 
     fn net_done(&mut self, op: NetOp, background: bool, outcome: Outcome) {
-        let label = self.net.take().map_or_else(|| op.verb().to_string(), |j| j.label);
+        let job = self.net.take();
+        let remote = job.as_ref().and_then(|j| j.remote.clone());
+        let label = job.map_or_else(|| op.verb().to_string(), |j| j.label);
+        if matches!(op, NetOp::Fetch | NetOp::Pull) && matches!(outcome, Outcome::Ok { .. }) {
+            self.last_fetch = self.clock;
+            self.needs_auth = None;
+        }
         self.outbox.push(Request::Refs);
         self.request_status();
         let toast = |what: String, detail: String, error: bool| Some(Toast { what, detail, error });
         if background {
-            self.background_done(outcome);
+            self.background_done(outcome, remote);
             return;
         }
         self.toast = match outcome {
@@ -130,8 +138,30 @@ impl App {
         };
     }
 
-    /// Background (auto-fetch) results: quiet unless the remote needs credentials.
-    fn background_done(&mut self, _outcome: Outcome) {}
+    /// Background (auto-fetch) results are quiet; credentials it cannot supply turn it off.
+    fn background_done(&mut self, outcome: Outcome, remote: Option<String>) {
+        if let Outcome::NeedsAuth { .. } = outcome {
+            self.needs_auth = Some(remote.unwrap_or_else(|| "the remote".into()));
+        }
+    }
+
+    /// When auto-fetch runs next: focused, enabled, idle, with an upstream to fetch.
+    pub fn auto_fetch_deadline(&self) -> Option<Instant> {
+        let mins = self.config.auto_fetch_minutes;
+        let upstream = self.refs.as_ref().is_some_and(|r| r.upstream.is_some());
+        if !self.focused || mins == 0 || self.needs_auth.is_some() || self.net.is_some() || !upstream {
+            return None;
+        }
+        Some(self.last_fetch + Duration::from_secs(60 * u64::from(mins)))
+    }
+
+    pub(super) fn tick_net(&mut self, at: Instant) {
+        if self.auto_fetch_deadline().is_some_and(|d| d <= at) {
+            self.last_fetch = at;
+            self.net = Some(NetJob { op: NetOp::Fetch, label: "Fetching".into(), fraction: None, cancel: None, background: true, remote: None });
+            self.outbox.push(Request::Net { op: NetOp::Fetch, mode: Mode::Background, background: true });
+        }
+    }
 
     /// Opens the next queued prompt when nothing else is on screen.
     pub(super) fn next_ask(&mut self) {

@@ -204,7 +204,7 @@ pub enum Msg {
     /// The watcher saw these kinds of change.
     Changed(Changed),
     /// A network step started; `cancel` is None for local steps that must not be interrupted.
-    NetStarted { op: NetOp, label: String, cancel: Option<gitty_core::net::Cancel> },
+    NetStarted { op: NetOp, label: String, remote: Option<String>, cancel: Option<gitty_core::net::Cancel> },
     NetProgress { op: NetOp, fraction: f32 },
     NetDone { op: NetOp, background: bool, outcome: gitty_core::net::Outcome },
     /// git or ssh asks for a username, password, passphrase or yes/no through the trampoline.
@@ -243,7 +243,7 @@ impl std::fmt::Debug for Msg {
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
             Msg::StatusSlow => write!(f, "StatusSlow"),
-            Msg::NetStarted { op, label, cancel } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
+            Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
             Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
             Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),

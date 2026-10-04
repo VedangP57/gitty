@@ -1457,3 +1457,83 @@ fn prompt_overlay_relays_the_answer_and_esc_cancels() {
     let out = child.wait_with_output().unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
+
+// ---- auto-fetch ----
+
+fn net_requests(t: &mut H) -> Vec<Request> {
+    t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Net { .. })).collect()
+}
+
+/// Runs only the network requests (with their follow-ups' messages), never the clock.
+fn run_net(t: &mut H, reqs: Vec<Request>) {
+    for m in t.exec_all(reqs) {
+        t.app.handle_msg(m);
+    }
+    t.app.focused = false;
+    t.pump();
+    t.app.focused = true;
+}
+
+const FIVE_MIN: Duration = Duration::from_secs(300);
+
+#[test]
+fn auto_fetch_waits_for_focus_and_idleness() {
+    let (f, _) = remote_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.auto_fetch_deadline(), None, "unfocused");
+    t.app.focused = true;
+    let d = t.app.auto_fetch_deadline().expect("focused, idle, with an upstream");
+    assert!(d >= t.clock + FIVE_MIN - Duration::from_secs(1) && d <= t.clock + FIVE_MIN + Duration::from_secs(1));
+    t.app.config.auto_fetch_minutes = 0;
+    assert_eq!(t.app.auto_fetch_deadline(), None, "disabled");
+    t.app.config.auto_fetch_minutes = 5;
+    t.app.start_net(gitty::msg::NetOp::Push);
+    assert_eq!(t.app.auto_fetch_deadline(), None, "a job is running");
+}
+
+#[test]
+fn auto_fetch_runs_quietly_and_keeps_the_selection() {
+    let (f, bare) = remote_fixture();
+    f.write("b.txt", "b\n");
+    f.commit("second", 1_700_000_100);
+    f.git(&["push", "-q"]);
+    common::push_as_someone_else(&bare, "c.txt");
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    let selected = t.selected_id();
+    t.app.focused = true;
+    t.app.tick(t.clock + FIVE_MIN + Duration::from_secs(1));
+    let reqs = net_requests(&mut t);
+    assert!(matches!(reqs.as_slice(), [Request::Net { background: true, .. }]), "{} requests", reqs.len());
+    assert_eq!(t.app.net_bar().as_deref(), Some("fetching…"));
+    run_net(&mut t, reqs);
+    assert_eq!(f.git(&["rev-list", "--count", "HEAD..origin/main"]), "1");
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
+    assert_eq!(t.selected_id(), selected);
+    assert_eq!(t.app.focus, Focus::History);
+}
+
+#[test]
+fn needs_auth_stops_auto_fetch_until_a_manual_fetch_works() {
+    let (f, bare) = remote_fixture();
+    f.script_remote("locked", "echo \"fatal: could not read Username for 'https://example.com': terminal prompts disabled\" >&2; exit 128");
+    let locked = f.git(&["remote", "get-url", "locked"]);
+    f.git(&["remote", "set-url", "origin", &locked]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.focused = true;
+    t.app.tick(t.clock + FIVE_MIN + Duration::from_secs(1));
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert_eq!(t.app.needs_auth.as_deref(), Some("origin"));
+    assert!(t.app.toast.is_none(), "quiet: the top bar says it");
+    assert_eq!(t.app.auto_fetch_deadline(), None);
+    f.git(&["remote", "set-url", "origin", bare.to_str().unwrap()]);
+    t.ch('f');
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert_eq!(t.app.needs_auth, None);
+    assert!(t.app.auto_fetch_deadline().is_some());
+}

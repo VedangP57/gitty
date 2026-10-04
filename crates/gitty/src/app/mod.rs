@@ -231,6 +231,11 @@ pub struct App {
     pub askpass: Option<(PathBuf, PathBuf)>,
     pub ask_handle: Option<crate::askpass::AskHandle>,
     asks: std::collections::VecDeque<crate::askpass::Ask>,
+    /// The last fetch (or launch); auto-fetch runs `auto_fetch_minutes` after it.
+    last_fetch: Instant,
+    /// A remote whose credentials auto-fetch could not supply; auto-fetch is off until a manual
+    /// fetch succeeds.
+    pub needs_auth: Option<String>,
 }
 
 impl App {
@@ -309,6 +314,8 @@ impl App {
             askpass: None,
             ask_handle: None,
             asks: Default::default(),
+            last_fetch: i.clock,
+            needs_auth: None,
         };
         app.request_status();
         app
@@ -578,10 +585,11 @@ impl App {
             self.fire_diff();
         }
         self.tick_changes(at);
+        self.tick_net(at);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.diff_deadline, self.status_deadline()].into_iter().flatten().min()
+        [self.diff_deadline, self.status_deadline(), self.auto_fetch_deadline()].into_iter().flatten().min()
     }
 
     /// Earliest epoch second at which a visible relative date changes.
