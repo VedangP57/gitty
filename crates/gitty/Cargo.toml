@@ -4,9 +4,14 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = ["grammars"]
+# bundled tree-sitter grammars; without them every language uses the syntect fallback
+grammars = ["gitty-highlight/default"]
+
 [dependencies]
 gitty-core = { path = "../gitty-core" }
-gitty-highlight = { path = "../gitty-highlight" }
+gitty-highlight = { path = "../gitty-highlight", default-features = false }
 anyhow.workspace = true
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "underline-color", "layout-cache"] }
 crossterm = "0.29"
