@@ -530,3 +530,121 @@ fn files_error_rendered() {
     let s = text(&t.render(180, 30));
     assert!(s.contains("Could not list files"), "{s}");
 }
+
+#[test]
+fn syntax_colours_keep_diff_backgrounds_and_follow_theme() {
+    let f = Fixture::new();
+    f.write("src/lib.rs", "fn a() {}\n");
+    f.commit("one", NOW - DAY);
+    f.write("src/lib.rs", "fn a() {}\nfn b() {}\n");
+    f.commit("two", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (180, 30));
+    let b = t.render(180, 30);
+    let kw = t.app.theme.syntax["keyword"].fg.unwrap();
+    let (x, y) = find(&b, "fn b").unwrap();
+    assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw, t.app.theme.diff.add_bg), "added keyword");
+    let (x, y) = find(&b, "fn a").unwrap();
+    assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw, t.app.theme.ui.bg), "context keyword");
+
+    let light = t.app.registry.resolve("github-light", ColorDepth::True, None).unwrap();
+    let kw2 = light.syntax["keyword"].fg.unwrap();
+    assert_ne!(kw, kw2);
+    t.app.theme = light;
+    assert!(t.app.take_requests().is_empty(), "no recompute on theme switch");
+    let b = t.render(180, 30);
+    let (x, y) = find(&b, "fn b").unwrap();
+    assert_eq!((b[(x, y)].fg, b[(x, y)].bg), (kw2, t.app.theme.diff.add_bg));
+}
+
+#[test]
+fn wrap_breaks_long_lines_and_maps_screen_lines_to_rows() {
+    let f = Fixture::new();
+    let long: String = (0..60).map(|i| format!("w{i:02} ")).collect();
+    let body = |extra: &str| format!("first\n{extra}\nlast\n");
+    f.write("a.txt", body("short"));
+    f.commit("one", NOW - DAY);
+    f.write("a.txt", body(&long));
+    f.commit("two", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (120, 30));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    assert!(t.app.wrap);
+    let b = t.render(120, 30);
+    let s = text(&b);
+    insta::assert_snapshot!("wrap_120", s);
+    assert!(s.contains("w00") && s.contains("w59"), "the whole line is visible: {s}");
+    let (_, y0) = find(&b, "w00").unwrap();
+    let (_, y1) = find(&b, "w59").unwrap();
+    assert!(y1 > y0, "continuation lines below");
+    let r = t.app.hits.diff_rows.unwrap();
+    let lines = t.app.hits.diff_lines.clone();
+    let row = lines[(y0 - r.y) as usize];
+    assert_eq!(lines[(y1 - r.y) as usize], row, "every screen line of a wrapped row maps to it");
+    t.click(r.x + 20, y1);
+    assert_eq!(t.app.diff.as_ref().unwrap().cursor, row);
+    let (_, ylast) = find(&b, "last").unwrap();
+    t.click(r.x + 20, ylast);
+    assert_eq!(t.app.diff.as_ref().unwrap().cursor, lines[(ylast - r.y) as usize]);
+    assert!(t.app.diff.as_ref().unwrap().cursor > row);
+    // the cursor's lines stay on screen when moving through wrapped rows in a short pane
+    let mut t = H::new(&f, "github-dark", (120, 12));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    for _ in 0..8 {
+        t.key(KeyCode::Char('j'));
+        t.render(120, 12);
+        let d = t.app.diff.as_ref().unwrap();
+        let n = t.app.hits.diff_lines.iter().filter(|&&v| v == d.cursor).count();
+        assert!(n > 0, "cursor row {} visible in {:?}", d.cursor, t.app.hits.diff_lines);
+    }
+    t.key(KeyCode::Char('W'));
+    assert!(!t.app.wrap);
+}
+
+#[test]
+fn wrap_keeps_the_last_character_of_a_line_exactly_one_width_long() {
+    let probe = Fixture::new();
+    probe.write("a.txt", "a\nb\n");
+    probe.commit("one", NOW - DAY);
+    probe.write("a.txt", "a\nc\n");
+    probe.commit("two", NOW - HOUR);
+    let mut t = H::new(&probe, "github-dark", (120, 30));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    let w = t.app.diff_wrap().unwrap().left as usize;
+    for len in [w - 1, w, w + 1, 2 * w] {
+        let f = Fixture::new();
+        f.write("a.txt", "a\nb\n");
+        f.commit("one", NOW - DAY);
+        f.write("a.txt", format!("a\n{}Z\n", "x".repeat(len - 1)));
+        f.commit("two", NOW - HOUR);
+        let mut t = H::new(&f, "github-dark", (120, 30));
+        t.app.focus = Focus::Diff;
+        t.key(KeyCode::Char('W'));
+        let s = text(&t.render(120, 30));
+        assert!(s.contains('Z'), "line of {len} (wrap width {w}) lost its last character:\n{s}");
+    }
+}
+
+#[test]
+fn wrap_paging_shows_every_row() {
+    let f = Fixture::new();
+    let long = |i: usize| format!("{i:03} {}", "lorem ipsum dolor ".repeat(8));
+    let old: String = (0..40).map(|i| format!("{}\n", long(i))).collect();
+    f.write("a.txt", "x\n");
+    f.commit("one", NOW - DAY);
+    f.write("a.txt", old);
+    f.commit("two", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (120, 16));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..60 {
+        t.render(120, 16);
+        seen.extend(t.app.hits.diff_lines.iter().copied());
+        t.key(KeyCode::PageDown);
+    }
+    let rows = t.app.diff.as_ref().unwrap().rows(false);
+    let missing: Vec<usize> = (0..rows).filter(|r| !seen.contains(r)).collect();
+    assert!(missing.is_empty(), "PgDn skipped rows {missing:?}");
+}

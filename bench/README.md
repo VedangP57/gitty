@@ -65,3 +65,25 @@ timestamps (ms since start). The terminal answers the startup probe (DA1) as a r
 - The linux bench repo is a blobless partial clone. Diffs there report "Could not load this diff",
   and line stats are left blank instead of showing `+0 −0`.
 - `cargo run --release -p gitty --example trace -- <repo>` times each worker request in isolation.
+
+## Syntax highlighting (M3) — 2026-10-04, release build, Apple Silicon
+
+`cargo run --release -p gitty-highlight --example hl_time -- FILE...` times one whole-file pass.
+"First" includes compiling that language's queries (once per process); "warm" is the best of 5.
+The diff is drawn before highlighting finishes; colours arrive from the 2-thread highlight pool.
+
+| File | engine | lines | first | warm | Budget |
+|---|---|---|---|---|---|
+| git `diff.c` | tree-sitter C | 7,860 | 37 ms | 34 ms | < 100 ms ✅ |
+| synthetic `big.ts` (408 KiB) | tree-sitter TS | 10,000 | 124 ms | 90 ms | < 100 ms (warm ✅, first ✗ by query compile) |
+| git `git-p4.py` | tree-sitter Python | 4,628 | 25 ms | 21 ms | ✅ |
+| git `t/test-lib.sh` | tree-sitter Bash | 2,019 | 9 ms | 5 ms | ✅ |
+| gitty `Cargo.lock` | tree-sitter TOML | 3,988 | 8 ms | 7 ms | ✅ |
+| gitty `ui/diff.rs` | tree-sitter Rust | 396 | 18 ms | 4 ms | ✅ |
+| git `Makefile` | syntect | 4,124 | 41 ms | 38 ms | ✅ |
+| git `README.md` | syntect | 75 | 3 ms | 1 ms | ✅ |
+
+Binary size (release, stripped): **24.4 MB** with all grammars, **5.6 MB** with
+`--no-default-features` (syntect fallback only). The largest grammars, as static libraries:
+Swift 4.2 MB, C++ 3.4 MB, TypeScript/TSX 3.0 MB, SQL 2.5 MB, Bash 1.5 MB, Rust 1.2 MB; the
+rest are under 1 MB each. Every grammar is a cargo feature of `gitty-highlight`.

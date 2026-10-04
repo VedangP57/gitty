@@ -1,0 +1,44 @@
+[package]
+name = "gitty-highlight"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["rust", "typescript", "javascript", "python", "go", "c", "cpp", "json", "yaml", "toml", "bash", "css", "html", "sql", "swift"]
+rust = ["dep:tree-sitter-rust"]
+typescript = ["dep:tree-sitter-typescript", "javascript"]
+javascript = ["dep:tree-sitter-javascript"]
+python = ["dep:tree-sitter-python"]
+go = ["dep:tree-sitter-go"]
+c = ["dep:tree-sitter-c"]
+cpp = ["dep:tree-sitter-cpp", "c"]
+json = ["dep:tree-sitter-json"]
+yaml = ["dep:tree-sitter-yaml"]
+toml = ["dep:tree-sitter-toml-ng"]
+bash = ["dep:tree-sitter-bash"]
+css = ["dep:tree-sitter-css"]
+html = ["dep:tree-sitter-html"]
+sql = ["dep:tree-sitter-sequel"]
+swift = ["dep:tree-sitter-swift"]
+
+[dependencies]
+tree-sitter = "0.26"
+tree-sitter-highlight = "0.26"
+syntect = { version = "5.3", default-features = false, features = ["parsing", "default-onig"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-sequel = { version = "0.3", optional = true }
+tree-sitter-swift = { version = "0.7", optional = true }

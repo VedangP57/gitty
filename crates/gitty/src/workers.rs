@@ -1,4 +1,4 @@
-//! Thread pools: one walker, `cores - 2` (min 2) readers, two diff workers. Each thread owns a
+//! Thread pools: one walker, `cores - 2` (min 2) readers, two diff workers, two highlighters. Each thread owns a
 //! [`gitty_core::Handle`]; the UI thread never does.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -19,6 +19,7 @@ pub struct Workers {
     walker: Pool,
     readers: Pool,
     differs: Pool,
+    highlighters: Pool,
 }
 
 fn next(high: &Receiver<Request>, low: &Receiver<Request>) -> Option<Request> {
@@ -79,6 +80,7 @@ impl Workers {
             walker: pool("walker", 1, false, &repo, &gens, &tx),
             readers: pool("reader", cores.saturating_sub(2).max(2), true, &repo, &gens, &tx),
             differs: pool("diff", 2, false, &repo, &gens, &tx),
+            highlighters: pool("highlight", 2, false, &repo, &gens, &tx),
         }
     }
 
@@ -86,6 +88,7 @@ impl Workers {
         let pool = match req {
             Request::Walk { .. } => &self.walker,
             Request::Diff { .. } | Request::Intraline { .. } => &self.differs,
+            Request::Highlight { .. } => &self.highlighters,
             _ => &self.readers,
         };
         let q = if req.is_background() { &pool.low } else { &pool.high };

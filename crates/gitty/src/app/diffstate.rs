@@ -8,6 +8,25 @@ use gitty_core::diff::FileDiff;
 use gitty_core::diff::view::{DiffView, Expand, Row, SplitRow};
 
 use crate::msg::DiffKey;
+use crate::text::{Glyph, layout, wrap_starts};
+
+/// Text widths for wrapped rows: `left` is the unified text width, or the left split half's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Wrap {
+    pub left: u32,
+    pub right: u32,
+    pub tab: u8,
+}
+
+/// Screen lines `bytes` takes when wrapped at `width` columns.
+pub fn wrapped_lines(bytes: &[u8], width: u32, tab: u8, scratch: &mut Vec<Glyph>, starts: &mut Vec<usize>) -> usize {
+    if bytes.len() <= width as usize && bytes.iter().all(|&b| (0x20..0x7f).contains(&b)) {
+        return 1;
+    }
+    layout(bytes, tab, scratch);
+    wrap_starts(scratch, width, starts);
+    starts.len()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VRow {
@@ -40,7 +59,7 @@ impl DiffState {
     pub fn new(key: DiffKey, diff: Arc<FileDiff>) -> DiffState {
         let view = diff.view();
         let mut s = DiffState { key, diff, view, cursor: 0, scroll: 0, hscroll: 0, first_header: None, paired_all: false };
-        s.apply_ready_pairing();
+        s.apply_ready_pairing(false);
         s.refresh_header();
         s
     }
@@ -196,8 +215,10 @@ impl DiffState {
         self.clamp(to_split);
     }
 
-    /// Applies split-view pairing for every change block whose intraline is computed.
-    pub fn apply_ready_pairing(&mut self) {
+    /// Applies split-view pairing for every change block whose intraline is computed. Pairing
+    /// moves split rows, so in split view the cursor follows its content (`split`: the active
+    /// layout) and keeps its screen offset.
+    pub fn apply_ready_pairing(&mut self, split: bool) {
         if self.paired_all {
             return;
         }
@@ -205,19 +226,90 @@ impl DiffState {
         let n = d.changes.len();
         let ready: Vec<usize> = (0..n).filter(|&c| d.intraline_ready(c).is_some()).collect();
         self.paired_all = ready.len() == n;
-        if !ready.is_empty() {
-            self.view.set_pairings(ready.iter().filter_map(|&c| d.intraline_ready(c).map(|h| (c, h.pair_of_del.as_slice()))));
+        if ready.is_empty() {
+            return;
+        }
+        let anchor = self.anchor(self.cursor, split).ok_or(self.gap_at(self.cursor, split));
+        let offset = self.cursor.saturating_sub(self.scroll);
+        self.view.set_pairings(ready.iter().filter_map(|&c| d.intraline_ready(c).map(|h| (c, h.pair_of_del.as_slice()))));
+        if split {
+            let found = match anchor {
+                Ok(a) => Some(self.find(a, true)),
+                Err(Some(gap)) => (0..self.rows(true)).find(|&i| self.gap_at(i, true) == Some(gap)),
+                Err(None) => None,
+            };
+            if let Some(i) = found {
+                self.cursor = i;
+                self.scroll = i.saturating_sub(offset);
+            }
+            self.clamp(true);
         }
     }
 
-    /// Keeps the cursor inside `[scroll, scroll + height)`.
-    pub fn ensure_visible(&mut self, height: usize) {
+    /// Screen lines row `i` takes (1 unless wrapping).
+    pub fn row_lines(&self, i: usize, split: bool, wrap: Option<Wrap>) -> usize {
+        let Some(w) = wrap else { return 1 };
+        let (mut scratch, mut starts) = (Vec::new(), Vec::new());
+        let mut lines = |text: &gitty_core::diff::text::Text, line: Option<u32>, width: u32| {
+            line.map_or(1, |l| wrapped_lines(text.line(l), width, w.tab, &mut scratch, &mut starts))
+        };
+        let d = &self.diff;
+        match self.vrow(i, split) {
+            Some(VRow::Row(r)) => match r {
+                Row::Context { new, .. } | Row::Add { new, .. } => lines(&d.new, Some(new), w.left),
+                Row::Del { old, .. } => lines(&d.old, Some(old), w.left),
+                Row::Gap { .. } => 1,
+            },
+            Some(VRow::Split(r)) => match r {
+                SplitRow::Context { old, new } => lines(&d.old, Some(old), w.left).max(lines(&d.new, Some(new), w.right)),
+                SplitRow::Change { old, new, .. } => lines(&d.old, old, w.left).max(lines(&d.new, new, w.right)),
+                SplitRow::Gap { .. } => 1,
+            },
+            _ => 1,
+        }
+    }
+
+    /// How many rows a wrapped page of `lines` screen lines moves from `from` in direction
+    /// `dir`: as many as fit together on screen, at least one.
+    pub fn rows_in_lines(&self, from: usize, lines: usize, dir: i64, split: bool, wrap: Option<Wrap>) -> usize {
+        let n = self.rows(split);
+        let (mut used, mut k) = (0, 0);
+        loop {
+            let next = if dir < 0 { from.checked_sub(k + 1) } else { Some(from + k + 1).filter(|&i| i < n) };
+            let Some(i) = next else { break };
+            used += self.row_lines(i, split, wrap);
+            if used > lines && k > 0 {
+                break;
+            }
+            k += 1;
+            if used >= lines {
+                break;
+            }
+        }
+        k.max(1)
+    }
+
+    /// Keeps all of the cursor's row inside a `height`-line window starting at row `scroll`.
+    pub fn ensure_visible(&mut self, height: usize, split: bool, wrap: Option<Wrap>) {
         let h = height.max(1);
         if self.cursor < self.scroll {
             self.scroll = self.cursor;
-        } else if self.cursor >= self.scroll + h {
-            self.scroll = self.cursor + 1 - h;
+            return;
         }
+        // the lowest scroll that still shows the cursor's row whole (or from its top, if taller)
+        let mut used = 0;
+        let mut top = self.cursor;
+        loop {
+            used += self.row_lines(top, split, wrap);
+            if used > h || top <= self.scroll {
+                break;
+            }
+            top -= 1;
+        }
+        if used > h && top < self.cursor {
+            top += 1;
+        }
+        self.scroll = self.scroll.max(top);
     }
 }
 

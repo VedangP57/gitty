@@ -15,15 +15,16 @@ use gitty_core::commit_files::{FileChange, LineStats};
 use gitty_core::diff::DiffOptions;
 use gitty_core::diff::ops::WsMode;
 use gitty_core::history::{CommitDetail, CommitRow};
+use gitty_highlight::Highlights;
 use gitty_core::refs::{HistoryScope, RefsSnapshot};
 use ratatui::layout::Rect;
 
 use crate::config::{Config, Density, UiState};
 use crate::dates::{DateMode, next_threshold};
-use crate::msg::{DiffKey, Gens, Msg, Request, SharedHistory};
+use crate::msg::{DiffKey, Gens, HlKey, Msg, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
 use crate::ui::layout::{self, LayoutInput, Mode, Panes, Sep};
-use diffstate::DiffState;
+use diffstate::{DiffState, Wrap};
 
 pub use crate::ui::layout::Focus;
 
@@ -64,7 +65,8 @@ pub struct Hits {
     pub files_rows: Option<Rect>,
     pub files_first: usize,
     pub diff_rows: Option<Rect>,
-    pub diff_first: usize,
+    /// Row index of each screen line of `diff_rows` (wrapped rows repeat).
+    pub diff_lines: Vec<usize>,
     /// (x, width) of the old and new line-number gutters of the (left) diff side.
     pub diff_old_gutter: (u16, u16),
     pub diff_new_gutter: (u16, u16),
@@ -186,10 +188,15 @@ pub struct App {
     last_diff_request: Option<Instant>,
     file_gen: u64,
     force_text: bool,
+    /// Syntax spans by blob; None = no colour (unknown language, over the limits).
+    hl_cache: Lru<HlKey, Option<Arc<Highlights>>>,
+    hl_pending: HashSet<HlKey>,
 
     pub date_mode: DateMode,
     pub density: Density,
     pub split_pref: Option<bool>,
+    /// `W`: wrap long diff lines instead of scrolling horizontally.
+    pub wrap: bool,
     pub ws: WsMode,
 
     pub overlay: Option<Overlay>,
@@ -256,11 +263,14 @@ impl App {
             diff_wanted: None,
             diff_error: None,
             diff_cache: Lru::new(200),
+            hl_cache: Lru::new(64),
+            hl_pending: HashSet::new(),
             diff_deadline: None,
             last_diff_request: None,
             file_gen: 0,
             force_text: false,
             split_pref: None,
+            wrap: false,
             overlay: None,
             toast: None,
             quit: false,
@@ -477,13 +487,20 @@ impl App {
                 }
             }
             Msg::IntralineDone { key } => {
+                let split = self.split_active();
                 if let Some(d) = self.diff.as_mut().filter(|d| d.key == key) {
-                    d.apply_ready_pairing();
+                    d.apply_ready_pairing(split);
                 }
             }
             Msg::DiffError { generation, key, detail } => {
                 if generation == self.file_gen && Some(&key) == self.diff_wanted.as_ref() {
                     self.diff_error = Some((key, detail));
+                }
+            }
+            Msg::Highlighted { key, spans, cancelled } => {
+                self.hl_pending.remove(&key);
+                if !cancelled {
+                    self.hl_cache.insert(key, spans);
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
@@ -680,10 +697,29 @@ impl App {
     }
 
     pub fn ensure_diff_visible(&mut self) {
-        let cap = self.diff_capacity();
+        let (cap, split, wrap) = (self.diff_capacity(), self.split_active(), self.diff_wrap());
         if let Some(d) = self.diff.as_mut() {
-            d.ensure_visible(cap);
+            d.ensure_visible(cap, split, wrap);
         }
+    }
+
+    /// Text widths of wrapped diff rows, matching `ui::diff`'s layout; None when not wrapping.
+    pub fn diff_wrap(&self) -> Option<Wrap> {
+        if !self.wrap {
+            return None;
+        }
+        let width = u32::from(self.panes().diff?.width);
+        let gutter = digits(self.diff.as_ref().map_or(1, |d| d.diff.old.len().max(d.diff.new.len()))) as u32 + 2;
+        // `ui::diff` draws gutters, then the +/- marker and one space, then the text
+        let text = |w: u32, gutters: u32| w.saturating_sub(gutters * gutter + 2).max(1);
+        let tab = self.config.tab_size;
+        Some(if self.split_active() {
+            let left = width.saturating_sub(1) / 2;
+            Wrap { left: text(left, 1), right: text(width.saturating_sub(left + 1), 1), tab }
+        } else {
+            let w = text(width, 2);
+            Wrap { left: w, right: w, tab }
+        })
     }
 
     /// Requests decoding for undecoded rows in and around the viewport.
@@ -725,6 +761,8 @@ impl App {
 
     fn schedule_diff(&mut self) {
         self.file_gen = Gens::bump(&self.gens.file);
+        // the bump cancels in-flight highlights; their replies only clear pending entries
+        self.hl_pending.clear();
         self.diff_wanted = self.current_file().map(|f| DiffKey::of(f, self.diff_opts(), self.force_text));
         let idle = self.last_diff_request.is_none_or(|t| self.clock.saturating_duration_since(t) >= IDLE_BEFORE_LEADING_EDGE);
         self.last_diff_request = Some(self.clock);
@@ -742,6 +780,7 @@ impl App {
         let key = DiffKey::of(&file, opts, self.force_text);
         self.diff_wanted = Some(key.clone());
         if self.diff.as_ref().is_some_and(|d| d.key == key) {
+            self.request_highlights();
             return;
         }
         if let Some(d) = self.diff_cache.get(&key).cloned() {
@@ -757,6 +796,39 @@ impl App {
             self.outbox.push(Request::Intraline { generation: self.file_gen, key: key.clone(), diff: diff.clone() });
         }
         self.diff = Some(DiffState::new(key, diff));
+        self.request_highlights();
+    }
+
+    fn hl_keys(key: &DiffKey) -> (Option<HlKey>, Option<HlKey>) {
+        let old_path = key.old_path.as_ref().unwrap_or(&key.path);
+        (key.old.map(|blob| HlKey { blob, path: old_path.clone() }), key.new.map(|blob| HlKey { blob, path: key.path.clone() }))
+    }
+
+    /// Highlights the new side, and the old side when its lines are shown (deletions, or
+    /// context that may differ under a whitespace mode).
+    fn request_highlights(&mut self) {
+        let Some(d) = self.diff.as_ref().filter(|d| d.diff.is_text()) else { return };
+        let (fd, (old, new)) = (d.diff.clone(), Self::hl_keys(&d.key));
+        let old = old.filter(|_| fd.removed > 0 || self.ws != WsMode::Show);
+        // spec §7: files past the large-text thresholds stay uncoloured even when shown
+        if d.key.force_text && (is_large(&fd.old) || is_large(&fd.new)) {
+            return;
+        }
+        for (key, text) in [(old, &fd.old), (new, &fd.new)] {
+            let Some(key) = key else { continue };
+            if text.is_empty() || self.hl_cache.contains(&key) || !self.hl_pending.insert(key.clone()) {
+                continue;
+            }
+            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text: text.clone() });
+        }
+    }
+
+    /// Syntax spans for the installed diff's (old, new) sides, when ready.
+    pub fn diff_highlights(&mut self) -> (Option<Arc<Highlights>>, Option<Arc<Highlights>>) {
+        let Some(d) = &self.diff else { return (None, None) };
+        let (old, new) = Self::hl_keys(&d.key);
+        let mut get = |k: Option<HlKey>| k.and_then(|k| self.hl_cache.get(&k).cloned().flatten());
+        (get(old), get(new))
     }
 
     /// Re-requests the current file's diff with new options (whitespace mode, force text).
@@ -790,6 +862,11 @@ impl App {
         self.osc_out.push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
         self.toast = Some(Toast { what: format!("Copied {text}"), detail: String::new(), error: false });
     }
+}
+
+fn is_large(t: &gitty_core::diff::text::Text) -> bool {
+    use gitty_core::diff::classify::{LARGE_TEXT, LONG_LINE};
+    t.bytes().len() as u64 > LARGE_TEXT || (0..t.len()).any(|i| t.line(i).len() > LONG_LINE as usize)
 }
 
 pub fn digits(n: u32) -> usize {

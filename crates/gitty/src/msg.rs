@@ -8,7 +8,9 @@ use std::sync::{Arc, RwLock};
 
 use gitty_core::ahead_behind::AheadBehind;
 use gitty_core::commit_files::{BlobId, FileChange, LineStats};
+use gitty_core::diff::text::Text;
 use gitty_core::diff::{DiffOptions, FileDiff};
+use gitty_highlight::Highlights;
 use gitty_core::history::{CommitDetail, CommitRow, History};
 use gitty_core::refs::RefsSnapshot;
 use gitty_core::CommitId;
@@ -60,6 +62,13 @@ impl DiffKey {
     }
 }
 
+/// Identity of one side's syntax highlighting: the blob, and the path that picks the language.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HlKey {
+    pub blob: BlobId,
+    pub path: String,
+}
+
 pub enum Request {
     Refs,
     Walk { session: u64, tips: Vec<CommitId> },
@@ -71,6 +80,8 @@ pub enum Request {
     Diff { generation: u64, file: FileChange, opts: DiffOptions, force_text: bool },
     /// Finish intraline for a cached diff whose computation was cut short.
     Intraline { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
+    /// Whole-file syntax highlighting of one side; cancelled when the file generation moves on.
+    Highlight { generation: u64, key: HlKey, text: Arc<Text> },
 }
 
 impl Request {
@@ -95,6 +106,9 @@ pub enum Msg {
     Diff { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
     IntralineDone { key: DiffKey },
     DiffError { generation: u64, key: DiffKey, detail: String },
+    /// `spans` is None for unknown languages and files over the limits; `cancelled` results are
+    /// not cached.
+    Highlighted { key: HlKey, spans: Option<Arc<Highlights>>, cancelled: bool },
     Error { what: String, detail: String },
 }
 
@@ -113,6 +127,7 @@ impl std::fmt::Debug for Msg {
             Msg::Diff { generation, key, .. } => write!(f, "Diff {{ generation: {generation}, path: {} }}", key.path),
             Msg::IntralineDone { key } => write!(f, "IntralineDone {{ path: {} }}", key.path),
             Msg::DiffError { key, detail, .. } => write!(f, "DiffError {{ {}: {detail} }}", key.path),
+            Msg::Highlighted { key, spans, cancelled } => write!(f, "Highlighted {{ {}: {}, cancelled: {cancelled} }}", key.path, spans.is_some()),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
     }

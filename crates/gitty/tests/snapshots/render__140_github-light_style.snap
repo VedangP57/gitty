@@ -1,5 +1,6 @@
 ---
 source: crates/gitty/tests/render.rs
+assertion_line: 200
 expression: digest(&b)
 ---
  0 7:0969da/f6f8fa 12:1f2328/f6f8fa 4:9a6700/f6f8fa 3:1b7c83/f6f8fa 89:1f2328/f6f8fa 11:656d76/f6f8fa 2:1f2328/f6f8fa 11:0969da/f6f8fa 1:1f2328/f6f8fa
@@ -11,7 +12,7 @@ expression: digest(&b)
  6 56:1f2328/ffffff 1:d0d7de/ffffff 83:1f2328/ffffff
  7 56:1f2328/ffffff 1:d0d7de/ffffff 10:1f2328/ffffff 7:656d76/ffffff 66:1f2328/ffffff
  8 56:1f2328/ffffff 1:d0d7de/ffffff 83:656d76/ddf4ff
- 9 56:1f2328/ffffff 1:d0d7de/ffffff 7:656d76/ffffff 76:1f2328/ffffff
+ 9 56:1f2328/ffffff 1:d0d7de/ffffff 7:656d76/ffffff 2:1f2328/ffffff 5:cf222e/ffffff 69:1f2328/ffffff
 10 56:1f2328/ffffff 1:d0d7de/ffffff 6:407657/ccffd8 1:407657/e6ffec 76:1f2328/e6ffec
 11 56:1f2328/ffffff 1:d0d7de/ffffff 6:407657/ccffd8 1:407657/e6ffec 76:1f2328/e6ffec
 12 56:1f2328/ffffff 1:d0d7de/ffffff 83:1f2328/ffffff

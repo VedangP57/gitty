@@ -338,3 +338,25 @@ fn prefetch_lists_files_without_stats() {
     let msgs = run(&f, Request::Files { generation: 0, id: id(&ids[1]), prefetch: true });
     assert!(matches!(&msgs[..], [Msg::Files { prefetch: true, .. }]), "{msgs:?}");
 }
+
+#[test]
+fn highlight_returns_spans_and_honours_cancel() {
+    use gitty::msg::HlKey;
+    use gitty_core::commit_files::BlobId;
+    use gitty_core::diff::text::Text;
+    let f = Fixture::new();
+    let gens = Gens::default();
+    let text = Arc::new(Text::new(b"fn main() {}\n".to_vec()));
+    let key = HlKey { blob: BlobId([1; 20]), path: "src/a.rs".into() };
+    let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key: key.clone(), text: text.clone() });
+    match &out[..] {
+        [Msg::Highlighted { key: k, spans: Some(h), cancelled: false }] => {
+            assert_eq!(k, &key);
+            assert_eq!(gitty_highlight::CAPTURES[h.line(0)[0].cap as usize], "keyword");
+        }
+        m => panic!("{m:?}"),
+    }
+    Gens::bump(&gens.file);
+    let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key, text });
+    assert!(matches!(&out[..], [Msg::Highlighted { spans: None, cancelled: true, .. }]), "{out:?}");
+}
