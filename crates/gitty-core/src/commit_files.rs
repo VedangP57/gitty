@@ -12,6 +12,12 @@ impl BlobId {
         b.copy_from_slice(o.as_bytes());
         BlobId(b)
     }
+    /// The id git would give `data` as a blob.
+    pub fn hash_of(data: &[u8]) -> BlobId {
+        gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, data)
+            .map(|id| BlobId::from_oid(&id))
+            .unwrap_or(BlobId([0; 20]))
+    }
     /// Parses 40 hex digits; the all-zero id (git's "absent") is None.
     pub fn from_hex(hex: &str) -> Option<BlobId> {
         if hex.len() != 40 || hex.bytes().all(|b| b == b'0') {

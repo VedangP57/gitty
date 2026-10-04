@@ -28,6 +28,8 @@ pub struct Texts {
     pub wt_is_raw: bool,
     /// Git mode of the worktree file (0 when it is missing).
     pub wt_mode: u32,
+    /// Blob id of the worktree file's git form.
+    pub wt_blob: BlobId,
 }
 
 /// One changed line of a HEAD → worktree diff: a deleted HEAD line or an added worktree line.
@@ -320,7 +322,8 @@ impl Handle {
         };
         let git_form = if convert { self.to_git_form(&e.path, &raw)? } else { raw.clone() };
         let wt_is_raw = git_form == raw;
-        Ok(Texts { head, index, wt: Arc::new(Text::new(git_form)), wt_is_raw, wt_mode })
+        let wt_blob = BlobId::hash_of(&git_form);
+        Ok(Texts { head, index, wt: Arc::new(Text::new(git_form)), wt_is_raw, wt_mode, wt_blob })
     }
 
     /// Applies clean filters, eol and autocrlf conversion as `git add` would.

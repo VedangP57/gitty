@@ -1,4 +1,5 @@
-//! Thread pools: one walker, `cores - 2` (min 2) readers, two diff workers, two highlighters. Each thread owns a
+//! Thread pools: one walker, `cores - 2` (min 2) readers, two diff workers, two highlighters and
+//! one writer. Each thread owns a
 //! [`gitty_core::Handle`]; the UI thread never does.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -20,6 +21,7 @@ pub struct Workers {
     readers: Pool,
     differs: Pool,
     highlighters: Pool,
+    writer: Pool,
 }
 
 fn next(high: &Receiver<Request>, low: &Receiver<Request>) -> Option<Request> {
@@ -48,6 +50,11 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                     Request::Files { generation, id, prefetch } => Some((*generation, *id, *prefetch)),
                     _ => None,
                 };
+                // a write that panics still reports done, so the app stops waiting for it
+                let write_req = match &req {
+                    Request::Write(op) => Some(op.clone()),
+                    _ => None,
+                };
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     exec(&h, req, &mut |m| {
                         let _ = wtx.send(m);
@@ -59,9 +66,10 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                         .map(|s| s.to_string())
                         .or_else(|| p.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".into());
-                    let _ = match files_req {
-                        Some((generation, id, prefetch)) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
-                        None => wtx.send(Msg::Error { what: "internal error in a worker".into(), detail }),
+                    let _ = match (files_req, write_req) {
+                        (Some((generation, id, prefetch)), _) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
+                        (_, Some(op)) => wtx.send(Msg::WriteDone { op, result: Err(format!("internal error: {detail}")) }),
+                        _ => wtx.send(Msg::Error { what: "internal error in a worker".into(), detail }),
                     };
                 }
             }
@@ -81,6 +89,8 @@ impl Workers {
             readers: pool("reader", cores.saturating_sub(2).max(2), true, &repo, &gens, &tx),
             differs: pool("diff", 2, false, &repo, &gens, &tx),
             highlighters: pool("highlight", 2, false, &repo, &gens, &tx),
+            // one thread: writes run in the order they were asked for
+            writer: pool("writer", 1, false, &repo, &gens, &tx),
         }
     }
 
@@ -89,6 +99,7 @@ impl Workers {
             Request::Walk { .. } => &self.walker,
             Request::Diff { .. } | Request::Intraline { .. } => &self.differs,
             Request::Highlight { .. } => &self.highlighters,
+            Request::Write(_) => &self.writer,
             _ => &self.readers,
         };
         let q = if req.is_background() { &pool.low } else { &pool.high };

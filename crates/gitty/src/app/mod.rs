@@ -1,6 +1,7 @@
 //! Application state. Pure: inputs and worker messages go in, [`Request`]s collect in an
 //! outbox, and `ui::draw` renders. Nothing here touches git.
 
+pub mod changes;
 pub mod diffstate;
 mod input;
 
@@ -208,12 +209,17 @@ pub struct App {
     /// Escape sequences (OSC 52) for main to write after the next frame.
     pub osc_out: Vec<String>,
     pub hits: Hits,
+
+    pub changes: changes::Changes,
+    /// The terminal has focus (FocusGained/FocusLost); the status backstop runs only then.
+    pub focused: bool,
+    index_mark: Option<gitty_core::watch::IndexMark>,
 }
 
 impl App {
     pub fn new(i: AppInit) -> App {
         let scope = if i.ui_state.scope_all { HistoryScope::AllRefs } else { HistoryScope::HeadAndUpstream };
-        App {
+        let mut app = App {
             repo_name: i.repo_name,
             date_mode: i.config.date_mode,
             density: i.config.density,
@@ -279,7 +285,12 @@ impl App {
             outbox: vec![Request::Refs],
             osc_out: Vec::new(),
             hits: Hits::default(),
-        }
+            changes: changes::Changes::default(),
+            focused: false,
+            index_mark: None,
+        };
+        app.request_status();
+        app
     }
 
     pub fn take_requests(&mut self) -> Vec<Request> {
@@ -385,14 +396,22 @@ impl App {
 
     pub fn handle_msg(&mut self, m: Msg) {
         self.dirty = true;
+        let Some(m) = self.handle_changes_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
                     self.outbox.push(Request::AheadBehind { local, upstream });
                 }
+                let moved = self.refs.as_ref().is_none_or(|old| old.tips(self.scope) != refs.tips(self.scope));
                 self.refs = Some(refs);
                 self.fetched_at = fetched_at;
-                self.start_walk();
+                if moved {
+                    // a refresh after a commit or fetch keeps the selected commit selected
+                    if self.history.is_some() {
+                        self.reselect = self.selected_id.or(self.reselect);
+                    }
+                    self.start_walk();
+                }
             }
             Msg::HistoryStarted { session, history } => {
                 if session == self.session {
@@ -504,6 +523,8 @@ impl App {
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
+            // handled by handle_changes_msg
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) => {}
         }
     }
 
@@ -529,10 +550,11 @@ impl App {
         if self.diff_deadline.is_some_and(|d| d <= at) {
             self.fire_diff();
         }
+        self.tick_changes(at);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.diff_deadline
+        [self.diff_deadline, self.status_deadline()].into_iter().flatten().min()
     }
 
     /// Earliest epoch second at which a visible relative date changes.

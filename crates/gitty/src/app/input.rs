@@ -59,15 +59,15 @@ impl App {
         }
         match k.code {
             KeyCode::Char('q') => return self.quit = true,
-            KeyCode::Char('1') => return self.tab = Tab::Changes,
-            KeyCode::Char('2') => return self.tab = Tab::History,
+            KeyCode::Char('1') => return self.set_tab(Tab::Changes),
+            KeyCode::Char('2') => return self.set_tab(Tab::History),
             KeyCode::Char('T') => return self.open_theme_picker(),
             KeyCode::Char('?') => return self.overlay = Some(Overlay::Help),
             KeyCode::Char('!') if self.toast.is_some() => return self.overlay = Some(Overlay::ErrorDetail),
             _ => {}
         }
         if self.tab == Tab::Changes {
-            return;
+            return self.changes_key(k);
         }
         let split = self.split_active();
         match (k.code, ctrl) {
@@ -202,6 +202,24 @@ impl App {
         let names = self.registry.names();
         let sel = names.iter().position(|n| *n == self.theme.name).unwrap_or(0);
         self.overlay = Some(Overlay::ThemePicker { sel, original: self.theme.clone() });
+    }
+
+    fn changes_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let m = match (k.code, ctrl) {
+            (KeyCode::Char('d'), true) => Move::Half(1),
+            (KeyCode::Char('u'), true) => Move::Half(-1),
+            (KeyCode::Char('f'), true) | (KeyCode::PageDown, _) => Move::Page(1),
+            (KeyCode::Char('b'), true) | (KeyCode::PageUp, _) => Move::Page(-1),
+            (KeyCode::Char('j') | KeyCode::Down, false) => Move::Step(1),
+            (KeyCode::Char('k') | KeyCode::Up, false) => Move::Step(-1),
+            (KeyCode::Char('g') | KeyCode::Home, _) => Move::Top,
+            (KeyCode::Char('G') | KeyCode::End, _) => Move::Bottom,
+            _ => return,
+        };
+        let n = self.changes.visible().len();
+        let t = target(self.changes.sel, n, self.files_capacity(), m);
+        self.select_change(t);
     }
 
     fn move_focused(&mut self, m: Move) {

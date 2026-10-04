@@ -114,6 +114,10 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
             }
         }
     })?;
+    let watch_tx = msg_tx.clone();
+    let watcher = gitty_core::watch::Watcher::spawn(&repo, move |c| {
+        let _ = watch_tx.send(crate::msg::Msg::Changed(c));
+    });
     let workers = Workers::spawn(repo.clone(), gens.clone(), msg_tx);
     input::spawn(in_tx);
 
@@ -131,7 +135,13 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
         clock: Instant::now(),
         size: (w, h),
     });
+    // focus reports arrive only on change, so assume the terminal is focused at launch
+    app.focused = true;
     let mut problems: Vec<String> = warnings;
+    match &watcher {
+        Ok(w) => app.set_index_mark(w.index_mark()),
+        Err(e) => problems.push(format!("watching the repository for changes failed; refresh on focus only: {e:#}")),
+    }
     problems.extend(app.registry.errors().iter().cloned());
     problems.extend(theme_error);
     if !problems.is_empty() {
@@ -197,7 +207,9 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                         terminal_resize(terminal, w, h)?;
                         app.handle_resize(w, h);
                     }
-                    Event::FocusGained | Event::FocusLost | Event::Paste(_) => {}
+                    Event::FocusGained => app.handle_focus(true),
+                    Event::FocusLost => app.handle_focus(false),
+                    Event::Paste(_) => {}
                 }
             }
             Ok(())
@@ -241,6 +253,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
             app.dirty = true;
         }
     }
+    drop(watcher);
     drop(terminal);
     drop(guard);
     Ok(exit)

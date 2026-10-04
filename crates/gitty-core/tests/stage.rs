@@ -204,3 +204,14 @@ fn crlf_autocrlf_worktree_is_compared_in_git_form() {
     assert!(!texts.wt_is_raw, "conversion happened, so line discard must be refused");
     assert_eq!(change_lines(&o).len(), 1, "only the added line differs");
 }
+
+#[test]
+fn worktree_blob_id_matches_git_hash_object() {
+    let f = Fixture::new();
+    setup(&f, P, Some(b"a\n"), Some(b"a\nb\n"));
+    let repo = Repo::open(f.path()).unwrap();
+    let (_, texts, _) = load(&repo, P).unwrap();
+    let want = f.git(&["hash-object", P]);
+    let got: String = texts.wt_blob.0.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(got, want);
+}

@@ -117,7 +117,7 @@ fn startup_requests_refs_then_walk_then_rows() {
     let ids = commits(&f, 5);
     let mut t = H::new(&f);
     let r = t.app.take_requests();
-    assert!(matches!(r.as_slice(), [Request::Refs]));
+    assert!(matches!(r.as_slice(), [Request::Refs, Request::Status { .. }]));
     for m in t.exec_all(r) {
         t.app.handle_msg(m);
     }
@@ -778,4 +778,149 @@ fn forced_large_text_is_not_highlighted() {
     t.pump();
     assert!(t.app.diff.as_ref().unwrap().key.force_text);
     assert!(t.highlights.is_empty(), "{:?}", t.highlights);
+}
+
+fn changes_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\nb\n");
+    f.write("b.txt", "b\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "a\nB\n");
+    f.write("new.txt", "n\n");
+    f
+}
+
+#[test]
+fn startup_reads_status_and_changes_tab_loads_the_first_file() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Status { .. })));
+    t.pump();
+    let paths: Vec<String> = t.app.changes.status.as_ref().unwrap().entries.iter().map(|e| e.path.clone()).collect();
+    assert_eq!(paths, ["a.txt", "new.txt"]);
+    assert!(t.app.diff.is_some(), "History shows its own diff");
+    t.app.set_tab(gitty::app::Tab::Changes);
+    assert!(t.app.diff.is_none(), "the History diff is not shown on Changes");
+    t.pump();
+    let d = t.app.diff.as_ref().unwrap();
+    assert_eq!(d.key.path, "a.txt");
+    assert_eq!(t.app.changes.current.as_ref().unwrap().staged, Some(vec![false, false]));
+    t.app.set_tab(gitty::app::Tab::History);
+    t.pump();
+    assert_ne!(t.app.diff.as_ref().map(|d| d.key.path.as_str()), Some("new.txt"));
+}
+
+#[test]
+fn stale_change_diff_is_dropped() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.set_tab(gitty::app::Tab::Changes);
+    let reqs = t.app.take_requests();
+    let old = t.exec_all(reqs);
+    // the selection moves on before the reply lands
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+    for m in old {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.diff.as_ref().is_none_or(|d| d.key.path == "new.txt"));
+    t.pump();
+    assert_eq!(t.app.diff.as_ref().unwrap().key.path, "new.txt");
+}
+
+#[test]
+fn watcher_bursts_coalesce_into_one_status_at_a_time() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    let count = |r: &[Request]| r.iter().filter(|r| matches!(r, Request::Status { .. })).count();
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::WORKTREE));
+    let first = t.app.take_requests();
+    assert_eq!(count(&first), 1);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::INDEX));
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::WORKTREE));
+    assert_eq!(count(t.app.take_requests_peek()), 0, "one status in flight at a time");
+    for m in t.exec_all(first) {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(count(t.app.take_requests_peek()), 1, "changes during the run cause exactly one rerun");
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Refs)));
+}
+
+#[test]
+fn refs_refresh_restarts_history_only_when_tips_move() {
+    let f = Fixture::new();
+    commits(&f, 3);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('j');
+    t.pump();
+    let sel = t.selected_id();
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    let walks = |t: &mut H| {
+        let r = t.app.take_requests();
+        let n = r.iter().filter(|r| matches!(r, Request::Walk { .. })).count();
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+        n
+    };
+    walks(&mut t);
+    assert_eq!(walks(&mut t), 0, "same tips: no new walk");
+    f.write("a.txt", "next\n");
+    f.commit("next", 1_700_009_000);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    walks(&mut t);
+    assert_eq!(walks(&mut t), 1, "HEAD moved: history restarts");
+    t.pump();
+    assert_eq!(t.app.history_len, 4);
+    assert_eq!(t.selected_id(), sel, "the selected commit stays selected");
+}
+
+#[test]
+fn writes_refresh_status_and_errors_toast() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    assert_eq!(t.app.changes.busy, 1);
+    t.pump();
+    assert_eq!(t.app.changes.busy, 0);
+    assert!(t.app.changes.status.as_ref().unwrap().entries.iter().all(|e| e.check() == gitty_core::status::Check::Staged));
+    t.app.write(gitty::msg::WriteOp::Commit { message: "Commit it".into(), amend: false });
+    t.pump();
+    assert_eq!(t.app.history_len, 2, "a commit refreshes refs and history");
+    std::fs::write(f.path().join(".git/index.lock"), "").unwrap();
+    f.write("a.txt", "again\n");
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("error toast");
+    assert!(toast.error && toast.detail.contains("index.lock"), "{}", toast.detail);
+}
+
+#[test]
+fn focus_gained_and_backstop_refresh_status() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    let has_status = |t: &H| t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Status { .. }));
+    let run_now = |t: &mut H| {
+        let r = t.app.take_requests();
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+    };
+    assert_eq!(t.app.next_deadline(), None, "unfocused at start: no backstop timer");
+    t.app.handle_focus(true);
+    assert!(has_status(&t));
+    run_now(&mut t);
+    let at = t.app.next_deadline().expect("backstop armed while focused");
+    assert!(at >= t.clock + Duration::from_secs(59));
+    t.app.clock = at;
+    t.app.tick(at);
+    assert!(has_status(&t), "60 s backstop while focused");
+    run_now(&mut t);
+    t.app.handle_focus(false);
+    assert_eq!(t.app.next_deadline(), None, "no backstop while unfocused");
 }
