@@ -156,8 +156,9 @@ pub enum Request {
     Intraline { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
     /// Whole-file syntax highlighting of one side; cancelled when the file generation moves on.
     Highlight { generation: u64, key: HlKey, text: Arc<Text> },
-    /// Working-tree status.
-    Status { generation: u64 },
+    /// Working-tree status. `mark` is noted just before status reads the index, so the watcher
+    /// drops the event for exactly that state and nothing later.
+    Status { generation: u64, mark: Option<gitty_core::watch::IndexMark> },
     /// HEAD → worktree diff of one status entry, with its staged lines.
     ChangeDiff { generation: u64, entry: StatusEntry, opts: DiffOptions, force_text: bool },
     Write(WriteOp),

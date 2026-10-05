@@ -208,7 +208,7 @@ impl App {
         }
         self.changes.status_in_flight = true;
         self.changes.status_gen += 1;
-        self.outbox.push(Request::Status { generation: self.changes.status_gen });
+        self.outbox.push(Request::Status { generation: self.changes.status_gen, mark: self.index_mark.clone() });
     }
 
     /// Loads the selected file's diff (Changes tab only).
@@ -282,9 +282,6 @@ impl App {
                 }
                 self.changes.status_in_flight = false;
                 self.changes.last_status = Some(self.clock);
-                if let Some(mark) = &self.index_mark {
-                    mark.note();
-                }
                 match result {
                     Ok(st) => self.install_status(st),
                     Err(e) => self.changes.status_error = Some(e),

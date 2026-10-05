@@ -362,7 +362,7 @@ fn highlight_returns_spans_and_honours_cancel() {
 }
 
 fn status_entry(f: &Fixture, path: &str) -> gitty_core::status::StatusEntry {
-    match &run(f, Request::Status { generation: 1 })[..] {
+    match &run(f, Request::Status { generation: 1, mark: None })[..] {
         [Msg::Status { generation: 1, result: Ok(st) }] => st.entries.iter().find(|e| e.path == path).cloned().expect("entry"),
         m => panic!("{m:?}"),
     }
@@ -551,4 +551,13 @@ fn local_pull_steps_wait_for_the_writer() {
         }
     };
     assert!(format!("{done:?}").contains("Ok"), "{done:?}");
+}
+
+#[test]
+fn a_panicking_status_run_still_answers_the_status_request() {
+    let reply = gitty::workers::panic_reply(&Request::Status { generation: 7, mark: None });
+    match reply("index out of bounds".into()) {
+        Msg::Status { generation: 7, result: Err(e) } => assert!(e.contains("index out of bounds"), "{e}"),
+        m => panic!("wanted a failed Status, got {m:?}"),
+    }
 }

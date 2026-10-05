@@ -965,6 +965,23 @@ fn diff_row(t: &H, want: &str) -> usize {
 }
 
 #[test]
+fn the_index_mark_is_the_index_status_read_not_a_later_one() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    let mark = gitty_core::watch::IndexMark::new(&f.path().join(".git"));
+    t.app.set_index_mark(mark.clone());
+    t.app.request_status();
+    let reqs = t.app.take_requests();
+    let msgs = t.exec_all(reqs);
+    // staged elsewhere after status read the index, before its reply is handled
+    f.git(&["add", "-A"]);
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    assert!(!mark.is_seen(), "the watcher must still report the external add");
+}
+
+#[test]
 fn space_and_a_toggle_whole_files() {
     let f = changes_fixture();
     let mut t = changes_tab(&f);

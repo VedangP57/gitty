@@ -77,6 +77,14 @@ pub fn classify_git(rel: &Path) -> Changed {
     }
 }
 
+/// Class of a path in the common git dir of a linked worktree: only what worktrees share
+/// (refs, config, excludes). The main worktree's HEAD, index and state files are not ours.
+pub fn classify_common(rel: &Path) -> Changed {
+    let s = rel.to_string_lossy();
+    let shared = matches!(s.as_ref(), "packed-refs" | "config" | "info/exclude" | "FETCH_HEAD") || s.starts_with("refs/") || s.starts_with("reftable/");
+    if shared { classify_git(rel) } else { Changed::NONE }
+}
+
 /// Class of a worktree path (ignore rules are checked separately).
 pub fn classify_worktree(rel: &Path) -> Changed {
     if rel.file_name().is_some_and(|n| n == ".gitignore") {
@@ -144,11 +152,16 @@ pub struct IndexMark {
 }
 
 impl IndexMark {
-    /// Call after gitty's own status run.
+    /// A mark for the index in `git_dir`, seen by nothing yet.
+    pub fn new(git_dir: &Path) -> IndexMark {
+        IndexMark { path: git_dir.join("index"), seen: Arc::new(Mutex::new(None)) }
+    }
+    /// Call just before gitty's own status run reads the index.
     pub fn note(&self) {
         *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = IndexFingerprint::of(&self.path);
     }
-    fn is_seen(&self) -> bool {
+    /// The index is still in the state the last status run read.
+    pub fn is_seen(&self) -> bool {
         let now = IndexFingerprint::of(&self.path);
         now.is_some() && *self.seen.lock().unwrap_or_else(|e| e.into_inner()) == now
     }
@@ -217,8 +230,10 @@ impl Watcher {
     pub fn spawn(repo: &Repo, on_change: impl Fn(Changed) + Send + 'static) -> anyhow::Result<Watcher> {
         let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         let git_dir = canon(repo.git_dir());
+        // a linked worktree's refs and config are in the main repository's git dir
+        let common = Some(canon(repo.common_dir())).filter(|c| *c != git_dir);
         let workdir = repo.workdir().map(canon);
-        let mark = IndexMark { path: git_dir.join("index"), seen: Arc::new(Mutex::new(None)) };
+        let mark = IndexMark::new(&git_dir);
         let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
         let mut inner = notify::recommended_watcher(move |e| {
             let _ = tx.send(e);
@@ -227,8 +242,18 @@ impl Watcher {
         if let Some(w) = &workdir {
             inner.watch(w, notify::RecursiveMode::Recursive)?;
         }
-        if workdir.as_ref().is_none_or(|w| !git_dir.starts_with(w)) {
-            inner.watch(&git_dir, notify::RecursiveMode::Recursive)?;
+        let outside = |d: &Path| workdir.as_ref().is_none_or(|w| !d.starts_with(w));
+        match &common {
+            // the linked worktree's own git dir is inside the common one
+            Some(c) if git_dir.starts_with(c) => inner.watch(c, notify::RecursiveMode::Recursive)?,
+            Some(c) => {
+                inner.watch(c, notify::RecursiveMode::Recursive)?;
+                if outside(&git_dir) {
+                    inner.watch(&git_dir, notify::RecursiveMode::Recursive)?;
+                }
+            }
+            None if outside(&git_dir) => inner.watch(&git_dir, notify::RecursiveMode::Recursive)?,
+            None => {}
         }
         let ignores_repo = repo.handle().repo;
         let thread_mark = mark.clone();
@@ -250,7 +275,7 @@ impl Watcher {
                 if let Some(ev) = ev {
                     let mask = match ev {
                         Ok(ev) if ev.need_rescan() => Changed::ALL,
-                        Ok(ev) => ev.paths.iter().fold(Changed::NONE, |m, p| m | classify(p, &git_dir, workdir.as_deref(), &mut ignores)),
+                        Ok(ev) => ev.paths.iter().fold(Changed::NONE, |m, p| m | classify(p, &git_dir, common.as_deref(), workdir.as_deref(), &mut ignores)),
                         Err(_) => Changed::ALL,
                     };
                     if mask.intersects(Changed::IGNORE_RULES) {
@@ -276,9 +301,12 @@ impl Watcher {
     }
 }
 
-fn classify(p: &Path, git_dir: &Path, workdir: Option<&Path>, ignores: &mut Ignores) -> Changed {
+fn classify(p: &Path, git_dir: &Path, common: Option<&Path>, workdir: Option<&Path>, ignores: &mut Ignores) -> Changed {
     if let Ok(rel) = p.strip_prefix(git_dir) {
         return classify_git(rel);
+    }
+    if let Some(rel) = common.and_then(|c| p.strip_prefix(c).ok()) {
+        return classify_common(rel);
     }
     match workdir.and_then(|w| p.strip_prefix(w).ok()) {
         Some(rel) if rel.as_os_str().is_empty() => Changed::WORKTREE,
@@ -310,6 +338,13 @@ mod tests {
         assert_eq!(c("info/exclude"), Changed::IGNORE_RULES);
         for ignored in ["objects/ab/cdef", "logs/HEAD", "COMMIT_EDITMSG", "AUTO_MERGE", "fsmonitor--daemon.ipc", "ORIG_HEAD", "hooks/pre-commit"] {
             assert_eq!(c(ignored), Changed::NONE, "{ignored}");
+        }
+        let common = |s: &str| classify_common(Path::new(s));
+        assert_eq!(common("refs/heads/main"), Changed::REFS);
+        assert_eq!(common("packed-refs"), Changed::REFS);
+        assert_eq!(common("refs/remotes/origin/main"), Changed::REMOTE);
+        for theirs in ["index", "HEAD", "MERGE_HEAD", "worktrees/other/HEAD", "rebase-merge/done"] {
+            assert_eq!(common(theirs), Changed::NONE, "{theirs}");
         }
         assert_eq!(classify_worktree(Path::new("src/.gitignore")), Changed::WORKTREE | Changed::IGNORE_RULES);
         assert_eq!(classify_worktree(Path::new("src/main.rs")), Changed::WORKTREE);

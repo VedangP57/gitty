@@ -71,7 +71,7 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 Plan::Nothing => {}
                 Plan::StageFile(paths) => cli.stage_paths(&paths)?,
                 Plan::UnstageFile(paths) => cli.unstage_paths(&paths)?,
-                Plan::Patch { patch, expect } => cli.apply_cached(&patch, &entry.path, expect)?,
+                Plan::Patch { patch, expect, target } => cli.apply_cached(&patch, &entry.path, expect, target)?,
             }
         }
         WriteOp::WriteFile { path, bytes, expect, head } => {

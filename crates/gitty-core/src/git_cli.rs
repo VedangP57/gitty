@@ -191,11 +191,18 @@ impl GitCli {
 
     /// Applies a patch to the index after checking `path`'s entry is still `expect` (spec §12.2
     /// TOCTOU guard): a mismatch means the index changed since the diff was made.
-    pub fn apply_cached(&self, patch: &[u8], path: &str, expect: Option<BlobId>) -> anyhow::Result<()> {
+    /// Afterwards the entry must be `target`: anything else is reported, not left silent.
+    pub fn apply_cached(&self, patch: &[u8], path: &str, expect: Option<BlobId>, target: BlobId) -> anyhow::Result<()> {
         if self.index_blob(path)? != expect {
             anyhow::bail!("{path} changed in the index since its diff was loaded; refreshing");
         }
-        self.quiet(Kind::Write, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(patch)).map(|_| ())
+        self.quiet(Kind::Write, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(patch))?;
+        let got = self.index_blob(path)?;
+        if got != Some(target) {
+            let got = got.map_or("no entry".to_string(), |b| b.to_string());
+            anyhow::bail!("the index now has {path} as {got}, not what was selected ({target}); check `git diff --cached -- {path}`");
+        }
+        Ok(())
     }
 
     /// `git commit -F -`; hook output streams through `on_stderr`.

@@ -224,7 +224,10 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let cancelled = spans.is_none() && stale();
             sink(Msg::Highlighted { key, spans: spans.map(Arc::new), cancelled });
         }
-        Request::Status { generation } => {
+        Request::Status { generation, mark } => {
+            if let Some(mark) = mark {
+                mark.note();
+            }
             let t = std::time::Instant::now();
             let result = gitty_core::git_cli::GitCli::new(h.owner()).status().map_err(|e| format!("{e:#}"));
             let slow = result.is_ok() && t.elapsed() >= SLOW_STATUS;

@@ -34,6 +34,12 @@ impl BlobId {
     }
 }
 
+impl std::fmt::Display for BlobId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.iter().try_for_each(|b| write!(f, "{b:02x}"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStatus {
     Added,

@@ -439,7 +439,7 @@ fn special_classes_show_messages() {
         ("moved.txt", "No content changes"),
         ("run.sh", "Mode changed 100644 → 100755"),
         ("package-lock.json", "press Enter to show"),
-        ("vendor/lib", "Submodule"),
+        ("vendor/lib", "Submodule vendor/lib: none..1111111"),
     ] {
         t.select_file(path);
         let s = text(&t.render(180, 30));
@@ -685,6 +685,32 @@ fn changes_tab_snapshots() {
         let s = text(&t.render(w, 30));
         insta::assert_snapshot!(format!("changes_{w}_{}", if focus_diff { "diff" } else { "files" }), s);
     }
+}
+
+#[test]
+fn a_moved_submodule_shows_a_card_in_changes() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - HOUR);
+    let sub = f.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(&sub).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "sub"]);
+    let new = git(&["rev-parse", "HEAD"]);
+    f.git(&["update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,sub"]);
+    // not f.commit: its `add -A` would record the nested repo's real HEAD
+    f.git(&["commit", "-q", "-m", "add sub"]);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("sub");
+    let s = text(&t.render(140, 30));
+    let want = format!("Submodule sub: 1111111..{}", &new[..7]);
+    assert!(s.contains(&want), "wanted {want:?}\n{s}");
 }
 
 #[test]

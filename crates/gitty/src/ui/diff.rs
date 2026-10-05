@@ -50,7 +50,7 @@ fn class_message(fd: &FileDiff, ws: WsMode) -> Option<String> {
             };
             format!("Git LFS object {} → {}", side(old), side(new))
         }
-        FileClass::Submodule { old, new } => format!("Submodule {} → {}", short(old), short(new)),
+        FileClass::Submodule { old, new } => format!("Submodule {}: {}..{}", fd.path, short(old), short(new)),
         FileClass::ModeOnly { old_mode, new_mode } => format!("Mode changed {old_mode:o} → {new_mode:o}"),
         FileClass::TooLarge { old_size, new_size } => format!("File too large to diff ({})", human((*old_size).max(*new_size))),
         FileClass::LargeText { reason } => {
