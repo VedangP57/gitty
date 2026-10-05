@@ -277,10 +277,13 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                 recv(in_rx) -> b => match b {
                     Ok(b) => on_input(&mut app, b, &mut terminal)?,
                     // the terminal is gone (input thread ended): quit instead of spinning
-                    Err(_) => break,
+                    Err(_) => {
+                        app.quit_now();
+                        break;
+                    }
                 },
                 recv(msg_rx) -> m => if let Ok(m) = m { trace!("msg {m:?}"); app.handle_msg(m) },
-                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; break },
+                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; app.quit_now(); break },
                 default(t) => fired = true,
             },
             None => select! {
@@ -290,7 +293,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                     Err(_) => break,
                 },
                 recv(msg_rx) -> m => if let Ok(m) = m { trace!("msg {m:?}"); app.handle_msg(m) },
-                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; break },
+                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; app.quit_now(); break },
             },
         }
         while let Ok(b) = in_rx.try_recv() {

@@ -152,6 +152,35 @@ fn sigterm_restores_terminal() {
     assert!(out.rfind("\x1b[?1049l") > out.rfind("\x1b[?1049h"), "alt screen left after SIGTERM");
 }
 
+#[test]
+fn sigterm_during_a_fetch_takes_the_fetch_down_too() {
+    let f = repo();
+    f.add_bare_upstream();
+    // the remote's upload-pack records its pid and hangs
+    let pidfile = f.path().join(".git/hang.pid");
+    f.git(&["config", "remote.origin.uploadpack", &format!("sh -c 'echo $$ > {}; exec sleep 97' #", pidfile.display())]);
+    let mut p = spawn(&f.path(), &[]);
+    p.wait_for("second commit");
+    p.master.write_all(b"f").unwrap();
+    let t = Instant::now();
+    while !pidfile.exists() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let pid: i32 = std::fs::read_to_string(&pidfile).expect("the fetch started").trim().parse().unwrap();
+    unsafe { libc::kill(p.child.id() as i32, libc::SIGTERM) };
+    assert_eq!(p.exit_code(), 128 + libc::SIGTERM);
+    let t = Instant::now();
+    while unsafe { libc::kill(pid, 0) } == 0 && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    if alive {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(!alive, "the fetch's upload-pack outlived gitty");
+}
+
 /// Screen cell (0-based) of the first file row at 120×40 with the default layout.
 fn first_file_cell() -> (u16, u16) {
     use gitty::app::Focus;
