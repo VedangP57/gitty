@@ -188,7 +188,8 @@ pub enum Plan {
     /// No change is staged: `git restore --staged -- paths`.
     UnstageFile(Vec<String>),
     /// `git apply --cached` this patch, after checking the index entry is still `expect`.
-    Patch { patch: Vec<u8>, expect: Option<BlobId> },
+    /// `target` is the blob the index must hold afterwards.
+    Patch { patch: Vec<u8>, expect: Option<BlobId>, target: BlobId },
 }
 
 pub fn plan(e: &StatusEntry, t: &Texts, head_wt_ops: &[Op], staged: &[bool]) -> Plan {
@@ -210,7 +211,7 @@ pub fn plan(e: &StatusEntry, t: &Texts, head_wt_ops: &[Op], staged: &[bool]) -> 
             let m = if e.kind == EntryKind::Untracked { t.wt_mode } else { e.head_mode.max(t.wt_mode) };
             if m == 0 { 0o100644 } else { m }
         });
-        Plan::Patch { patch: unified_patch(&e.path, &t.index, &target, create), expect: e.index_blob }
+        Plan::Patch { patch: unified_patch(&e.path, &t.index, &target, create), expect: e.index_blob, target: BlobId::hash_of(&target) }
     }
 }
 
@@ -307,6 +308,9 @@ impl Handle {
 
     /// HEAD, index and worktree (git form) versions of a status entry's file.
     pub fn stage_texts(&self, e: &StatusEntry) -> anyhow::Result<Texts> {
+        if [e.head_mode, e.index_mode, e.wt_mode].contains(&crate::commit_files::MODE_SUBMODULE) {
+            return self.submodule_texts(e);
+        }
         let head = self.blob_text(e.head_blob)?;
         let index = self.blob_text(e.index_blob)?;
         let root = self.owner().workdir().ok_or_else(|| anyhow::anyhow!("bare repository"))?;
@@ -324,6 +328,18 @@ impl Handle {
         let wt_is_raw = git_form == raw;
         let wt_blob = BlobId::hash_of(&git_form);
         Ok(Texts { head, index, wt: Arc::new(Text::new(git_form)), wt_is_raw, wt_mode, wt_blob })
+    }
+
+    /// A submodule's "texts" are the commit ids it points at, which the diff shows as a card:
+    /// HEAD's and the index's gitlinks, and the checked-out commit of the submodule itself.
+    fn submodule_texts(&self, e: &StatusEntry) -> anyhow::Result<Texts> {
+        let id = |b: Option<BlobId>| Arc::new(Text::new(b.map(|b| b.to_string().into_bytes()).unwrap_or_default()));
+        let root = self.owner().workdir().ok_or_else(|| anyhow::anyhow!("bare repository"))?;
+        let checked_out = gix::open(root.join(&e.path)).ok().and_then(|r| r.head_id().ok().map(|h| h.to_string()));
+        let wt = checked_out.map(String::into_bytes).unwrap_or_default();
+        let wt_mode = if wt.is_empty() { 0 } else { crate::commit_files::MODE_SUBMODULE };
+        let wt_blob = BlobId::hash_of(&wt);
+        Ok(Texts { head: id(e.head_blob), index: id(e.index_blob), wt: Arc::new(Text::new(wt)), wt_is_raw: true, wt_mode, wt_blob })
     }
 
     /// Applies clean filters, eol and autocrlf conversion as `git add` would.

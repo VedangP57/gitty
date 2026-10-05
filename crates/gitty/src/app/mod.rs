@@ -3,9 +3,13 @@
 
 pub mod changes;
 pub mod commit;
+pub mod compare;
 pub mod net;
 pub mod diffstate;
 mod input;
+pub mod search;
+mod tools;
+pub mod tree;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -24,7 +28,7 @@ use ratatui::layout::Rect;
 
 use crate::config::{Config, Density, UiState};
 use crate::dates::{DateMode, next_threshold};
-use crate::msg::{DiffKey, Gens, HlKey, Msg, Request, SharedHistory};
+use crate::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
 use crate::ui::layout::{self, LayoutInput, Mode, Panes, Sep};
 use diffstate::{DiffState, Wrap};
@@ -47,7 +51,7 @@ pub enum Tab {
 
 pub enum Overlay {
     ThemePicker { sel: usize, original: Theme },
-    Help,
+    Help { scroll: usize },
     ErrorDetail,
     /// A destructive write waiting for Enter (or `y`); Esc cancels.
     Confirm { title: String, body: String, op: crate::msg::WriteOp },
@@ -57,6 +61,10 @@ pub enum Overlay {
     Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
     /// A pull found local and upstream commits: merge, rebase or cancel.
     Diverged,
+    /// `b`: pick the branch to compare with.
+    BranchPicker { query: crate::editor::Editor, sel: usize },
+    /// `q` while a network job runs.
+    Quit { label: String },
 }
 
 #[derive(Debug, Clone)]
@@ -182,14 +190,24 @@ pub struct App {
     pub detail: Option<CommitDetail>,
     pub header_expanded: bool,
     pub files: Option<Arc<Vec<FileChange>>>,
-    files_id: Option<CommitId>,
+    /// The list `files` shows, and the one the selection wants (they differ while loading).
+    files_of: Option<FilesOf>,
+    files_wanted: Option<FilesOf>,
+    /// `V` (or Shift-click): the other end of a contiguous range ending at `selected`.
+    pub range_anchor: Option<usize>,
     pub stats: Vec<Option<LineStats>>,
     pub stats_done: bool,
     /// Listing the selected commit's files failed.
     pub files_error: Option<String>,
     pub file_sel: usize,
     pub file_scroll: usize,
-    file_cache: Lru<CommitId, CachedFiles>,
+    /// Tree view: the directory row the cursor rests on (None: on the selected file).
+    tree_dir: Option<String>,
+    /// Collapsed directories of the tree view, by path.
+    collapsed: HashSet<String>,
+    /// Rows of the files pane (see `tree.rs`), rebuilt when the list or view changes.
+    file_rows: Vec<tree::FileRow>,
+    file_cache: Lru<FilesOf, CachedFiles>,
     prefetching: HashSet<CommitId>,
 
     pub diff: Option<DiffState>,
@@ -240,10 +258,31 @@ pub struct App {
     pub tune_thresholds: gitty_core::tune::Thresholds,
     last_tune: Option<Instant>,
     tune_announced: bool,
+    /// The user dismissed a credential prompt of the running job.
+    prompt_cancelled: bool,
+    /// A Diverged question waiting for the open overlay to close.
+    pending_diverged: bool,
+    /// The last auto-fetch failed: its details, until a fetch works.
+    bg_failure: Option<String>,
+    pub search: search::Search,
+    /// Compare mode (`b`); the history pane lists its commits instead.
+    pub compare: Option<compare::CompareMode>,
+    /// A tool for the main loop to run with the terminal handed over.
+    pub external: Option<crate::external::External>,
+    /// The working tree, for opening files in the editor (set by the main loop).
+    pub workdir: Option<PathBuf>,
+    last_click: Option<(Instant, u16, u16)>,
+    compare_gen: u64,
+    /// Rows per search request (lowered in tests).
+    pub search_chunk: usize,
+    pub keymap: crate::keymap::Keymap,
+    /// Problems in `[keys]`, for the startup toast.
+    pub key_warnings: Vec<String>,
 }
 
 impl App {
     pub fn new(i: AppInit) -> App {
+        let (keymap, key_warnings) = crate::keymap::Keymap::from_config(&i.config.keys);
         let scope = if i.ui_state.scope_all { HistoryScope::AllRefs } else { HistoryScope::HeadAndUpstream };
         let mut app = App {
             repo_name: i.repo_name,
@@ -283,12 +322,17 @@ impl App {
             detail: None,
             header_expanded: false,
             files: None,
-            files_id: None,
+            files_of: None,
+            files_wanted: None,
+            range_anchor: None,
             stats: Vec::new(),
             stats_done: false,
             files_error: None,
             file_sel: 0,
             file_scroll: 0,
+            tree_dir: None,
+            collapsed: HashSet::new(),
+            file_rows: Vec::new(),
             file_cache: Lru::new(1024),
             prefetching: HashSet::new(),
             diff: None,
@@ -323,6 +367,18 @@ impl App {
             tune_thresholds: gitty_core::tune::Thresholds::DEFAULT,
             last_tune: None,
             tune_announced: false,
+            prompt_cancelled: false,
+            pending_diverged: false,
+            bg_failure: None,
+            search: Default::default(),
+            compare: None,
+            external: None,
+            workdir: None,
+            last_click: None,
+            compare_gen: 0,
+            search_chunk: search::SEARCH_CHUNK,
+            keymap,
+            key_warnings,
         };
         app.request_status();
         app
@@ -337,9 +393,20 @@ impl App {
     pub fn selected_id(&self) -> Option<CommitId> {
         self.selected_id
     }
-    /// The commit whose file list is shown.
+    /// The commit whose file list is shown (None for a range).
     pub fn files_for(&self) -> Option<CommitId> {
-        self.files_id
+        match self.files_of? {
+            FilesOf::Commit(id) => Some(id),
+            FilesOf::Range { .. } | FilesOf::Between { .. } => None,
+        }
+    }
+    pub fn files_of(&self) -> Option<FilesOf> {
+        self.files_of
+    }
+    /// (oldest, newest) history indices of the selected range; None without a range.
+    pub fn selected_range(&self) -> Option<(usize, usize)> {
+        let a = self.range_anchor.filter(|&a| a < self.history_len)?;
+        Some((a.max(self.selected), a.min(self.selected)))
     }
     pub fn selected_row(&self) -> Option<&CommitRow> {
         self.rows.get(&self.selected).filter(|r| Some(r.id) == self.selected_id)
@@ -377,7 +444,7 @@ impl App {
             focus: self.focus,
             fullscreen: self.fullscreen,
             header_height: self.header_height(),
-            file_count: self.files.as_ref().map_or(0, |f| f.len()),
+            file_count: self.file_rows.len(),
             ui: &self.ui_state,
         };
         match self.tab {
@@ -437,6 +504,8 @@ impl App {
         self.dirty = true;
         let Some(m) = self.handle_changes_msg(m) else { return };
         let Some(m) = self.handle_net_msg(m) else { return };
+        let Some(m) = self.handle_search_msg(m) else { return };
+        let Some(m) = self.handle_compare_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
@@ -448,7 +517,7 @@ impl App {
                 if moved {
                     // a refresh after a commit or fetch keeps the selected commit selected
                     if self.history.is_some() {
-                        self.reselect = self.selected_id.or(self.reselect);
+                        self.reselect = self.history_selection().or(self.reselect);
                     }
                     self.start_walk();
                 }
@@ -485,6 +554,7 @@ impl App {
                     self.select_at(0);
                 }
                 self.request_visible_rows();
+                self.request_search_chunks();
             }
             Msg::Rows { session, rows } => {
                 if session == self.session {
@@ -503,30 +573,32 @@ impl App {
                     self.detail = Some(detail);
                 }
             }
-            Msg::Files { generation, id, files, prefetch } => {
-                if prefetch {
+            Msg::Files { generation, of, files, prefetch } => {
+                if let (true, FilesOf::Commit(id)) = (prefetch, of) {
                     self.prefetching.remove(&id);
                 }
-                if !self.file_cache.contains(&id) {
+                if !self.file_cache.contains(&of) {
                     let n = files.len();
-                    self.file_cache.insert(id, CachedFiles { files: files.clone(), stats: vec![None; n], done: n == 0 });
+                    self.file_cache.insert(of, CachedFiles { files: files.clone(), stats: vec![None; n], done: n == 0 });
                 }
-                if !prefetch && generation == self.commit_gen && Some(id) == self.selected_id && self.files_id != Some(id) {
-                    let cached = self.file_cache.get(&id).cloned();
+                if !prefetch && generation == self.commit_gen && Some(of) == self.files_wanted && self.files_of != Some(of) {
+                    let cached = self.file_cache.get(&of).cloned();
                     if let Some(c) = cached {
-                        self.install_files(id, c);
+                        self.install_files(of, c);
                     }
                 }
             }
-            Msg::FilesError { generation, id, prefetch, detail } => {
+            Msg::FilesError { generation, of, prefetch, detail } => {
                 if prefetch {
-                    self.prefetching.remove(&id);
-                } else if generation == self.commit_gen && Some(id) == self.selected_id {
+                    if let FilesOf::Commit(id) = of {
+                        self.prefetching.remove(&id);
+                    }
+                } else if generation == self.commit_gen && Some(of) == self.files_wanted {
                     self.files_error = Some(detail);
                 }
             }
-            Msg::Stats { id, start, stats, done } => {
-                if let Some(c) = self.file_cache.get(&id) {
+            Msg::Stats { of, start, stats, done } => {
+                if let Some(c) = self.file_cache.get(&of) {
                     for (i, s) in stats.iter().enumerate() {
                         if let Some(slot) = c.stats.get_mut(start + i) {
                             *slot = *s;
@@ -534,7 +606,7 @@ impl App {
                     }
                     c.done |= done;
                 }
-                if self.files_id == Some(id) {
+                if self.files_of == Some(of) {
                     for (i, s) in stats.into_iter().enumerate() {
                         if let Some(slot) = self.stats.get_mut(start + i) {
                             *slot = s;
@@ -568,8 +640,9 @@ impl App {
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
+            Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
     }
 
@@ -626,7 +699,10 @@ impl App {
         self.history_done = false;
         self.rows.clear();
         self.requested_rows.clear();
+        // indices of the old walk mean nothing in the new one
+        self.range_anchor = None;
         self.outbox.push(Request::Walk { session: self.session, tips });
+        self.restart_search();
     }
 
     pub fn toggle_scope(&mut self) {
@@ -641,7 +717,10 @@ impl App {
         self.selected = 0;
         self.detail = None;
         self.files = None;
-        self.files_id = None;
+        self.file_rows.clear();
+        self.files_of = None;
+        self.files_wanted = None;
+        self.range_anchor = None;
         self.files_error = None;
         self.stats.clear();
         self.diff = None;
@@ -656,6 +735,29 @@ impl App {
     fn history_id(&self, i: usize) -> Option<CommitId> {
         let h = self.history.as_ref()?.read().unwrap_or_else(PoisonError::into_inner);
         (i < h.len()).then(|| h.id(i))
+    }
+
+    /// `V`: starts a range at the selection, or ends the current one.
+    pub fn toggle_range(&mut self) {
+        self.range_anchor = match self.range_anchor {
+            Some(_) => None,
+            None => Some(self.selected),
+        };
+        self.load_files();
+    }
+
+    pub fn end_range(&mut self) {
+        if self.range_anchor.take().is_some() {
+            self.load_files();
+        }
+    }
+
+    /// Shift- or Ctrl-click: extends a range (anchored at the selection) to `idx`.
+    pub fn extend_range(&mut self, idx: usize) {
+        if self.range_anchor.is_none() {
+            self.range_anchor = Some(self.selected);
+        }
+        self.select(idx);
     }
 
     /// Selects history row `idx` on the user's behalf (cancels a pending re-selection).
@@ -673,27 +775,63 @@ impl App {
         self.selected = idx;
         self.ensure_list_visible();
         self.request_visible_rows();
-        if Some(id) == self.selected_id {
+        if self.compare.is_some() {
+            // compare mode shows its own commits; the history row waits for Esc
             return;
         }
-        self.selected_id = Some(id);
-        self.commit_gen = Gens::bump(&self.gens.commit);
-        self.detail = None;
+        self.show_commit(id);
+    }
+
+    /// Makes `id` the commit whose detail, files and diff are shown.
+    fn show_commit(&mut self, id: CommitId) {
+        if Some(id) != self.selected_id {
+            self.selected_id = Some(id);
+            self.commit_gen = Gens::bump(&self.gens.commit);
+            self.detail = None;
+            self.outbox.push(Request::Detail { generation: self.commit_gen, id });
+        }
+        self.load_files();
+    }
+
+    /// The file list the selection asks for: the range when one is selected, else the commit.
+    fn files_target(&self) -> Option<FilesOf> {
+        if let Some(c) = &self.compare {
+            return match c.tab {
+                compare::CompareTab::Files => self.compare_files(),
+                _ => self.selected_id.map(FilesOf::Commit),
+            };
+        }
+        let id = self.selected_id?;
+        match self.selected_range() {
+            Some((oldest, newest)) if oldest != newest => {
+                Some(FilesOf::Range { oldest: self.history_id(oldest)?, newest: self.history_id(newest)? })
+            }
+            _ => Some(FilesOf::Commit(id)),
+        }
+    }
+
+    /// Shows (or requests) the wanted file list when it changed.
+    fn load_files(&mut self) {
+        let Some(of) = self.files_target() else { return };
+        if self.files_wanted == Some(of) {
+            return;
+        }
+        self.files_wanted = Some(of);
         self.files = None;
-        self.files_id = None;
+        self.file_rows.clear();
+        self.files_of = None;
         self.stats.clear();
         self.stats_done = false;
         self.files_error = None;
         self.file_sel = 0;
         self.file_scroll = 0;
         self.force_text = false;
-        self.outbox.push(Request::Detail { generation: self.commit_gen, id });
-        match self.file_cache.get(&id).cloned() {
+        match self.file_cache.get(&of).cloned() {
             Some(c) => {
                 if !c.done {
-                    self.outbox.push(Request::Files { generation: self.commit_gen, id, prefetch: false });
+                    self.outbox.push(Request::Files { generation: self.commit_gen, of, prefetch: false });
                 }
-                self.install_files(id, c);
+                self.install_files(of, c);
             }
             None => {
                 // nothing to show for this commit yet: drop the previous commit's diff
@@ -701,18 +839,20 @@ impl App {
                 self.diff_wanted = None;
                 self.diff_deadline = None;
                 self.file_gen = Gens::bump(&self.gens.file);
-                self.outbox.push(Request::Files { generation: self.commit_gen, id, prefetch: false });
+                self.outbox.push(Request::Files { generation: self.commit_gen, of, prefetch: false });
             }
         }
     }
 
-    fn install_files(&mut self, id: CommitId, c: CachedFiles) {
-        self.files_id = Some(id);
+    fn install_files(&mut self, of: FilesOf, c: CachedFiles) {
+        self.files_of = Some(of);
         self.stats = c.stats;
         self.stats_done = c.done;
         let empty = c.files.is_empty();
         self.files = Some(c.files);
-        self.file_sel = 0;
+        self.refresh_file_rows();
+        self.tree_dir = None;
+        self.file_sel = self.first_file_row();
         self.file_scroll = 0;
         if empty {
             self.diff = None;
@@ -737,11 +877,11 @@ impl App {
             if self.prefetching.len() >= MAX_PREFETCH_IN_FLIGHT {
                 break;
             }
-            if self.file_cache.contains(&id) || self.prefetching.contains(&id) {
+            if self.file_cache.contains(&FilesOf::Commit(id)) || self.prefetching.contains(&id) {
                 continue;
             }
             self.prefetching.insert(id);
-            self.outbox.push(Request::Files { generation: 0, id, prefetch: true });
+            self.outbox.push(Request::Files { generation: 0, of: FilesOf::Commit(id), prefetch: true });
         }
     }
 
@@ -757,10 +897,11 @@ impl App {
 
     pub fn ensure_files_visible(&mut self) {
         let cap = self.files_capacity();
-        if self.file_sel < self.file_scroll {
-            self.file_scroll = self.file_sel;
-        } else if self.file_sel >= self.file_scroll + cap {
-            self.file_scroll = self.file_sel + 1 - cap;
+        let cur = self.file_cursor();
+        if cur < self.file_scroll {
+            self.file_scroll = cur;
+        } else if cur >= self.file_scroll + cap {
+            self.file_scroll = cur + 1 - cap;
         }
     }
 
@@ -817,6 +958,7 @@ impl App {
             return;
         }
         let i = i.min(n - 1);
+        self.tree_dir = None;
         self.ensure_files_visible();
         if i == self.file_sel && self.diff_wanted.is_some() {
             return;

@@ -1,6 +1,7 @@
 //! The input thread: blocks on terminal events, then drains whatever else is already queued so
 //! a burst (wheel scrolling, resizes) becomes one batch and one frame.
 
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use crossbeam_channel::Sender;
@@ -71,10 +72,67 @@ pub fn coalesce(evs: Vec<Event>) -> Vec<InputEvent> {
     out
 }
 
-pub fn spawn(tx: Sender<Vec<InputEvent>>) {
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum GateState {
+    #[default]
+    Running,
+    PauseAsked,
+    Paused,
+}
+
+/// Lets the main loop stop the input thread from reading the terminal while an external tool
+/// owns it (otherwise the two would split the keystrokes).
+#[derive(Debug, Default, Clone)]
+pub struct Gate(Arc<(Mutex<GateState>, Condvar)>);
+
+/// How long a read waits before checking the gate.
+const POLL: Duration = Duration::from_millis(100);
+
+impl Gate {
+    /// Returns once the input thread is idle (at most one poll interval, plus a margin).
+    pub fn pause(&self) {
+        let (m, cv) = &*self.0;
+        let mut st = m.lock().unwrap_or_else(PoisonError::into_inner);
+        *st = GateState::PauseAsked;
+        let deadline = std::time::Instant::now() + 10 * POLL;
+        while *st == GateState::PauseAsked {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            st = cv.wait_timeout(st, left).unwrap_or_else(PoisonError::into_inner).0;
+        }
+    }
+    pub fn resume(&self) {
+        let (m, cv) = &*self.0;
+        *m.lock().unwrap_or_else(PoisonError::into_inner) = GateState::Running;
+        cv.notify_all();
+    }
+    /// The input thread's side: parks while paused.
+    fn checkpoint(&self) {
+        let (m, cv) = &*self.0;
+        let mut st = m.lock().unwrap_or_else(PoisonError::into_inner);
+        if *st == GateState::PauseAsked {
+            *st = GateState::Paused;
+            cv.notify_all();
+        }
+        while *st == GateState::Paused {
+            st = cv.wait(st).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+pub fn spawn(tx: Sender<Vec<InputEvent>>, gate: Gate) {
     let _ = std::thread::Builder::new().name("gitty-input".into()).spawn(move || {
         let mut osc = OscFilter::default();
-        while let Ok(first) = event::read() {
+        loop {
+            gate.checkpoint();
+            match event::poll(POLL) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => break,
+            }
+            let Ok(first) = event::read() else { break };
             let mut batch: Vec<Event> = std::iter::once(first).filter(|e| osc.keep(e)).collect();
             while event::poll(Duration::ZERO).unwrap_or(false) {
                 match event::read() {

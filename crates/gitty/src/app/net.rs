@@ -53,8 +53,41 @@ impl App {
             NetOp::Push => "Pushing",
         };
         self.net = Some(NetJob { op, label: label.into(), fraction: None, cancel: None, background: false, remote: None });
+        self.prompt_cancelled = false;
         let mode = self.net_mode(false);
         self.outbox.push(Request::Net { op, mode, background: false });
+    }
+
+    /// `q`: with a job running in the foreground, ask first; a background fetch is just cancelled.
+    pub fn request_quit(&mut self) {
+        match &self.net {
+            Some(j) if !j.background => self.overlay = Some(Overlay::Quit { label: j.label.clone() }),
+            _ => self.quit_now(),
+        }
+    }
+
+    /// Quits, cancelling the running job so git does not outlive gitty.
+    pub fn quit_now(&mut self) {
+        if let Some(c) = self.net.as_ref().and_then(|j| j.cancel.clone()) {
+            c.cancel();
+        }
+        self.quit = true;
+    }
+
+    pub fn pending_asks(&self) -> usize {
+        self.asks.len()
+    }
+
+    /// The top bar's note about the last auto-fetch, when it failed.
+    pub fn background_problem(&self) -> Option<String> {
+        self.bg_failure.as_ref().map(|_| "auto-fetch failed · !".to_string())
+    }
+
+    /// `!` with no error toast: the last auto-fetch failure's details.
+    pub(super) fn show_background_problem(&mut self) {
+        if let Some(detail) = self.bg_failure.clone() {
+            self.toast = Some(Toast { what: "auto-fetch failed".into(), detail, error: true });
+        }
     }
 
     /// `x`: cancel the running job when it can be cancelled.
@@ -104,9 +137,27 @@ impl App {
         let job = self.net.take();
         let remote = job.as_ref().and_then(|j| j.remote.clone());
         let label = job.map_or_else(|| op.verb().to_string(), |j| j.label);
-        if matches!(op, NetOp::Fetch | NetOp::Pull) && matches!(outcome, Outcome::Ok { .. }) {
+        // the job's prompts went with it
+        if let Some(Overlay::Prompt { ask, .. }) = &self.overlay {
+            let id = ask.id;
+            self.overlay = None;
+            self.answer(id, None);
+        }
+        for a in std::mem::take(&mut self.asks) {
+            self.answer(a.id, None);
+        }
+        let prompt_cancelled = std::mem::take(&mut self.prompt_cancelled);
+        let ok = matches!(outcome, Outcome::Ok { .. });
+        if matches!(op, NetOp::Fetch | NetOp::Pull) && ok {
             self.last_fetch = self.clock;
             self.needs_auth = None;
+            self.bg_failure = None;
+        }
+        if ok && op != NetOp::Push {
+            if op != NetOp::Fetch {
+                // HEAD moved: check now, not at the next 10-minute slot
+                self.last_tune = None;
+            }
             // new commits may be missing from the commit-graph
             self.request_tune();
         }
@@ -128,13 +179,27 @@ impl App {
             }
             Outcome::Cancelled => toast(format!("{} cancelled", op.verb()), String::new(), false),
             Outcome::Diverged => {
-                self.overlay = Some(Overlay::Diverged);
+                // behind whatever is open (help, a confirmation): asked when it closes
+                if self.overlay.is_some() {
+                    self.pending_diverged = true;
+                } else {
+                    self.overlay = Some(Overlay::Diverged);
+                }
                 None
             }
-            Outcome::Rejected { refs } => {
-                let detail = refs.iter().map(|r| format!("{} → {}: {}", r.local, r.remote, r.summary)).collect::<Vec<_>>().join("\n");
-                toast("Push rejected: the remote has commits you don't have; pull first (p)".into(), detail, true)
+            Outcome::Rejected { refs, detail } => {
+                let lines = refs.iter().filter(|r| r.flag == '!').map(|r| format!("{} → {}: {}", r.local, r.remote, r.summary)).collect::<Vec<_>>().join("\n");
+                let detail = format!("{lines}\n{detail}").trim().to_string();
+                if refs.iter().any(|r| r.needs_pull()) {
+                    toast("Push rejected: the remote has commits you don't have; pull first (p)".into(), detail, true)
+                } else {
+                    // "[remote rejected] (pre-receive hook declined)" → "pre-receive hook declined"
+                    let summary = refs.iter().find(|r| r.flag == '!').map_or("", |r| r.summary.as_str());
+                    let why = summary.rsplit_once('(').and_then(|(_, r)| r.strip_suffix(')')).unwrap_or(summary);
+                    toast(format!("Push refused by the remote: {why}"), detail, true)
+                }
             }
+            Outcome::NeedsAuth { .. } if prompt_cancelled => toast(format!("{} cancelled at the prompt", op.verb()), String::new(), false),
             Outcome::NeedsAuth { detail } => toast(format!("{} failed: the remote refused the credentials", op.verb()), detail, true),
             Outcome::Failed { detail } if detail.contains("CONFLICT") => {
                 let what = if op == NetOp::PullRebase {
@@ -152,10 +217,14 @@ impl App {
         };
     }
 
-    /// Background (auto-fetch) results are quiet; credentials it cannot supply turn it off.
+    /// Background (auto-fetch) results are quiet: credentials it cannot supply turn it off,
+    /// other failures show in the top bar (details on `!`), and a cancel says so.
     fn background_done(&mut self, outcome: Outcome, remote: Option<String>) {
-        if let Outcome::NeedsAuth { .. } = outcome {
-            self.needs_auth = Some(remote.unwrap_or_else(|| "the remote".into()));
+        match outcome {
+            Outcome::NeedsAuth { .. } => self.needs_auth = Some(remote.unwrap_or_else(|| "the remote".into())),
+            Outcome::Failed { detail } => self.bg_failure = Some(detail),
+            Outcome::Cancelled => self.toast = Some(Toast { what: "Auto-fetch cancelled".into(), detail: String::new(), error: false }),
+            _ => {}
         }
     }
 
@@ -210,6 +279,10 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        if std::mem::take(&mut self.pending_diverged) {
+            self.overlay = Some(Overlay::Diverged);
+            return;
+        }
         if let Some(ask) = self.asks.pop_front() {
             let mut input = Editor::single();
             input.reserve(256);
@@ -227,7 +300,10 @@ impl App {
     pub(super) fn prompt_key(&mut self, ask: Ask, mut input: Editor, k: KeyEvent) {
         let yes_no = ask.kind == AskKind::YesNo;
         match k.code {
-            KeyCode::Esc => self.answer(ask.id, None),
+            KeyCode::Esc => {
+                self.prompt_cancelled = true;
+                self.answer(ask.id, None);
+            }
             KeyCode::Char('y') if yes_no => self.answer(ask.id, Some(Secret::new("yes"))),
             KeyCode::Char('n') if yes_no => self.answer(ask.id, Some(Secret::new("no"))),
             KeyCode::Enter if !yes_no => self.answer(ask.id, Some(Secret::new(input.take()))),

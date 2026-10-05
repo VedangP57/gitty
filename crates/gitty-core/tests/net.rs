@@ -72,7 +72,7 @@ fn push_updates_the_remote_and_rejects_non_fast_forward() {
     f.commit("mine again", 1_700_000_200);
     let (out, _) = run(&f, NetCmd::Push(push_target(&cli(&f), "main").unwrap()), Mode::Background);
     match out {
-        Outcome::Rejected { refs } => assert!(refs.iter().any(|r| r.flag == '!' && r.remote.ends_with("main")), "{refs:?}"),
+        Outcome::Rejected { refs, .. } => assert!(refs.iter().any(|r| r.flag == '!' && r.remote.ends_with("main")), "{refs:?}"),
         o => panic!("{o:?}"),
     }
 }
@@ -194,4 +194,58 @@ fn background_jobs_never_fall_back_to_core_askpass() {
     let (out, _) = run(&f, NetCmd::Fetch { remote: "needs".into() }, Mode::Background);
     assert!(matches!(out, Outcome::NeedsAuth { .. }), "{out:?}");
     assert!(!marker.exists(), "core.askPass was run by a background job");
+}
+
+#[test]
+fn a_cancel_after_git_already_finished_reports_what_git_did() {
+    let (f, _bare) = base();
+    let job = Job::spawn(&cli(&f), NetCmd::Fetch { remote: "origin".into() }, Mode::Background).unwrap();
+    // git is done (not reaped yet) when the cancel arrives
+    std::thread::sleep(Duration::from_millis(800));
+    job.cancel_handle().cancel();
+    let out = job.wait(&mut |_| {});
+    assert!(matches!(out, Outcome::Ok { .. }), "the fetch succeeded: {out:?}");
+}
+
+#[test]
+fn a_helper_holding_stderr_cannot_block_the_result() {
+    let (f, _) = base();
+    // the transport leaves a child behind that keeps git's stderr open, then fails
+    f.script_remote("linger", "sleep 30 </dev/null >/dev/null &\nexit 1");
+    let job = Job::spawn(&cli(&f), NetCmd::Fetch { remote: "linger".into() }, Mode::Background).unwrap();
+    let pgid = job.cancel_handle().pgid();
+    let t = Instant::now();
+    let out = job.wait(&mut |_| {});
+    let took = t.elapsed();
+    // SAFETY: cleanup of the test's own group
+    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    assert!(matches!(out, Outcome::Failed { .. }), "{out:?}");
+    assert!(took < Duration::from_secs(4), "waited {took:?} for a lingering stderr holder");
+}
+
+#[test]
+fn a_hook_decline_is_not_a_pull_first_rejection() {
+    let (f, bare) = base();
+    let hook = bare.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\necho 'policy: no pushes today' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.write("c.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let (out, _) = run(&f, NetCmd::Push(push_target(&cli(&f), "main").unwrap()), Mode::Background);
+    match out {
+        Outcome::Rejected { refs, .. } => {
+            assert!(refs.iter().all(|r| !r.needs_pull()), "{refs:?}");
+            assert!(refs[0].summary.contains("hook declined"), "{refs:?}");
+        }
+        o => panic!("{o:?}"),
+    }
+    std::fs::remove_file(&hook).unwrap();
+    common::push_as_someone_else(&bare, "d.txt");
+    f.write("e.txt", "again\n");
+    f.commit("again", 1_700_000_200);
+    match run(&f, NetCmd::Push(push_target(&cli(&f), "main").unwrap()), Mode::Background).0 {
+        Outcome::Rejected { refs, .. } => assert!(refs.iter().any(|r| r.needs_pull()), "{refs:?}"),
+        o => panic!("{o:?}"),
+    }
 }

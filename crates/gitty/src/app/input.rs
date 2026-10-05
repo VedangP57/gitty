@@ -6,8 +6,10 @@ use gitty_core::diff::view::{Expand, Row, SplitRow};
 use ratatui::layout::{Position, Rect};
 
 use super::diffstate::VRow;
+use super::changes::Side;
 use super::{App, Focus, Overlay, Tab, Toast};
 use crate::config::{Config, Density};
+use crate::keymap::{Action, State};
 use crate::ui::layout::{self, MAX_FILES, MIN_FILES, Mode, Sep};
 
 #[derive(Clone, Copy)]
@@ -49,7 +51,7 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
             match k.code {
-                KeyCode::Char('c') => return self.quit = true,
+                KeyCode::Char('c') => return self.quit_now(),
                 KeyCode::Char('z') => return self.suspend = true,
                 _ => {}
             }
@@ -62,86 +64,90 @@ impl App {
         if self.tab == Tab::Changes && self.focus == Focus::Commit {
             return self.commit_key(k);
         }
-        match k.code {
-            KeyCode::Char('q') => return self.quit = true,
-            KeyCode::Char('1') => return self.set_tab(Tab::Changes),
-            KeyCode::Char('2') => return self.set_tab(Tab::History),
-            KeyCode::Char('T') => return self.open_theme_picker(),
-            KeyCode::Char('f') if !ctrl => return self.start_net(crate::msg::NetOp::Fetch),
-            KeyCode::Char('p') if !ctrl => return self.start_net(crate::msg::NetOp::Pull),
-            KeyCode::Char('P') => return self.start_net(crate::msg::NetOp::Push),
-            KeyCode::Char('x') if !ctrl => return self.cancel_net(),
-            KeyCode::Char('?') => return self.overlay = Some(Overlay::Help),
-            KeyCode::Char('!') if self.toast.is_some() => return self.overlay = Some(Overlay::ErrorDetail),
-            _ => {}
+        if self.search.bar.is_some() {
+            return self.search_bar_key(k);
         }
-        if self.tab == Tab::Changes && self.changes_key(k) {
-            return;
+        let state = State { tab: self.tab, focus: self.focus, compare: self.compare.is_some() };
+        if let Some(a) = self.keymap.resolve(&k, state) {
+            self.act(a);
+        }
+    }
+
+    /// Runs a bound action; what some of them mean depends on the tab and pane.
+    fn act(&mut self, a: Action) {
+        // the split side picked by a click applies to the Space right after it, nothing later
+        if a != Action::Stage {
+            self.changes.side = None;
         }
         let split = self.split_active();
-        match (k.code, ctrl) {
-            (KeyCode::Char('d'), true) => self.move_focused(Move::Half(1)),
-            (KeyCode::Char('u'), true) => self.move_focused(Move::Half(-1)),
-            (KeyCode::Char('f'), true) | (KeyCode::PageDown, _) => self.move_focused(Move::Page(1)),
-            (KeyCode::Char('b'), true) | (KeyCode::PageUp, _) => self.move_focused(Move::Page(-1)),
-            (KeyCode::Char('j') | KeyCode::Down, false) => self.move_focused(Move::Step(1)),
-            (KeyCode::Char('k') | KeyCode::Up, false) => self.move_focused(Move::Step(-1)),
-            (KeyCode::Char('g') | KeyCode::Home, _) => self.move_focused(Move::Top),
-            (KeyCode::Char('G') | KeyCode::End, _) => self.move_focused(Move::Bottom),
-            (KeyCode::Tab, _) => self.cycle_focus(1),
-            (KeyCode::BackTab, _) => self.cycle_focus(-1),
-            (KeyCode::Enter, _) => self.drill_in(),
-            (KeyCode::Esc, _) => self.back(),
-            (KeyCode::Char('h') | KeyCode::Left, false) => self.hscroll(-8),
-            (KeyCode::Char('l') | KeyCode::Right, false) => self.hscroll(8),
-            (KeyCode::Char('['), _) => self.hunk(-1, split),
-            (KeyCode::Char(']'), _) => self.hunk(1, split),
-            (KeyCode::Char('{'), _) => self.select_file(self.file_sel.saturating_sub(1)),
-            (KeyCode::Char('}'), _) => self.select_file(self.file_sel + 1),
-            (KeyCode::Char('e'), _) => {
-                if let Some(d) = self.diff.as_mut() {
-                    d.expand_near_cursor(split);
+        let changes = self.tab == Tab::Changes;
+        let in_diff = self.focus == Focus::Diff;
+        let comparing = self.compare.is_some();
+        match a {
+            Action::Quit => self.request_quit(),
+            Action::ChangesTab => self.set_tab(Tab::Changes),
+            Action::HistoryTab => self.set_tab(Tab::History),
+            Action::Fetch => self.start_net(crate::msg::NetOp::Fetch),
+            Action::Pull => self.start_net(crate::msg::NetOp::Pull),
+            Action::Push => self.start_net(crate::msg::NetOp::Push),
+            Action::Cancel => self.cancel_net(),
+            Action::Difftool => self.open_difftool(),
+            Action::Theme => self.open_theme_picker(),
+            Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
+            Action::ErrorDetails => {
+                if self.toast.as_ref().is_none_or(|t| !t.error) {
+                    self.show_background_problem();
                 }
-                self.ensure_diff_visible();
-            }
-            (KeyCode::Char('E'), _) => {
-                if let Some(d) = self.diff.as_mut() {
-                    d.toggle_whole_file(split);
+                if self.toast.is_some() {
+                    self.overlay = Some(Overlay::ErrorDetail);
                 }
-                self.ensure_diff_visible();
             }
-            (KeyCode::Char('s'), _) => {
-                self.split_pref = Some(!split);
-                if let Some(d) = self.diff.as_mut() {
-                    d.remap_cursor(split, !split);
+            Action::CompareBehind => self.compare_tab(-1),
+            Action::CompareAhead => self.compare_tab(1),
+            Action::CommitBox => {
+                self.focus_commit_or_true();
+            }
+            Action::Amend => self.toggle_amend(),
+            Action::UndoCommit => self.undo_commit(),
+            Action::Stage if in_diff => self.toggle_lines(),
+            Action::Stage => self.toggle_file(self.changes.sel),
+            Action::StageAll if in_diff => self.toggle_current_file(),
+            Action::StageAll => self.toggle_all_files(),
+            Action::Discard if in_diff => self.confirm_discard_lines(),
+            Action::Discard => self.confirm_discard_file(),
+            Action::Filter => {
+                self.changes.filter = self.changes.filter.next();
+                self.changes.sel = 0;
+                self.changes.scroll = 0;
+                self.request_change_diff();
+            }
+            Action::LineRange => {
+                let c = self.diff.as_ref().map_or(0, |d| d.cursor);
+                self.changes.visual = if self.changes.visual.is_some() { None } else { Some(c) };
+            }
+            Action::StageHunk => self.toggle_hunk(),
+            // history-only: compare mode shows its own lists
+            Action::Search | Action::NextMatch | Action::PrevMatch | Action::Range | Action::Scope if comparing => {}
+            Action::Search => self.open_search(),
+            Action::NextMatch => self.search_step(true),
+            Action::PrevMatch => self.search_step(false),
+            Action::Range => self.toggle_range(),
+            Action::Compare => self.open_branch_picker(),
+            Action::Tree => self.toggle_tree(),
+            Action::Scope => self.toggle_scope(),
+            Action::CopySha => {
+                if let Some(id) = self.selected_id() {
+                    self.copy(&id.short(7));
                 }
-                self.ensure_diff_visible();
             }
-            (KeyCode::Char('w'), _) => {
-                self.ws = match self.ws {
-                    WsMode::Show => WsMode::IgnoreAll,
-                    WsMode::IgnoreAll => WsMode::IgnoreAmount,
-                    WsMode::IgnoreAmount => WsMode::Show,
-                };
-                self.refresh_diff();
-            }
-            (KeyCode::Char('W'), _) => {
-                self.wrap = !self.wrap;
-                if let Some(d) = self.diff.as_mut() {
-                    d.hscroll = 0;
+            Action::CopyFullSha => {
+                if let Some(id) = self.selected_id() {
+                    self.copy(&id.to_hex());
                 }
-                self.ensure_diff_visible();
             }
-            (KeyCode::Char('F'), _) => {
-                self.fullscreen = !self.fullscreen;
-                if self.fullscreen {
-                    self.focus = Focus::Diff;
-                }
-                self.ensure_diff_visible();
-            }
-            (KeyCode::Char('o'), _) => self.header_expanded = !self.header_expanded,
-            (KeyCode::Char('D'), _) => self.date_mode = self.date_mode.next(),
-            (KeyCode::Char('z'), _) => {
+            Action::Header => self.header_expanded = !self.header_expanded,
+            Action::Dates => self.date_mode = self.date_mode.next(),
+            Action::Density => {
                 self.density = match self.density {
                     Density::Compact => Density::Comfortable,
                     Density::Comfortable => Density::Compact,
@@ -149,21 +155,102 @@ impl App {
                 self.ensure_list_visible();
                 self.request_visible_rows();
             }
-            (KeyCode::Char('r'), _) => self.toggle_scope(),
-            (KeyCode::Char('y'), _) => {
-                if let Some(id) = self.selected_id() {
-                    self.copy(&id.short(7));
+            Action::ScrollLeft => self.hscroll(-8),
+            Action::ScrollRight => self.hscroll(8),
+            Action::PrevHunk => self.hunk(-1, split),
+            Action::NextHunk => self.hunk(1, split),
+            Action::PrevFile if changes => self.select_change(self.changes.sel.saturating_sub(1)),
+            Action::NextFile if changes => self.select_change(self.changes.sel + 1),
+            Action::PrevFile => self.step_file(false),
+            Action::NextFile => self.step_file(true),
+            Action::Expand => {
+                if let Some(d) = self.diff.as_mut() {
+                    d.expand_near_cursor(split);
+                }
+                self.ensure_diff_visible();
+            }
+            Action::ExpandFile => {
+                if let Some(d) = self.diff.as_mut() {
+                    d.toggle_whole_file(split);
+                }
+                self.ensure_diff_visible();
+            }
+            Action::Split => {
+                self.split_pref = Some(!split);
+                if let Some(d) = self.diff.as_mut() {
+                    d.remap_cursor(split, !split);
+                }
+                self.ensure_diff_visible();
+            }
+            Action::Whitespace => {
+                self.ws = match self.ws {
+                    WsMode::Show => WsMode::IgnoreAll,
+                    WsMode::IgnoreAll => WsMode::IgnoreAmount,
+                    WsMode::IgnoreAmount => WsMode::Show,
+                };
+                self.refresh_diff();
+            }
+            Action::Wrap => {
+                self.wrap = !self.wrap;
+                if let Some(d) = self.diff.as_mut() {
+                    d.hscroll = 0;
+                }
+                self.ensure_diff_visible();
+            }
+            Action::Fullscreen => {
+                self.fullscreen = !self.fullscreen;
+                if self.fullscreen {
+                    self.focus = Focus::Diff;
+                }
+                self.ensure_diff_visible();
+            }
+            Action::Narrower => self.resize_focused(-4),
+            Action::Wider => self.resize_focused(4),
+            Action::Down => self.move_any(Move::Step(1)),
+            Action::Up => self.move_any(Move::Step(-1)),
+            Action::HalfDown => self.move_any(Move::Half(1)),
+            Action::HalfUp => self.move_any(Move::Half(-1)),
+            Action::PageDown => self.move_any(Move::Page(1)),
+            Action::PageUp => self.move_any(Move::Page(-1)),
+            Action::Top => self.move_any(Move::Top),
+            Action::Bottom => self.move_any(Move::Bottom),
+            // Changes has two panes: Tab flips between them
+            Action::NextPane | Action::PrevPane if changes => self.focus = if in_diff { Focus::Files } else { Focus::Diff },
+            Action::NextPane => self.cycle_focus(1),
+            Action::PrevPane => self.cycle_focus(-1),
+            Action::Open if changes && in_diff => {
+                let hidden = self.diff.as_ref().is_some_and(|d| {
+                    matches!(d.diff.class, gitty_core::diff::classify::FileClass::LargeText { .. } | gitty_core::diff::classify::FileClass::Generated { .. })
+                });
+                if hidden {
+                    self.changes.force_text = true;
+                    self.request_change_diff();
                 }
             }
-            (KeyCode::Char('Y'), _) => {
-                if let Some(id) = self.selected_id() {
-                    self.copy(&id.to_hex());
+            Action::Open if changes => self.focus = Focus::Diff,
+            Action::Open => {
+                if !(self.focus == Focus::Files && self.toggle_dir()) {
+                    self.drill_in();
                 }
             }
-            (KeyCode::Char('<'), _) => self.resize_focused(-4),
-            (KeyCode::Char('>'), _) => self.resize_focused(4),
-            _ => {}
+            Action::Back if changes && in_diff && self.changes.visual.is_some() => self.changes.visual = None,
+            Action::Back if changes && in_diff && !self.fullscreen => self.focus = Focus::Files,
+            Action::Back if changes && !in_diff => {}
+            Action::Back if self.focus == Focus::History && comparing => self.leave_compare(),
+            Action::Back if self.focus == Focus::History && self.range_anchor.is_some() => self.end_range(),
+            Action::Back if self.focus == Focus::History && self.search_active() => self.clear_search(),
+            Action::Back => self.back(),
         }
+    }
+
+    /// Moves in the Changes file list, or in the focused pane.
+    fn move_any(&mut self, m: Move) {
+        if self.tab == Tab::Changes && self.focus != Focus::Diff {
+            let n = self.changes.visible().len();
+            let t = target(self.changes.sel, n, self.files_capacity(), m);
+            return self.select_change(t);
+        }
+        self.move_focused(m);
     }
 
     fn overlay_key(&mut self, ov: Overlay, k: KeyEvent) {
@@ -201,6 +288,12 @@ impl App {
             Overlay::Confirm { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Char('n' | 'q')) => {}
             Overlay::Confirm { .. } => self.overlay = Some(ov),
             Overlay::Prompt { ask, input } => self.prompt_key(ask, input, k),
+            Overlay::BranchPicker { query, sel } => self.picker_key(query, sel, k),
+            Overlay::Quit { .. } => match k.code {
+                KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
+                KeyCode::Char('n') | KeyCode::Esc => {}
+                _ => self.overlay = Some(ov),
+            },
             Overlay::Diverged => match k.code {
                 KeyCode::Char('m') => self.start_net(crate::msg::NetOp::PullMerge),
                 KeyCode::Char('r') => self.start_net(crate::msg::NetOp::PullRebase),
@@ -209,7 +302,16 @@ impl App {
             },
             Overlay::Log { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) => {}
             Overlay::Log { .. } => self.overlay = Some(ov),
-            Overlay::Help | Overlay::ErrorDetail => {
+            Overlay::Help { scroll } => match k.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?') => {}
+                KeyCode::Char('j') | KeyCode::Down => self.overlay = Some(Overlay::Help { scroll: (scroll + 1).min(crate::ui::overlay::help_lines(self).len()) }),
+                KeyCode::Char('k') | KeyCode::Up => self.overlay = Some(Overlay::Help { scroll: scroll.saturating_sub(1) }),
+                KeyCode::PageDown | KeyCode::Char(' ') => self.overlay = Some(Overlay::Help { scroll: (scroll + 10).min(crate::ui::overlay::help_lines(self).len()) }),
+                KeyCode::PageUp => self.overlay = Some(Overlay::Help { scroll: scroll.saturating_sub(10) }),
+                KeyCode::Char('g') | KeyCode::Home => self.overlay = Some(Overlay::Help { scroll: 0 }),
+                _ => self.overlay = Some(ov),
+            },
+            Overlay::ErrorDetail => {
                 if !matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?' | '!')) {
                     self.overlay = Some(ov);
                 } else if matches!(ov, Overlay::ErrorDetail) {
@@ -225,96 +327,21 @@ impl App {
         self.overlay = Some(Overlay::ThemePicker { sel, original: self.theme.clone() });
     }
 
-    /// Changes-tab keys. Returns false for diff keys shared with the History tab.
-    fn changes_key(&mut self, k: KeyEvent) -> bool {
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let mv = match (k.code, ctrl) {
-            (KeyCode::Char('d'), true) => Some(Move::Half(1)),
-            (KeyCode::Char('u'), true) => Some(Move::Half(-1)),
-            (KeyCode::Char('f'), true) | (KeyCode::PageDown, _) => Some(Move::Page(1)),
-            (KeyCode::Char('b'), true) | (KeyCode::PageUp, _) => Some(Move::Page(-1)),
-            (KeyCode::Char('j') | KeyCode::Down, false) => Some(Move::Step(1)),
-            (KeyCode::Char('k') | KeyCode::Up, false) => Some(Move::Step(-1)),
-            (KeyCode::Char('g') | KeyCode::Home, _) => Some(Move::Top),
-            (KeyCode::Char('G') | KeyCode::End, _) => Some(Move::Bottom),
-            _ => None,
-        };
-        match (k.code, ctrl) {
-            (KeyCode::Char('c'), false) => return self.focus_commit_or_true(),
-            (KeyCode::Char('A'), false) => {
-                self.toggle_amend();
-                return true;
-            }
-            (KeyCode::Char('u'), false) => {
-                self.undo_commit();
-                return true;
-            }
-            _ => {}
-        }
-        match self.focus {
-            Focus::Diff => match k.code {
-                KeyCode::Char(' ') => self.toggle_lines(),
-                KeyCode::Char('v') => {
-                    let c = self.diff.as_ref().map_or(0, |d| d.cursor);
-                    self.changes.visual = if self.changes.visual.is_some() { None } else { Some(c) };
-                }
-                KeyCode::Char('H') => self.toggle_hunk(),
-                KeyCode::Char('a') => self.toggle_current_file(),
-                KeyCode::Char('d') if !ctrl => self.confirm_discard_lines(),
-                KeyCode::Esc if self.changes.visual.is_some() => self.changes.visual = None,
-                KeyCode::Esc if !self.fullscreen => self.focus = Focus::Files,
-                KeyCode::Enter => {
-                    let hidden = self.diff.as_ref().is_some_and(|d| {
-                        matches!(d.diff.class, gitty_core::diff::classify::FileClass::LargeText { .. } | gitty_core::diff::classify::FileClass::Generated { .. })
-                    });
-                    if hidden {
-                        self.changes.force_text = true;
-                        self.request_change_diff();
-                    }
-                }
-                KeyCode::Char('{') => self.select_change(self.changes.sel.saturating_sub(1)),
-                KeyCode::Char('}') => self.select_change(self.changes.sel + 1),
-                KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Files,
-                // History-only keys
-                KeyCode::Char('r' | 'y' | 'Y' | 'o' | 'D' | 'z') => {}
-                _ => return false,
-            },
-            _ => {
-                if let Some(m) = mv {
-                    let n = self.changes.visible().len();
-                    let t = target(self.changes.sel, n, self.files_capacity(), m);
-                    self.select_change(t);
-                    return true;
-                }
-                match k.code {
-                    KeyCode::Char(' ') => self.toggle_file(self.changes.sel),
-                    KeyCode::Char('a') => self.toggle_all_files(),
-                    KeyCode::Char('F') => {
-                        self.changes.filter = self.changes.filter.next();
-                        self.changes.sel = 0;
-                        self.changes.scroll = 0;
-                        self.request_change_diff();
-                    }
-                    KeyCode::Char('d') if !ctrl => self.confirm_discard_file(),
-                    KeyCode::Enter | KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Diff,
-                    KeyCode::Char('<') | KeyCode::Char('>') => return false,
-                    _ => {}
-                }
-            }
-        }
-        true
-    }
-
     fn move_focused(&mut self, m: Move) {
         match self.focus {
+            Focus::History if self.compare.is_some() => {
+                let cur = self.compare.as_ref().and_then(|c| c.selected()).unwrap_or(0);
+                let t = target(cur, self.compare_len(), self.list_capacity().saturating_sub(1), m);
+                self.compare_select(t);
+            }
             Focus::History => {
                 let t = target(self.selected, self.history_len, self.list_capacity(), m);
                 self.select(t);
             }
             Focus::Files => {
-                let n = self.files.as_ref().map_or(0, |f| f.len());
-                let t = target(self.file_sel, n, self.files_capacity(), m);
-                self.select_file(t);
+                let n = self.file_rows().len();
+                let t = target(self.file_cursor(), n, self.files_capacity(), m);
+                self.select_file_row(t);
             }
             Focus::Commit => {}
             Focus::Diff => {
@@ -404,7 +431,7 @@ impl App {
         let (x, y) = (m.column, m.row);
         self.dirty = true;
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => self.click(x, y),
+            MouseEventKind::Down(MouseButton::Left) => self.click(x, y, m.modifiers),
             MouseEventKind::Drag(MouseButton::Left) if self.changes.gutter_drag => self.gutter_drag(y),
             MouseEventKind::Drag(MouseButton::Left) => self.drag(x, y),
             MouseEventKind::Up(MouseButton::Left) => {
@@ -421,10 +448,27 @@ impl App {
         }
     }
 
-    fn click(&mut self, x: u16, y: u16) {
+    fn click(&mut self, x: u16, y: u16, mods: KeyModifiers) {
         if self.overlay.is_some() {
             return;
         }
+        let double = self.note_click(x, y);
+        self.click_once(x, y, mods);
+        if !double {
+            return;
+        }
+        // double-click: open the file, except on Changes' checkboxes and gutters (they toggle)
+        let on_diff = inside(self.hits.diff_rows, x, y).is_some();
+        let on_files = inside(self.hits.files_rows, x, y).is_some();
+        let (og, ng) = (self.hits.diff_old_gutter, self.hits.diff_new_gutter);
+        let toggles = self.tab == Tab::Changes
+            && ((on_files && x < self.hits.files_rows.map_or(0, |r| r.x + 4)) || (on_diff && ((og.0..og.0 + og.1).contains(&x) || (ng.0..ng.0 + ng.1).contains(&x))));
+        if (on_diff || on_files) && !toggles {
+            self.open_shown_file(on_diff);
+        }
+    }
+
+    fn click_once(&mut self, x: u16, y: u16, mods: KeyModifiers) {
         if let Some(tab) = self.hits.tabs.iter().find(|(r, _)| r.contains(Position { x, y })).map(|t| t.1) {
             self.set_tab(tab);
             return;
@@ -439,14 +483,23 @@ impl App {
         if let Some(r) = inside(self.hits.history_rows, x, y) {
             self.focus = Focus::History;
             let i = self.hits.history_first + ((y - r.y) / self.hits.history_row_h.max(1)) as usize;
-            if i < self.history_len {
-                self.select(i);
+            if self.compare.is_some() {
+                self.compare_select(i);
+            } else if i < self.history_len {
+                if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL) {
+                    self.extend_range(i);
+                } else {
+                    self.range_anchor = None;
+                    self.select(i);
+                }
             }
         } else if let Some(r) = inside(self.hits.files_rows, x, y) {
             self.focus = Focus::Files;
             let i = self.hits.files_first + (y - r.y) as usize;
-            if self.files.as_ref().is_some_and(|f| i < f.len()) {
-                self.select_file(i);
+            if i < self.file_rows().len() {
+                self.select_file_row(i);
+                // a click on a directory row opens or closes it
+                self.toggle_dir();
             }
         } else if let Some(r) = inside(self.hits.diff_rows, x, y) {
             self.focus = Focus::Diff;
@@ -507,8 +560,16 @@ impl App {
             let (og, ng) = (self.hits.diff_old_gutter, self.hits.diff_new_gutter);
             let in_gutter = (og.0..og.0 + og.1).contains(&x) || (ng.0..ng.0 + ng.1).contains(&x);
             let split = self.split_active();
+            // split view: deletions on the left half, additions on the right
+            self.changes.side = split.then(|| if x < r.x + r.width.saturating_sub(1) / 2 { Side::Old } else { Side::New });
             let Some(d) = self.diff.as_mut() else { return };
             d.cursor = i;
+            let is_edge = |j: usize| matches!(d.vrow(j, split), None | Some(VRow::Header(_) | VRow::Row(Row::Gap { .. }) | VRow::Split(SplitRow::Gap { .. })));
+            if x == r.x && is_edge(i) && !is_edge(i + 1) {
+                // the handle: stage (or unstage) the hunk below the header
+                d.cursor = (i + 1).min(d.rows(split).saturating_sub(1));
+                return self.toggle_hunk();
+            }
             let gap = match d.vrow(i, split) {
                 Some(VRow::Row(Row::Gap { gap, .. }) | VRow::Split(SplitRow::Gap { gap, .. })) => Some(gap),
                 _ => None,
@@ -533,12 +594,26 @@ impl App {
         }
     }
 
+    /// Extends a gutter selection; at the first or last row the cursor steps on past the
+    /// screen, so the diff scrolls a row per drag event.
     fn gutter_drag(&mut self, y: u16) {
         let Some(r) = self.hits.diff_rows else { return };
+        let split = self.split_active();
         let row = (y.clamp(r.y, r.bottom().saturating_sub(1)) - r.y) as usize;
-        if let (Some(&i), Some(d)) = (self.hits.diff_lines.get(row), self.diff.as_mut()) {
-            d.cursor = i;
-        }
+        let hit = self.hits.diff_lines.get(row).copied();
+        let Some(d) = self.diff.as_mut() else { return };
+        let last = d.rows(split).saturating_sub(1);
+        // the hit regions are from the last frame, which may be scrolled since: never step back
+        d.cursor = if y + 1 >= r.bottom() {
+            (hit.map_or(d.cursor, |i| i.max(d.cursor)) + 1).min(last)
+        } else if y <= r.y {
+            hit.map_or(d.cursor, |i| i.min(d.cursor)).saturating_sub(1)
+        } else if let Some(i) = hit {
+            i
+        } else {
+            return;
+        };
+        self.ensure_diff_visible();
     }
 
     fn drag(&mut self, x: u16, y: u16) {
@@ -567,7 +642,7 @@ impl App {
             self.list_scroll = scroll(self.list_scroll, max);
             self.request_visible_rows();
         } else if inside(self.hits.panes.files, x, y).is_some() {
-            let n = self.files.as_ref().map_or(0, |f| f.len());
+            let n = self.file_rows().len();
             self.file_scroll = scroll(self.file_scroll, n.saturating_sub(self.files_capacity()));
         } else if inside(self.hits.panes.diff, x, y).is_some() {
             let split = self.split_active();

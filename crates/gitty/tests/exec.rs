@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 
 use common::Fixture;
-use gitty::msg::{Gens, Msg, Request};
+use gitty::msg::{FilesOf, Gens, Msg, Request};
 use gitty::{exec::exec, workers::Workers};
 use gitty_core::diff::DiffOptions;
 use gitty_core::refs::HistoryScope;
@@ -123,7 +123,7 @@ fn files_then_stats() {
     f.write("a.txt", "1\nTWO\n3\n4\n");
     f.write("c.bin", b"\x00\x01\x02");
     let c = f.commit("two", 1_700_000_100);
-    let msgs = run(&f, Request::Files { generation: 0, id: id(&c), prefetch: false });
+    let msgs = run(&f, Request::Files { generation: 0, of: FilesOf::Commit(id(&c)), prefetch: false });
     let Msg::Files { files, .. } = &msgs[0] else { panic!("{msgs:?}") };
     let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(paths, ["a.txt", "c.bin"]);
@@ -143,7 +143,7 @@ fn stale_files_dropped_after_bump() {
     let ids = five(&f);
     let gens = Gens::default();
     gens.commit.store(9, SeqCst);
-    let msgs = run_with(&f.path(), &gens, Request::Files { generation: 1, id: id(&ids[1]), prefetch: false });
+    let msgs = run_with(&f.path(), &gens, Request::Files { generation: 1, of: FilesOf::Commit(id(&ids[1])), prefetch: false });
     assert!(msgs.is_empty(), "{msgs:?}");
     let msgs = run_with(&f.path(), &gens, Request::Detail { generation: 1, id: id(&ids[1]) });
     assert!(msgs.is_empty(), "{msgs:?}");
@@ -155,12 +155,12 @@ fn prefetch_runs_even_if_stale() {
     let ids = five(&f);
     let gens = Gens::default();
     gens.commit.store(9, SeqCst);
-    let msgs = run_with(&f.path(), &gens, Request::Files { generation: 1, id: id(&ids[1]), prefetch: true });
+    let msgs = run_with(&f.path(), &gens, Request::Files { generation: 1, of: FilesOf::Commit(id(&ids[1])), prefetch: true });
     assert!(matches!(&msgs[0], Msg::Files { prefetch: true, .. }), "{msgs:?}");
 }
 
 fn files_of(f: &Fixture, c: &str) -> Arc<Vec<gitty_core::commit_files::FileChange>> {
-    match &run(f, Request::Files { generation: 0, id: id(c), prefetch: false })[0] {
+    match &run(f, Request::Files { generation: 0, of: FilesOf::Commit(id(c)), prefetch: false })[0] {
         Msg::Files { files, .. } => files.clone(),
         m => panic!("{m:?}"),
     }
@@ -223,7 +223,7 @@ fn unborn_repo_refs_and_walk() {
 fn empty_commit_has_zero_files() {
     let f = Fixture::new();
     let c = f.commit("empty", 1_700_000_000);
-    let msgs = run(&f, Request::Files { generation: 0, id: id(&c), prefetch: false });
+    let msgs = run(&f, Request::Files { generation: 0, of: FilesOf::Commit(id(&c)), prefetch: false });
     let Msg::Files { files, .. } = &msgs[0] else { panic!("{msgs:?}") };
     assert!(files.is_empty());
     assert!(matches!(msgs.last(), Some(Msg::Stats { done: true, .. })));
@@ -235,14 +235,14 @@ fn bad_id_reports_error_not_panic() {
     five(&f);
     let bogus = CommitId([7; 20]);
     for req in [
-        Request::Files { generation: 0, id: bogus, prefetch: false },
+        Request::Files { generation: 0, of: FilesOf::Commit(bogus), prefetch: false },
         Request::Detail { generation: 0, id: bogus },
         Request::Rows { session: 0, ids: vec![(0, bogus)] },
     ] {
         let msgs = run(&f, req);
         assert!(msgs.iter().all(|m| !matches!(m, Msg::Files { .. } | Msg::Detail { .. })), "{msgs:?}");
     }
-    let msgs = run(&f, Request::Files { generation: 0, id: bogus, prefetch: true });
+    let msgs = run(&f, Request::Files { generation: 0, of: FilesOf::Commit(bogus), prefetch: true });
     assert!(matches!(&msgs[..], [Msg::FilesError { prefetch: true, .. }]), "{msgs:?}");
     {
     }
@@ -288,7 +288,7 @@ fn missing_blob_reports_unknown_stats_and_diff_error() {
     let c = f.commit("two", 1_700_000_100);
     let blob = f.git(&["rev-parse", "HEAD:a.txt"]);
     std::fs::remove_file(f.path().join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
-    let msgs = run(&f, Request::Files { generation: 0, id: id(&c), prefetch: false });
+    let msgs = run(&f, Request::Files { generation: 0, of: FilesOf::Commit(id(&c)), prefetch: false });
     let Msg::Files { files, .. } = &msgs[0] else { panic!("{msgs:?}") };
     let Some(Msg::Stats { stats, .. }) = msgs.last() else { panic!("{msgs:?}") };
     assert_eq!(stats[0], None);
@@ -335,7 +335,7 @@ fn walk_never_starves_readers() {
 fn prefetch_lists_files_without_stats() {
     let f = Fixture::new();
     let ids = five(&f);
-    let msgs = run(&f, Request::Files { generation: 0, id: id(&ids[1]), prefetch: true });
+    let msgs = run(&f, Request::Files { generation: 0, of: FilesOf::Commit(id(&ids[1])), prefetch: true });
     assert!(matches!(&msgs[..], [Msg::Files { prefetch: true, .. }]), "{msgs:?}");
 }
 
@@ -362,7 +362,7 @@ fn highlight_returns_spans_and_honours_cancel() {
 }
 
 fn status_entry(f: &Fixture, path: &str) -> gitty_core::status::StatusEntry {
-    match &run(f, Request::Status { generation: 1 })[..] {
+    match &run(f, Request::Status { generation: 1, mark: None })[..] {
         [Msg::Status { generation: 1, result: Ok(st) }] => st.entries.iter().find(|e| e.path == path).cloned().expect("entry"),
         m => panic!("{m:?}"),
     }
@@ -422,9 +422,28 @@ fn commit_streams_hook_output_and_undo_returns_the_message() {
     let (r, log) = write(&f, gitty::msg::WriteOp::Commit { message: "Add b".into(), amend: false });
     assert_eq!(r, Ok(Some(f.git(&["rev-parse", "HEAD"]))), "the new HEAD");
     assert!(log.iter().any(|l| l.contains("checking style")), "{log:?}");
-    let (r, _) = write(&f, gitty::msg::WriteOp::UndoCommit);
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let (r, _) = write(&f, gitty::msg::WriteOp::UndoCommit { expect: f.git(&["rev-parse", "HEAD^"]) });
+    assert!(r.unwrap_err().contains("HEAD is no longer"), "not the commit gitty made");
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    let (r, _) = write(&f, gitty::msg::WriteOp::UndoCommit { expect: head });
     assert_eq!(r, Ok(Some("Add b\n".into())));
     assert_eq!(f.git(&["log", "-1", "--format=%s"]), "base");
+}
+
+#[test]
+fn undo_refuses_a_commit_already_on_the_upstream() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.add_bare_upstream();
+    f.write("a.txt", "a\nb\n");
+    f.commit("pushed", 1_700_000_100);
+    f.git(&["push", "-q"]);
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let (r, _) = write(&f, gitty::msg::WriteOp::UndoCommit { expect: head.clone() });
+    assert!(r.unwrap_err().contains("already pushed"));
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
 }
 
 #[test]
@@ -440,11 +459,15 @@ fn discards_copy_to_trash_and_refuse_changed_files() {
     f.write("gone.txt", "edited\n");
     f.write("new.txt", "fresh\n");
     let stale = gitty_core::commit_files::BlobId::hash_of(b"something else");
-    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect: stale });
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect: stale, head_path: "a.txt".into(), head: None });
     assert!(r.unwrap_err().contains("changed on disk"));
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nB\n");
     let expect = gitty_core::commit_files::BlobId::hash_of(b"a\nB\n");
-    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect });
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect, head_path: "a.txt".into(), head: Some(stale) });
+    assert!(r.unwrap_err().contains("changed in HEAD"), "HEAD:a.txt is not the one the diff was made against");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nB\n");
+    let head = Some(gitty_core::commit_files::BlobId::hash_of(b"a\nb\n"));
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect, head_path: "a.txt".into(), head });
     assert_eq!(r, Ok(None));
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nb\n");
     let (r, _) = write(&f, gitty::msg::WriteOp::DiscardFiles { restore: vec!["gone.txt".into()], remove: vec!["new.txt".into()] });
@@ -528,4 +551,13 @@ fn local_pull_steps_wait_for_the_writer() {
         }
     };
     assert!(format!("{done:?}").contains("Ok"), "{done:?}");
+}
+
+#[test]
+fn a_panicking_status_run_still_answers_the_status_request() {
+    let reply = gitty::workers::panic_reply(&Request::Status { generation: 7, mark: None });
+    match reply("index out of bounds".into()) {
+        Msg::Status { generation: 7, result: Err(e) } => assert!(e.contains("index out of bounds"), "{e}"),
+        m => panic!("wanted a failed Status, got {m:?}"),
+    }
 }

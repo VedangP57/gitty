@@ -439,7 +439,7 @@ fn special_classes_show_messages() {
         ("moved.txt", "No content changes"),
         ("run.sh", "Mode changed 100644 → 100755"),
         ("package-lock.json", "press Enter to show"),
-        ("vendor/lib", "Submodule"),
+        ("vendor/lib", "Submodule vendor/lib: none..1111111"),
     ] {
         t.select_file(path);
         let s = text(&t.render(180, 30));
@@ -496,7 +496,7 @@ fn theme_picker_and_help_render() {
     t.key(KeyCode::Esc);
     t.key(KeyCode::Char('?'));
     let s = text(&t.render(140, 30));
-    assert!(s.contains("expand context"), "{s}");
+    assert!(s.contains("Everywhere") && s.contains("fetch"), "{s}");
     t.key(KeyCode::Esc);
     t.key(KeyCode::Char('1'));
     let s = text(&t.render(140, 30));
@@ -688,6 +688,32 @@ fn changes_tab_snapshots() {
 }
 
 #[test]
+fn a_moved_submodule_shows_a_card_in_changes() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - HOUR);
+    let sub = f.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(&sub).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "sub"]);
+    let new = git(&["rev-parse", "HEAD"]);
+    f.git(&["update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,sub"]);
+    // not f.commit: its `add -A` would record the nested repo's real HEAD
+    f.git(&["commit", "-q", "-m", "add sub"]);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("sub");
+    let s = text(&t.render(140, 30));
+    let want = format!("Submodule sub: 1111111..{}", &new[..7]);
+    assert!(s.contains(&want), "wanted {want:?}\n{s}");
+}
+
+#[test]
 fn staged_lines_show_a_check_mark() {
     let f = changes_fixture();
     let mut t = H::new(&f, "github-dark", (140, 30));
@@ -809,4 +835,351 @@ fn host_key_prompt_shows_the_fingerprint_and_the_question() {
     assert!(s.contains("SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"), "{s}");
     assert!(s.contains("continue connecting"), "{s}");
     assert!(s.contains("y yes"), "{s}");
+}
+
+#[test]
+fn search_bar_shows_position_and_progress_and_matches_are_highlighted() {
+    let f = Fixture::new();
+    for i in 0..30 {
+        f.write("a.txt", format!("{i}\n"));
+        let msg = if i % 5 == 0 { format!("plain {i}") } else { format!("fix {i}") };
+        f.commit(&msg, NOW - DAY + i * 60);
+    }
+    let mut t = H::new(&f, "github-dark", (120, 40));
+    t.app.search_chunk = 6;
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "fix".chars() {
+        t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let b = t.render(120, 40);
+    assert!(text(&b).lines().last().unwrap().starts_with(" /fix"), "the bar shows what is typed");
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // answer the first two of five chunks only: 12 rows, 40%
+    let reqs: Vec<_> = t.app.take_requests().into_iter().take(2).collect();
+    let mut out = Vec::new();
+    for r in reqs {
+        exec(&t.h, r, &mut |m| out.push(m), &t.gens);
+    }
+    for m in out {
+        t.app.handle_msg(m);
+    }
+    t.app.search_step(true);
+    t.app.search_step(true);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|fr| ui::draw(&mut t.app, fr)).unwrap();
+    let b = term.backend().buffer().clone();
+    let s = text(&b);
+    let bottom = s.lines().last().unwrap();
+    assert!(bottom.starts_with(" /fix  3/10 · searching… 40%"), "{bottom}");
+    let warning = t.app.theme.ui.warning;
+    let (x, y) = find(&b, "fix 29").expect("newest match drawn");
+    assert_eq!(b[(x, y)].fg, warning, "matched summaries are highlighted");
+    let (x, y) = find(&b, "plain 25").expect("non-match drawn");
+    assert_ne!(b[(x, y)].fg, warning);
+}
+
+#[test]
+fn shift_click_extends_a_range_and_the_header_shows_it() {
+    let f = Fixture::new();
+    for i in 0..5 {
+        f.write("a.txt", format!("{i}\n"));
+        f.write(&format!("f{i}.txt"), "x\nx\n");
+        f.commit(&format!("change {i}"), NOW - DAY + i * 60);
+    }
+    let mut t = H::new(&f, "github-dark", (140, 40));
+    let b = t.render(140, 40);
+    let (x, y) = find(&b, "change 2").unwrap();
+    let m = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::SHIFT };
+    t.app.handle_mouse(m(MouseEventKind::Down(MouseButton::Left)));
+    t.app.handle_mouse(m(MouseEventKind::Up(MouseButton::Left)));
+    t.pump();
+    assert_eq!(t.app.selected_range(), Some((2, 0)), "shift-click anchors at the selection and extends");
+    let b = t.render(140, 40);
+    let s = text(&b);
+    let (oldest, newest) = (f.git(&["rev-parse", "--short=7", "HEAD~2"]), f.git(&["rev-parse", "--short=7", "HEAD"]));
+    let header = s.lines().nth(1).unwrap();
+    assert!(header.contains(&format!("3 commits · {oldest}..{newest}")), "{header}");
+    // a.txt 2→4 (+1 −1) and three new two-line files
+    assert!(header.contains("+7 −1"), "{header}");
+    let ctrl = |kind| MouseEvent { kind, column: x, row: y + 1, modifiers: KeyModifiers::CONTROL };
+    t.app.handle_mouse(ctrl(MouseEventKind::Down(MouseButton::Left)));
+    t.pump();
+    assert_eq!(t.app.selected_range(), Some((3, 0)), "ctrl-click extends like shift-click");
+    let plain = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(plain(MouseEventKind::Down(MouseButton::Left)));
+    t.pump();
+    assert_eq!(t.app.selected_range(), None, "a plain click ends the range");
+}
+
+#[test]
+fn compare_mode_shows_title_tabs_and_the_branch_commits() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", NOW - DAY);
+    f.git(&["branch", "topic"]);
+    f.write("m.txt", "1\n");
+    f.commit("on main", NOW - DAY + 60);
+    f.git(&["checkout", "-q", "topic"]);
+    f.write("t.txt", "1\n");
+    f.commit("topic one", NOW - DAY + 120);
+    f.write("t.txt", "2\n");
+    f.commit("topic two", NOW - DAY + 180);
+    f.git(&["checkout", "-q", "main"]);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("Compare with"), "picker title\n{s}");
+    assert!(s.contains("topic"), "{s}");
+    t.key(KeyCode::Enter);
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("Compare with topic"), "{s}");
+    assert!(s.contains("Behind (2)") && s.contains("Ahead (1)") && s.contains("Files"), "{s}");
+    assert!(s.contains("topic two") && s.contains("topic one"), "{s}");
+    assert!(!s.contains("on main"), "the Behind tab lists only the branch's commits\n{s}");
+}
+
+#[test]
+fn tree_view_renders_directories_indented() {
+    let f = Fixture::new();
+    f.write("seed", "s\n");
+    f.commit("seed", NOW - DAY);
+    for p in ["docs/guide.md", "src/ui/view.rs", "src/lib.rs", "top.txt"] {
+        f.write(p, "x\n");
+    }
+    f.commit("tree", NOW - DAY + 60);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let b = t.render(140, 30);
+    let s = text(&b);
+    let (dx, dy) = find(&b, "▾ docs/").expect(&s);
+    let (vx, vy) = find(&b, "view.rs").expect(&s);
+    let (ux, uy) = find(&b, "▾ ui/").expect(&s);
+    assert!(ux > dx && vx > ux, "deeper rows are indented further");
+    assert!(dy < uy && uy < vy);
+    assert!(find(&b, "src/ui/view.rs").is_none(), "file rows show only the name");
+    let (tx, _) = find(&b, "top.txt").unwrap();
+    assert!(tx < vx);
+}
+
+fn editor_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("dir with space/f.txt", "1\n2\n3\n4\n5\n6\n");
+    f.commit("base", NOW - DAY);
+    f.write("dir with space/f.txt", "1\n2\n3\nfour\n5\n6\n");
+    f.commit("change four", NOW - DAY + 60);
+    f
+}
+
+#[test]
+fn double_click_opens_the_file_at_the_line_in_the_editor() {
+    use gitty::external::External;
+    let f = editor_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.workdir = Some(f.path().to_path_buf());
+    let b = t.render(140, 30);
+    let path = f.path().join("dir with space/f.txt");
+    let (x, y) = find(&b, "+ four").expect("diff line drawn");
+    t.click(x, y);
+    assert_eq!(t.app.external, None, "one click only moves the cursor");
+    t.click(x, y);
+    assert_eq!(t.app.external, Some(External::Edit { path: path.clone(), line: Some(4) }), "double-click opens at the new line");
+    t.app.external = None;
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "f.txt").expect("file row drawn");
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, Some(External::Edit { path, line: Some(4) }), "a file row opens at its first change");
+    t.app.external = None;
+    t.clock += Duration::from_secs(1);
+    t.app.tick(t.clock);
+    t.click(x, y);
+    assert_eq!(t.app.external, None, "clicks far apart are not a double-click");
+}
+
+#[test]
+fn double_click_opens_the_clicked_file_even_before_its_diff_loads() {
+    use gitty::external::External;
+    let f = Fixture::new();
+    f.write("a.txt", "1\n");
+    f.write("src/b.txt", "1\n");
+    f.commit("base", NOW - DAY);
+    f.write("a.txt", "1\n2\n");
+    f.write("src/b.txt", "1\nB\n");
+    f.commit("both", NOW - DAY + 60);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.workdir = Some(f.path().to_path_buf());
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "b.txt").expect("file row drawn");
+    // two clicks with no time for b.txt's diff to arrive in between
+    let m = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    for _ in 0..2 {
+        t.app.handle_mouse(m(MouseEventKind::Down(MouseButton::Left)));
+        t.app.handle_mouse(m(MouseEventKind::Up(MouseButton::Left)));
+    }
+    assert_eq!(t.app.external, Some(External::Edit { path: f.path().join("src/b.txt"), line: None }), "the clicked file, not the shown one");
+    t.app.external = None;
+    t.pump();
+    // tree view: a directory row folds; a double-click on it opens nothing
+    t.key(KeyCode::Char('t'));
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "src/").expect("directory row drawn");
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, None, "a directory is not opened in the editor");
+}
+
+#[test]
+fn o_sends_both_sides_to_the_difftool_or_says_to_set_one() {
+    use gitty::external::External;
+    let f = editor_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.render(140, 30);
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT));
+    assert_eq!(t.app.external, None);
+    assert!(t.app.toast.as_ref().is_some_and(|m| m.what.contains("difftool")), "{:?}", t.app.toast);
+    t.app.config.difftool = Some("delta".into());
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT));
+    assert_eq!(
+        t.app.external,
+        Some(External::Diff { path: "dir with space/f.txt".into(), old: b"1\n2\n3\n4\n5\n6\n".to_vec(), new: b"1\n2\n3\nfour\n5\n6\n".to_vec() })
+    );
+}
+
+fn find_all(b: &Buffer, needle: &str) -> Vec<(u16, u16)> {
+    (0..b.area.height).filter_map(|y| {
+        let line: String = (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect();
+        line.find(needle).map(|i| (line[..i].chars().count() as u16, y))
+    }).collect()
+}
+
+#[test]
+fn clicking_a_hunk_header_handle_stages_that_hunk() {
+    let f = Fixture::new();
+    let base: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+    f.write("big.txt", &base);
+    f.commit("base", NOW - DAY);
+    f.write("big.txt", base.replace("line 3\n", "line three\n").replace("line 35\n", "line thirty-five\n"));
+    let mut t = H::new(&f, "github-dark", (140, 40));
+    t.key(KeyCode::Char('1'));
+    t.select_change("big.txt");
+    let b = t.render(140, 40);
+    let headers = find_all(&b, "@@");
+    assert!(headers.len() >= 2, "two hunks\n{}", text(&b));
+    let r = t.app.hits.diff_rows.unwrap();
+    t.click(r.x, headers[1].1);
+    t.render(140, 40);
+    let cached = f.git(&["diff", "--cached", "-U0", "--", "big.txt"]);
+    assert!(cached.contains("+line thirty-five") && !cached.contains("+line three"), "only the clicked hunk:\n{cached}");
+    assert!(text(&b).lines().nth(headers[1].1 as usize).unwrap().contains('±'), "the handle is drawn");
+}
+
+#[test]
+fn a_gutter_drag_at_the_bottom_edge_scrolls_and_keeps_selecting() {
+    let f = Fixture::new();
+    f.write("long.txt", "start\n");
+    f.commit("base", NOW - DAY);
+    let added: String = (1..=80).map(|i| format!("added {i}\n")).collect();
+    f.write("long.txt", format!("start\n{added}"));
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("long.txt");
+    let b = t.render(140, 30);
+    let (_, y0) = find(&b, "added 1").unwrap();
+    let gx = t.app.hits.diff_new_gutter.0;
+    let r = t.app.hits.diff_rows.unwrap();
+    let ev = |kind, y| MouseEvent { kind, column: gx, row: y, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), y0));
+    for _ in 0..10 {
+        t.app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), r.bottom() - 1));
+    }
+    assert!(t.app.diff.as_ref().unwrap().scroll >= 10, "each drag event at the edge scrolls a row");
+    t.app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), r.bottom() - 1));
+    t.pump();
+    let staged = f.git(&["diff", "--cached", "--", "long.txt"]).lines().filter(|l| l.starts_with("+added")).count();
+    let visible = r.height as usize;
+    assert!(staged > visible, "the selection grew past the first screen: {staged} staged, {visible} visible");
+}
+
+#[test]
+fn split_view_space_stages_only_the_side_under_the_pointer() {
+    let f = Fixture::new();
+    f.write("n.txt", "a\nlet value = 1;\nc\n");
+    f.commit("base", NOW - DAY);
+    f.write("n.txt", "a\nlet value = 2;\nc\n");
+    let mut t = H::new(&f, "github-dark", (220, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("n.txt");
+    let b = t.render(220, 30);
+    assert!(t.app.split_active(), "220 columns: split view");
+    let (lx, ly) = find(&b, "let value = 1;").expect("deletion on the left");
+    let (rx, ry) = find(&b, "let value = 2;").expect("addition on the right");
+    assert_eq!(ly, ry, "one paired row");
+    assert!(rx > lx);
+    t.click(rx + 4, ry);
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 1;\nlet value = 2;\nc", "only the addition is staged");
+    let b = t.render(220, 30);
+    let (lx, ly) = find(&b, "let value = 1;").unwrap();
+    t.click(lx + 4, ly);
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 2;\nc", "then the deletion too");
+}
+
+#[test]
+fn a_split_click_side_does_not_stick_to_later_keyboard_actions() {
+    let trash = tempfile::tempdir().unwrap();
+    // SAFETY: the only test in this binary that discards
+    unsafe { std::env::set_var("GITTY_TRASH_DIR", trash.path()) };
+    let f = Fixture::new();
+    f.write("n.txt", "a\nlet value = 1;\nc\n");
+    f.commit("base", NOW - DAY);
+    f.write("n.txt", "a\nlet value = 2;\nc\n");
+    let mut t = H::new(&f, "github-dark", (220, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("n.txt");
+    let b = t.render(220, 30);
+    let (rx, ry) = find(&b, "let value = 2;").unwrap();
+    t.click(rx + 4, ry);
+    // moved away and back with the keyboard: Space acts on the whole pair
+    t.key(KeyCode::Char('j'));
+    t.key(KeyCode::Char('k'));
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 2;\nc", "both sides staged");
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    let b = t.render(220, 30);
+    let (lx, ly) = find(&b, "let value = 1;").unwrap();
+    t.click(lx + 4, ly);
+    // d after a click discards the whole change, not only its deletion
+    t.key(KeyCode::Char('d'));
+    t.key(KeyCode::Enter);
+    t.render(220, 30);
+    assert_eq!(std::fs::read_to_string(f.path().join("n.txt")).unwrap(), "a\nlet value = 1;\nc\n");
+}
+
+#[test]
+fn help_is_generated_from_the_keymap() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("one", NOW - DAY);
+    let repo = Repo::open(f.path()).unwrap();
+    let registry = Registry::load(None);
+    let theme = registry.resolve("github-dark", ColorDepth::True, None).unwrap();
+    let gens = Arc::new(Gens::default());
+    let config = Config { keys: toml::from_str("fetch = \"F5\"\n").unwrap(), ..Config::default() };
+    let app = App::new(AppInit { repo_name: "repo".into(), config, registry, theme, depth: ColorDepth::True, ui_state: UiState::default(), config_path: None, state_path: None, gens: gens.clone(), now: NOW, clock: Instant::now(), size: (140, 60) });
+    let mut t = H { app, h: repo.handle(), gens, clock: Instant::now() };
+    t.pump();
+    t.key(KeyCode::Char('?'));
+    let b = t.render(140, 60);
+    let s = text(&b);
+    let line = s.lines().find(|l| l.contains("fetch") && !l.contains("fetched")).unwrap_or_else(|| panic!("{s}"));
+    assert!(line.contains("F5"), "help shows the remapped key: {line}");
+    assert!(!s.lines().any(|l| l.contains("  f  ") && l.contains("fetch")));
+    assert!(s.contains("search history"), "M6 actions are listed\n{s}");
 }

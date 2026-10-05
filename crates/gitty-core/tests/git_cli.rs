@@ -105,12 +105,12 @@ fn commit_amend_and_undo() {
     assert_eq!(f.git(&["rev-list", "--count", "HEAD"]), "2");
     assert_eq!(g.head_message().unwrap().trim(), "Second, amended");
 
-    let msg = g.undo_commit().unwrap();
+    let msg = g.undo_commit(&f.git(&["rev-parse", "HEAD"])).unwrap();
     assert_eq!(msg.trim(), "Second, amended");
     assert_eq!(f.git(&["rev-list", "--count", "HEAD"]), "1");
     assert_eq!(check(&f, "a.txt"), Some(Check::Staged), "undo keeps the changes staged");
 
-    let msg = g.undo_commit().unwrap();
+    let msg = g.undo_commit(&f.git(&["rev-parse", "HEAD"])).unwrap();
     assert!(msg.starts_with("First"));
     let st = status(&f);
     assert_eq!(st.head, None, "undoing the root commit leaves an unborn branch");

@@ -20,6 +20,10 @@ struct Pty {
 }
 
 fn spawn(dir: &std::path::Path, args: &[&str]) -> Pty {
+    spawn_with(dir, args, &[])
+}
+
+fn spawn_with(dir: &std::path::Path, args: &[&str], envs: &[(&str, &str)]) -> Pty {
     let (mut m, mut s) = (0, 0);
     let mut ws = libc::winsize { ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
     assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) }, 0);
@@ -34,6 +38,7 @@ fn spawn(dir: &std::path::Path, args: &[&str]) -> Pty {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
+        .envs(envs.iter().copied())
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
         .stderr(Stdio::from(slave));
@@ -145,4 +150,107 @@ fn sigterm_restores_terminal() {
     std::thread::sleep(Duration::from_millis(100));
     let out = p.output();
     assert!(out.rfind("\x1b[?1049l") > out.rfind("\x1b[?1049h"), "alt screen left after SIGTERM");
+}
+
+#[test]
+fn sigterm_during_a_fetch_takes_the_fetch_down_too() {
+    let f = repo();
+    f.add_bare_upstream();
+    // the remote's upload-pack records its pid and hangs
+    let pidfile = f.path().join(".git/hang.pid");
+    f.git(&["config", "remote.origin.uploadpack", &format!("sh -c 'echo $$ > {}; exec sleep 97' #", pidfile.display())]);
+    let mut p = spawn(&f.path(), &[]);
+    p.wait_for("second commit");
+    p.master.write_all(b"f").unwrap();
+    let t = Instant::now();
+    while !pidfile.exists() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    let pid: i32 = std::fs::read_to_string(&pidfile).expect("the fetch started").trim().parse().unwrap();
+    unsafe { libc::kill(p.child.id() as i32, libc::SIGTERM) };
+    assert_eq!(p.exit_code(), 128 + libc::SIGTERM);
+    let t = Instant::now();
+    while unsafe { libc::kill(pid, 0) } == 0 && t.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    if alive {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    assert!(!alive, "the fetch's upload-pack outlived gitty");
+}
+
+/// Screen cell (0-based) of the first file row at 120×40 with the default layout.
+fn first_file_cell() -> (u16, u16) {
+    use gitty::app::Focus;
+    use gitty::ui::layout::{LayoutInput, compute};
+    let ui = gitty::config::UiState::default();
+    let p = compute(&LayoutInput { width: 120, height: 40, focus: Focus::History, fullscreen: false, header_height: 3, file_count: 1, ui: &ui });
+    let files = p.files.expect("files pane at 120 columns");
+    (files.x + 3, files.y + 1)
+}
+
+fn double_click(p: &mut Pty, (x, y): (u16, u16)) {
+    for _ in 0..2 {
+        p.master.write_all(format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", x + 1, y + 1, x + 1, y + 1).as_bytes()).unwrap();
+    }
+}
+
+fn editor_script(dir: &std::path::Path, body: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("fake editor.sh");
+    std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // quoted: the path has a space, and $EDITOR is split like a shell would
+    format!("'{}'", script.display())
+}
+
+#[test]
+fn double_click_runs_the_editor_with_the_terminal_and_comes_back() {
+    let f = repo();
+    let tools = tempfile::tempdir().unwrap();
+    let out = tools.path().join("args");
+    let editor = editor_script(tools.path(), &format!("printf '%s\\n' \"$@\" > '{}'", out.display()));
+    let mut p = spawn_with(&f.path(), &[], &[("EDITOR", &editor), ("VISUAL", "")]);
+    p.wait_for("second commit");
+    p.wait_for("a.txt");
+    std::thread::sleep(Duration::from_millis(300));
+    let before = p.output().matches("\x1b[?1049h").count();
+    double_click(&mut p, first_file_cell());
+    let t = Instant::now();
+    while !out.exists() && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let args = std::fs::read_to_string(&out).unwrap_or_else(|_| panic!("the editor never ran:\n{}", p.output()));
+    let args: Vec<&str> = args.lines().collect();
+    assert_eq!(args.len(), 2, "{args:?}");
+    assert_eq!(args[0], "+2", "opens at the first changed line");
+    assert!(args[1].ends_with("/a.txt"), "{args:?}");
+    let t = Instant::now();
+    while p.output().matches("\x1b[?1049h").count() <= before && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let o = p.output();
+    assert!(o.matches("\x1b[?1049h").count() > before, "the TUI comes back after the tool");
+    assert!(o.matches("\x1b[?1049l").count() >= 1, "the tool got the normal screen");
+    p.master.write_all(b"q").unwrap();
+    assert_eq!(p.exit_code(), 0);
+}
+
+#[test]
+fn ctrl_c_in_the_tool_does_not_kill_gitty() {
+    let f = repo();
+    let tools = tempfile::tempdir().unwrap();
+    // what the terminal does on Ctrl-C: SIGINT to the whole foreground process group
+    let editor = editor_script(tools.path(), "kill -INT 0; sleep 5");
+    let mut p = spawn_with(&f.path(), &[], &[("EDITOR", &editor), ("VISUAL", "")]);
+    p.wait_for("second commit");
+    p.wait_for("a.txt");
+    std::thread::sleep(Duration::from_millis(300));
+    double_click(&mut p, first_file_cell());
+    p.wait_for("stopped by a signal");
+    assert!(p.child.try_wait().unwrap().is_none(), "gitty survives");
+    p.master.write_all(b"q").unwrap();
+    assert_eq!(p.exit_code(), 0);
 }

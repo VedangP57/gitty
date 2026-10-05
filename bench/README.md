@@ -97,7 +97,7 @@ staging one line the way Space does (change diff load, then `SetStaged` → `git
 | Operation | git (4,857 files) | gitty (109 files) | Budget |
 |---|---|---|---|
 | status, fresh checkout (racily clean index) | 142–154 ms | 9.4 ms | — |
-| status after gitty's index refresh | **18.5–19.4 ms** | 5.7–5.9 ms | < 50 ms ✅ |
+| status after gitty's index refresh | **18.5–19.4 ms** | 5.7–5.9 ms | < 70 ms ✅ |
 | save → watcher fired | 63–67 ms | 63–67 ms | — (50 ms quiet debounce) |
 | save → status on screen | **92–107 ms** | 73–94 ms | < 150 ms ✅ |
 | change diff load (HEAD → worktree + staged lines) | 0.7 ms | 0.2 ms | < 16 ms ✅ |
@@ -108,6 +108,8 @@ staging one line the way Space does (change diff load, then `SetStaged` → `git
   on git/git, for ever, until some other git command writes the index). When a status takes over
   100 ms, gitty now queues `git update-index -q --refresh` on the writer thread, at most once a
   minute (`slow_status_refreshes_the_index_at_most_once_a_minute`).
+- **Status budget (spec §8):** under 70 ms on a small repo, and under 60 ms on a 120k-file repo with
+  fsmonitor. `bench/run.sh` checks the small-repo figure.
 - Save → watcher is dominated by the 50 ms quiet window of the debouncer (FSEvents itself delivers in
   ~10–15 ms); bursts such as a formatter rewriting many files still produce one status run.
 
@@ -124,3 +126,24 @@ cancel on a hanging remote.
 | prompt request → masked prompt on screen | 0.24 s (includes the transport starting) | — |
 | `x` → "Fetch cancelled" (process group killed, nothing left running) | 7 ms | < 1 s ✅ |
 | `git commit-graph write --reachable --changed-paths`, git/git (85k commits), maintenance thread | 6.3 s | off the UI and writer threads ✅ |
+
+## Budgets enforced (M6) — 2026-10-05, release build, Apple Silicon, load average ~6
+
+`bench/run.sh <repo>...` now passes `--check` to the probe: each spec §8 budget prints
+`budget <what>: <measured> < <budget> ok|MISSED`, and the script exits 1 when any is missed (the
+probe exits 2; `GITTY_BUDGET_SCALE=0.0001` forces a miss to prove it). A warm-up walk runs first,
+because the budgets are for a warm cache. Walk budgets are checked only when the walk uses a
+commit-graph, which gitty writes on large repos.
+
+| Check | git (no graph) | git-cg | linux (blobless) | Budget |
+|---|---|---|---|---|
+| first 500 rows, all refs | 15.8 ms (not checked) | 10.9 ms | 22.9 ms | < 50 ms ✅ |
+| full walk, all refs | 443 ms (not checked) | 18.9 ms | 258 ms | < 400 ms ✅ |
+| commit file list p50 | 0.11 ms | 0.12 ms | blobless | < 5 ms ✅ |
+| file diff p50 | 0.19 ms | 0.19 ms | blobless | < 10 ms ✅ |
+| ahead/behind master...v6.0 (360,606) | — | — | 88 ms | < 150 ms ✅ |
+| status median of 10, after a refresh | 16.4 ms | 17.2 ms | — | < 70 ms ✅ |
+
+`cargo bench -p gitty --bench frame`: a 220×60 frame of a 300-commit fixture (history, file list,
+and a highlighted 3,000-line Rust diff) takes **0.52 ms** (criterion mean 0.515 ms; slowest of 200
+frames 0.63 ms), against the < 16 ms keypress-to-frame budget. The bench exits 2 on a miss.

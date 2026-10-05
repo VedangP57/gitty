@@ -25,6 +25,21 @@ pub fn draw(app: &App, buf: &mut Buffer, r: Rect) {
             buf[(x, y)].set_symbol("─").set_style(base.fg(ui.border));
         }
     }
+    if let Some(c) = app.compare.as_ref().filter(|c| c.tab == crate::app::compare::CompareTab::Files) {
+        let head = app.refs.as_ref().and_then(|r| r.head_branch()).unwrap_or("HEAD");
+        let mb = c.result.as_ref().and_then(|r| r.merge_base).map_or("the empty tree".to_string(), |b| b.short(7));
+        let n = app.files.as_ref().map_or(0, |f| f.len());
+        let line = format!("{} since {mb}", c.other);
+        let x = spans(buf, x0, r.y, right, &[(&line, base.add_modifier(Modifier::BOLD))]);
+        totals(app, buf, x, r.y, right, base);
+        if r.height >= 3 {
+            text(buf, x0, r.y + 1, right, &format!("{n} files · what merging {} into {head} would bring", c.other), base.fg(ui.muted));
+        }
+        return;
+    }
+    if let Some((oldest, newest)) = app.selected_range().filter(|(o, n)| o != n) {
+        return range(app, buf, r, x0, right, base, (oldest, newest));
+    }
     let row = app.detail.as_ref().map(|d| &d.row).or_else(|| app.selected_row());
     let Some(row) = row else {
         let msg = if app.history_len == 0 { "" } else { "…" };
@@ -50,19 +65,13 @@ pub fn draw(app: &App, buf: &mut Buffer, r: Rect) {
     }
     let sha = row.id.short(7);
     let date = format_date(row.author.time, row.author.offset_secs, app.now, app.date_mode);
-    let (added, removed): (u32, u32) = app.stats.iter().flatten().fold((0, 0), |(a, d), s| (a + s.added, d + s.removed));
     let dot = (" · ", base.fg(ui.muted));
     let mut x = spans(buf, x0, y, right, &[(&ini, ini_st), (" ", base)]);
     let tail_w = (sha.len() + date.len() + 24) as u16;
     let who_room = right.saturating_sub(x).saturating_sub(tail_w).max(8) as usize;
     x = text(buf, x, y, right, &truncate_end(&who, who_room), base);
     x = spans(buf, x, y, right, &[dot, (&sha, base.fg(ui.accent))]);
-    let all_known = app.stats.iter().all(Option::is_some);
-    if app.stats_done && all_known && app.files.as_ref().is_some_and(|f| !f.is_empty()) {
-        let a = format!("+{added}");
-        let d = format!(" −{removed}");
-        x = spans(buf, x, y, right, &[dot, (&a, base.fg(ui.status_added)), (&d, base.fg(ui.status_deleted))]);
-    }
+    x = totals(app, buf, x, y, right, base);
     spans(buf, x, y, right, &[dot, (&date, base.fg(ui.muted))]);
     if !app.header_expanded {
         return;
@@ -92,4 +101,35 @@ pub fn draw(app: &App, buf: &mut Buffer, r: Rect) {
             text(buf, x0, y, right, &meta, base.fg(ui.muted));
         }
     }
+}
+
+/// ` · +A −D` once every file's line stats are known.
+fn totals(app: &App, buf: &mut Buffer, x: u16, y: u16, right: u16, base: Style) -> u16 {
+    let ui = &app.theme.ui;
+    let all_known = app.stats.iter().all(Option::is_some);
+    if !(app.stats_done && all_known && app.files.as_ref().is_some_and(|f| !f.is_empty())) {
+        return x;
+    }
+    let (added, removed): (u32, u32) = app.stats.iter().flatten().fold((0, 0), |(a, d), s| (a + s.added, d + s.removed));
+    let a = format!("+{added}");
+    let d = format!(" −{removed}");
+    spans(buf, x, y, right, &[(" · ", base.fg(ui.muted)), (&a, base.fg(ui.status_added)), (&d, base.fg(ui.status_deleted))])
+}
+
+/// A selected range: `N commits · <oldest>..<newest> · +A −D`, then the two ends' summaries.
+fn range(app: &App, buf: &mut Buffer, r: Rect, x0: u16, right: u16, base: Style, (oldest, newest): (usize, usize)) {
+    let ui = &app.theme.ui;
+    let ends = match app.files_of() {
+        Some(crate::msg::FilesOf::Range { oldest, newest }) => format!(" · {}..{}", oldest.short(7), newest.short(7)),
+        _ => String::new(),
+    };
+    let n = format!("{} commits", oldest - newest + 1);
+    let x = spans(buf, x0, r.y, right, &[(&n, base.add_modifier(Modifier::BOLD)), (&ends, base.fg(ui.accent))]);
+    totals(app, buf, x, r.y, right, base);
+    if r.height < 3 {
+        return;
+    }
+    let summary = |i: usize| app.rows.get(&i).map_or("…", |row| row.summary.as_str());
+    let line = format!("{}  …  {}", summary(oldest), summary(newest));
+    text(buf, x0, r.y + 1, right, &truncate_end(&line, right.saturating_sub(x0) as usize), base.fg(ui.muted));
 }

@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use gitty_core::Handle;
 
-use crate::msg::{DiffKey, Gens, Msg, Request};
+use crate::msg::{DiffKey, FilesOf, Gens, Msg, Request};
 
 /// History entries appended per write-lock hold; the first chunk is small so the first screen
 /// of rows appears quickly even without a commit-graph.
@@ -14,6 +14,8 @@ const WALK_FIRST_CHUNK: usize = 256;
 const WALK_CHUNK: usize = 4096;
 /// Line stats are sent in batches of this many files; staleness is checked as often.
 const STATS_CHUNK: usize = 32;
+/// A search chunk checks for a newer query this often (rows).
+const SEARCH_CHECK: usize = 1024;
 
 thread_local! {
     static HIGHLIGHTER: RefCell<gitty_highlight::Highlighter> = RefCell::new(gitty_highlight::Highlighter::new());
@@ -116,6 +118,47 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let rows = ids.into_iter().filter_map(|(i, id)| h.decode_row(id).ok().map(|r| (i, r))).collect();
             sink(Msg::Rows { session, rows });
         }
+        Request::Search { generation, query, paths, history, range } => {
+            let ids = {
+                let h = history.read().unwrap_or_else(PoisonError::into_inner);
+                h.ids(range.start.min(h.len())..range.end.min(h.len()))
+            };
+            let mut hits = Vec::new();
+            for (n, id) in ids.into_iter().enumerate() {
+                if n % SEARCH_CHECK == 0 && !Gens::is(&gens.search, generation) {
+                    return;
+                }
+                if paths.as_ref().is_some_and(|p| !p.contains(&id)) {
+                    continue;
+                }
+                // a path-only query needs no decoding
+                if query.text.is_none() || h.decode_row(id).is_ok_and(|r| query.matches(&r)) {
+                    hits.push(range.start + n);
+                }
+            }
+            sink(Msg::SearchHits { generation, range, hits });
+        }
+        Request::SearchPath { generation, tips, path } => {
+            if !Gens::is(&gens.search, generation) {
+                return;
+            }
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            let stale = || !Gens::is(&gens.search, generation);
+            let result = gitty_core::search::path_commits(&cli, &tips, &path, &stale).map(Arc::new).map_err(|e| format!("{e:#}"));
+            // a cancelled lookup answers nothing: its search is gone
+            if !stale() {
+                sink(Msg::SearchPaths { generation, result });
+            }
+        }
+        Request::CommitRows { ids } => {
+            let rows = ids.into_iter().filter_map(|id| h.decode_row(id).ok()).collect();
+            sink(Msg::CommitRows { rows });
+        }
+        Request::Compare { generation, head, other } => {
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            let result = gitty_core::compare::compare(&cli, head, other).map_err(|e| format!("{e:#}"));
+            sink(Msg::Compare { generation, result });
+        }
         Request::Detail { generation, id } => {
             if !Gens::is(&gens.commit, generation) {
                 return;
@@ -125,16 +168,21 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 Err(e) => sink(error(format!("reading commit {}", id.short(7)), &e)),
             }
         }
-        Request::Files { generation, id, prefetch } => {
+        Request::Files { generation, of, prefetch } => {
             let stale = || !prefetch && !Gens::is(&gens.commit, generation);
             if stale() {
                 return;
             }
-            let files = match h.commit_files(id, true) {
-                Ok(f) => Arc::new(f),
-                Err(e) => return sink(Msg::FilesError { generation, id, prefetch, detail: format!("{e:#}") }),
+            let listed = match of {
+                FilesOf::Commit(id) => h.commit_files(id, true),
+                FilesOf::Range { oldest, newest } => h.range_files(oldest, newest, true),
+                FilesOf::Between { from, to } => h.diff_commits(from, to, true),
             };
-            sink(Msg::Files { generation, id, files: files.clone(), prefetch });
+            let files = match listed {
+                Ok(f) => Arc::new(f),
+                Err(e) => return sink(Msg::FilesError { generation, of, prefetch, detail: format!("{e:#}") }),
+            };
+            sink(Msg::Files { generation, of, files: files.clone(), prefetch });
             if prefetch {
                 // prefetch fills the file-list cache only; stats are computed on selection
                 return;
@@ -146,11 +194,11 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 }
                 let stats = chunk.iter().map(|f| h.line_stats(f).ok()).collect();
                 let done = start + chunk.len() == files.len();
-                sink(Msg::Stats { id, start, stats, done });
+                sink(Msg::Stats { of, start, stats, done });
                 start += chunk.len();
             }
             if files.is_empty() {
-                sink(Msg::Stats { id, start: 0, stats: Vec::new(), done: true });
+                sink(Msg::Stats { of, start: 0, stats: Vec::new(), done: true });
             }
         }
         Request::Diff { generation, file, opts, force_text } => {
@@ -180,7 +228,10 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let cancelled = spans.is_none() && stale();
             sink(Msg::Highlighted { key, spans: spans.map(Arc::new), cancelled });
         }
-        Request::Status { generation } => {
+        Request::Status { generation, mark } => {
+            if let Some(mark) = mark {
+                mark.note();
+            }
             let t = std::time::Instant::now();
             let result = gitty_core::git_cli::GitCli::new(h.owner()).status().map_err(|e| format!("{e:#}"));
             let slow = result.is_ok() && t.elapsed() >= SLOW_STATUS;
@@ -198,12 +249,16 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 let _write = crate::write::lock();
                 crate::write::run(h, &op, &mut |line| sink(Msg::WriteLog { line: line.to_string() })).map_err(|e| format!("{e:#}"))
             };
+            let stale = matches!(&result, Err(e) if !matches!(op, crate::msg::WriteOp::RemoveIndexLock) && crate::write::stale_index_lock(h, e));
             sink(Msg::WriteDone { op, result });
+            if stale {
+                sink(Msg::StaleIndexLock);
+            }
         }
         Request::Net { op, mode, background } => crate::netjob::run(h, op, mode, background, sink),
         Request::Tune { history_len, th } => {
             let actions = gitty_core::tune::plan(h, history_len, th);
-            let (applied, error) = match gitty_core::tune::apply(&gitty_core::git_cli::GitCli::new(h.owner()), &actions) {
+            let (applied, error) = match gitty_core::tune::apply(h, &actions) {
                 Ok(done) => (done, None),
                 Err(e) => (Vec::new(), Some(format!("{e:#}"))),
             };

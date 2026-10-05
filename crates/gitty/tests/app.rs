@@ -10,7 +10,7 @@ use gitty::app::diffstate::{DiffState, VRow};
 use gitty::app::{App, AppInit, Focus};
 use gitty::config::{Config, UiState};
 use gitty::exec::exec;
-use gitty::msg::{DiffKey, Gens, HlKey, Msg, Request};
+use gitty::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request};
 use gitty::theme::{ColorDepth, Registry};
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::Row;
@@ -148,7 +148,7 @@ fn selecting_commit_requests_files_and_detail() {
     t.pump();
     t.ch('j');
     let r = t.app.take_requests();
-    let requested = r.iter().any(|r| matches!(r, Request::Files { id, prefetch: false, .. } if *id == CommitId::from_hex(&ids[3]).unwrap()));
+    let requested = r.iter().any(|r| matches!(r, Request::Files { of: FilesOf::Commit(id), prefetch: false, .. } if *id == CommitId::from_hex(&ids[3]).unwrap()));
     assert!(requested || t.app.files_for() == Some(id(&ids[3])), "files requested or served from the prefetch cache");
     assert!(r.iter().any(|r| matches!(r, Request::Detail { .. })) || t.app.detail.is_some());
     for m in t.exec_all(r) {
@@ -170,7 +170,7 @@ fn stale_files_message_ignored() {
     let stale_gen = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
     t.ch('j');
     let shown = t.app.files_for();
-    t.app.handle_msg(Msg::Files { generation: stale_gen, id: id(&ids[3]), files: Arc::new(vec![]), prefetch: false });
+    t.app.handle_msg(Msg::Files { generation: stale_gen, of: FilesOf::Commit(id(&ids[3])), files: Arc::new(vec![]), prefetch: false });
     assert_eq!(t.app.files_for(), shown);
     assert_ne!(t.app.files_for(), Some(id(&ids[3])));
     t.pump();
@@ -603,13 +603,13 @@ fn files_error_is_shown_and_prefetch_errors_are_quiet() {
     }
     let in_flight = t.app.prefetch_in_flight();
     assert_eq!(in_flight, 10);
-    t.app.handle_msg(Msg::FilesError { generation: 0, id: id(&ids[13]), prefetch: true, detail: "boom".into() });
+    t.app.handle_msg(Msg::FilesError { generation: 0, of: FilesOf::Commit(id(&ids[13])), prefetch: true, detail: "boom".into() });
     assert_eq!(t.app.prefetch_in_flight(), 9, "a failed prefetch frees its slot");
     assert!(t.app.toast.is_none(), "prefetch failures are not the user's problem");
     t.ch('G');
     let generation = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
     let sel = t.selected_id();
-    t.app.handle_msg(Msg::FilesError { generation, id: sel, prefetch: false, detail: "object not found".into() });
+    t.app.handle_msg(Msg::FilesError { generation, of: FilesOf::Commit(sel), prefetch: false, detail: "object not found".into() });
     assert_eq!(t.app.files_error.as_deref(), Some("object not found"));
     assert!(!t.app.diff_loading());
 }
@@ -899,6 +899,36 @@ fn writes_refresh_status_and_errors_toast() {
     assert!(toast.error && toast.detail.contains("index.lock"), "{}", toast.detail);
 }
 
+/// The stale-lock check asks `pgrep -x git`; other tests run git all the time, so this binary
+/// answers "none running" (`false` exits 1, as pgrep does when nothing matches).
+fn no_git_running() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: set once, before any write in this binary reads it
+    ONCE.call_once(|| unsafe { std::env::set_var("GITTY_PGREP", "false") });
+}
+
+#[test]
+fn a_stale_index_lock_is_offered_for_removal() {
+    no_git_running();
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    std::fs::write(f.path().join(".git/index.lock"), "").unwrap();
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    t.pump();
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { title, op: gitty::msg::WriteOp::RemoveIndexLock, .. }) => {
+            assert_eq!(title, "Remove the stale .git/index.lock?")
+        }
+        _ => panic!("no offer to remove the lock; toast {:?}", t.app.toast.as_ref().map(|t| &t.detail)),
+    }
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(!f.path().join(".git/index.lock").exists());
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    t.pump();
+    assert!(t.app.changes.status.as_ref().unwrap().entries.iter().all(|e| e.check() == gitty_core::status::Check::Staged));
+}
+
 #[test]
 fn focus_gained_and_backstop_refresh_status() {
     let f = changes_fixture();
@@ -946,7 +976,8 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::WriteFile { path, .. } => format!("write {path}"),
                 gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
-                gitty::msg::WriteOp::UndoCommit => "undo".into(),
+                gitty::msg::WriteOp::UndoCommit { .. } => "undo".into(),
+                gitty::msg::WriteOp::RemoveIndexLock => "remove index.lock".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
             }),
@@ -962,6 +993,23 @@ fn index_of(f: &Fixture, p: &str) -> String {
 fn diff_row(t: &H, want: &str) -> usize {
     let d = t.app.diff.as_ref().unwrap();
     (0..d.rows(false)).find(|&i| row_kind(d, i) == want).unwrap_or_else(|| panic!("no {want} row"))
+}
+
+#[test]
+fn the_index_mark_is_the_index_status_read_not_a_later_one() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    let mark = gitty_core::watch::IndexMark::new(&f.path().join(".git"));
+    t.app.set_index_mark(mark.clone());
+    t.app.request_status();
+    let reqs = t.app.take_requests();
+    let msgs = t.exec_all(reqs);
+    // staged elsewhere after status read the index, before its reply is handled
+    f.git(&["add", "-A"]);
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    assert!(!mark.is_seen(), "the watcher must still report the external add");
 }
 
 #[test]
@@ -1024,6 +1072,25 @@ fn space_stages_the_line_under_the_cursor_and_range_and_hunk() {
     let mut want = base.clone();
     want.extend(["x13".to_string(), "x14".to_string()]);
     assert_eq!(index(&f), text(&want));
+}
+
+#[test]
+fn intent_to_add_files_stage_line_by_line() {
+    let f = Fixture::new();
+    f.write("base.txt", "b\n");
+    f.commit("base", 1_700_000_000);
+    f.write("f", "one\ntwo\n");
+    f.git(&["add", "-N", "f"]);
+    let mut t = changes_tab(&f);
+    let i = t.app.changes.status.as_ref().unwrap().entries.iter().position(|e| e.path == "f").unwrap();
+    t.app.select_change(i);
+    t.pump();
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add0");
+    t.ch(' ');
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast.as_ref().map(|t| (&t.what, &t.detail)));
+    assert_eq!(index_of(&f, "f"), "one");
 }
 
 #[test]
@@ -1148,6 +1215,27 @@ fn commit_box_commits_with_trailers_and_undo_restores_the_message() {
     assert_eq!(t.app.changes.commit.body.text(), "Because b matters.");
     assert_eq!(t.app.changes.commit.coauthors.text(), "Ann <ann@example.org>");
     assert_eq!(t.app.commit_bar(), None);
+}
+
+#[test]
+fn undo_is_not_offered_once_the_commit_is_pushed() {
+    let f = staged_fixture();
+    f.add_bare_upstream();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "Add b");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    assert!(t.app.commit_bar().is_some());
+    f.git(&["push", "-q"]);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::ALL));
+    t.pump();
+    assert_eq!(t.app.commit_bar(), None, "a pushed commit is not offered for undo");
+    t.app.set_tab(gitty::app::Tab::Changes);
+    t.key(KeyCode::Esc);
+    t.ch('u');
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Add b");
 }
 
 #[test]
@@ -1290,6 +1378,17 @@ fn quick_successive_line_toggles_all_apply() {
 }
 
 #[test]
+fn a_discard_outside_the_trash_says_where_the_copies_are() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    let note = "The Trash is not writable: copies of the discarded files are in /x/gitty/trash".to_string();
+    let op = gitty::msg::WriteOp::DiscardFiles { restore: vec!["a.txt".into()], remove: vec![] };
+    t.app.handle_msg(Msg::WriteDone { op, result: Ok(Some(note.clone())) });
+    let toast = t.app.toast.as_ref().expect("a toast");
+    assert!(!toast.error && toast.what == note, "{:?}", toast.what);
+}
+
+#[test]
 fn discarding_a_staged_line_unstages_it_too() {
     let _ = trash_dir();
     let f = Fixture::new();
@@ -1305,6 +1404,51 @@ fn discarding_a_staged_line_unstages_it_too() {
     t.pump();
     assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "1\n2\n3\n");
     assert_eq!(f.git(&["status", "--porcelain"]), "", "the discarded line is not left staged");
+}
+
+#[test]
+fn a_renamed_file_stages_and_discards_line_by_line() {
+    let _ = trash_dir();
+    let f = Fixture::new();
+    f.write("old.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["mv", "old.txt", "new.txt"]);
+    f.write("new.txt", "1\n2\n3\n4\n5\n");
+    let mut t = changes_tab(&f);
+    let i = t.app.changes.status.as_ref().unwrap().entries.iter().position(|e| e.path == "new.txt").unwrap();
+    t.app.select_change(i);
+    t.pump();
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch(' ');
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast.as_ref().map(|t| &t.detail));
+    assert_eq!(index_of(&f, "new.txt"), "1\n2\n3\n4");
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add4");
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast.as_ref().map(|t| &t.detail));
+    assert_eq!(std::fs::read_to_string(f.path().join("new.txt")).unwrap(), "1\n2\n3\n4\n");
+}
+
+#[test]
+fn line_staging_refuses_after_head_moves_under_it() {
+    let f = Fixture::new();
+    f.write("a.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "1\n2\n3\n4\n5\n");
+    f.git(&["add", "a.txt"]);
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    // committed elsewhere: the index and the worktree are what gitty saw, HEAD:a.txt is not
+    f.git(&["commit", "-qm", "elsewhere"]);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch(' ');
+    t.pump();
+    let toast = t.app.toast.as_ref().map(|t| t.detail.clone()).unwrap_or_default();
+    assert!(toast.contains("changed in HEAD"), "{toast:?}");
+    assert_eq!(index_of(&f, "a.txt"), "1\n2\n3\n4\n5", "the index is left alone");
 }
 
 // ---- network ----
@@ -1600,4 +1744,624 @@ fn a_conflicting_merge_says_what_to_do() {
     let toast = t.app.toast.clone().unwrap();
     assert!(toast.what.contains("conflict") && toast.what.contains("git merge --abort"), "{toast:?}");
     assert!(toast.detail.contains("CONFLICT"), "{toast:?}");
+}
+
+/// 12 commits; i % 3 == 0 are "Fix thing i" (history indices 2, 5, 8, 11), the rest "commit i".
+fn search_fixture() -> Fixture {
+    let f = Fixture::new();
+    for i in 0..12 {
+        f.write("a.txt", format!("line {i}\n"));
+        let msg = if i % 3 == 0 { format!("Fix thing {i}") } else { format!("commit {i}") };
+        f.commit(&msg, 1_700_000_000 + i * 100);
+    }
+    f
+}
+
+fn search(t: &mut H, q: &str) {
+    t.ch('/');
+    typed(t, q);
+    t.key(KeyCode::Enter);
+}
+
+fn hits(t: &H) -> Vec<usize> {
+    t.app.search.hits.iter().copied().collect()
+}
+
+#[test]
+fn search_jumps_to_the_first_match_at_or_after_the_selection_and_n_wraps() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(3);
+    t.pump();
+    search(&mut t, "fix");
+    t.pump();
+    assert_eq!(hits(&t), [2, 5, 8, 11]);
+    assert_eq!(t.app.selected, 5);
+    t.ch('n');
+    assert_eq!(t.app.selected, 8);
+    t.ch('n');
+    t.ch('n');
+    assert_eq!(t.app.selected, 2, "n wraps to the first match");
+    t.ch('N');
+    assert_eq!(t.app.selected, 11, "N wraps to the last match");
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  4/4"));
+}
+
+#[test]
+fn search_chunks_merge_in_any_order_and_a_stale_generation_is_dropped() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.search_chunk = 5;
+    search(&mut t, "fix");
+    let reqs = t.app.take_requests();
+    let ranges: Vec<_> = reqs.iter().filter_map(|r| match r {
+        Request::Search { range, .. } => Some(range.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(ranges, [0..5, 5..10, 10..12]);
+    // the last chunk answers first: the selection jumps, then moves back as earlier hits arrive
+    for r in reqs.into_iter().rev() {
+        for m in t.exec_all(vec![r]) {
+            t.app.handle_msg(m);
+        }
+        assert!(t.app.search.hits.contains(&t.app.selected));
+    }
+    assert_eq!(hits(&t), [2, 5, 8, 11]);
+    assert_eq!(t.app.selected, 2);
+
+    search(&mut t, "commit");
+    let reqs = t.app.take_requests();
+    let old = t.exec_all(reqs);
+    search(&mut t, "thing 9");
+    for m in old {
+        t.app.handle_msg(m);
+    }
+    assert!(hits(&t).is_empty(), "hits of a replaced query are dropped");
+    t.pump();
+    assert_eq!(hits(&t), [2]);
+}
+
+#[test]
+fn search_bar_takes_every_key_and_esc_clears() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('/');
+    typed(&mut t, "q1n?");
+    assert!(!t.app.quit && t.app.overlay.is_none());
+    assert_eq!(t.app.search.bar.as_ref().map(|b| b.text()), Some("q1n?"));
+    t.key(KeyCode::Esc);
+    assert!(t.app.search.bar.is_none() && t.app.search_label().is_none());
+
+    search(&mut t, "fix");
+    t.pump();
+    assert_eq!(hits(&t).len(), 4);
+    t.key(KeyCode::Esc);
+    assert!(hits(&t).is_empty() && t.app.search_label().is_none(), "Esc clears an active search");
+    let before = t.app.selected;
+    t.ch('n');
+    assert_eq!(t.app.selected, before);
+}
+
+#[test]
+fn path_search_keeps_commits_touching_the_path() {
+    let f = Fixture::new();
+    commits(&f, 6); // dir/f0, f2, f4 → history indices 5, 3, 1
+    let mut t = H::new(&f);
+    t.pump();
+    search(&mut t, "path:dir");
+    t.pump();
+    assert_eq!(hits(&t), [1, 3, 5]);
+    search(&mut t, "commit 4 path:dir");
+    t.pump();
+    assert_eq!(hits(&t), [1]);
+    search(&mut t, "path:nowhere");
+    t.pump();
+    assert!(hits(&t).is_empty());
+    assert_eq!(t.app.search_label().as_deref(), Some("/path:nowhere  no matches"));
+}
+
+/// c0: a=1 · c1: a=2, b · c2: a=3 · c3: c (history indices 3, 2, 1, 0).
+fn range_fixture() -> (Fixture, Vec<String>) {
+    let f = Fixture::new();
+    let mut ids = Vec::new();
+    f.write("a.txt", "1\n");
+    ids.push(f.commit("c0", 1_700_000_000));
+    f.write("a.txt", "2\n");
+    f.write("b.txt", "b\n");
+    ids.push(f.commit("c1", 1_700_000_100));
+    f.write("a.txt", "3\n");
+    ids.push(f.commit("c2", 1_700_000_200));
+    f.write("c.txt", "c\n");
+    ids.push(f.commit("c3", 1_700_000_300));
+    (f, ids)
+}
+
+fn file_paths(t: &H) -> Vec<String> {
+    let mut v: Vec<String> = t.app.files.as_ref().unwrap().iter().map(|f| f.path.clone()).collect();
+    v.sort();
+    v
+}
+
+fn git_names(f: &Fixture, a: &str, b: &str) -> Vec<String> {
+    let mut v: Vec<String> = f.git(&["diff", "--name-only", a, b]).lines().map(str::to_string).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn range_lists_the_union_of_files_with_one_combined_diff_each() {
+    let (f, ids) = range_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.ch('V');
+    t.ch('j');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.selected_range(), Some((2, 0)));
+    assert_eq!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[1]), newest: id(&ids[3]) }));
+    assert_eq!(file_paths(&t), ["a.txt", "b.txt", "c.txt"]);
+    let i = t.app.files.as_ref().unwrap().iter().position(|f| f.path == "a.txt").unwrap();
+    t.app.select_file(i);
+    t.pump();
+    let d = &t.app.diff.as_ref().unwrap().diff;
+    assert_eq!((d.old.bytes(), d.new.bytes()), (&b"1\n"[..], &b"3\n"[..]), "a file changed twice shows one diff");
+    assert_eq!(t.app.focus, Focus::History);
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.selected_range(), None, "Esc ends the range");
+    assert_eq!(t.app.files_for(), Some(id(&ids[1])));
+}
+
+#[test]
+fn range_from_the_root_commit_diffs_against_the_empty_tree() {
+    let (f, ids) = range_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.ch('V');
+    t.ch('G');
+    t.pump();
+    assert_eq!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[0]), newest: id(&ids[2]) }));
+    assert_eq!(file_paths(&t), ["a.txt", "b.txt"]);
+    t.ch('V');
+    t.pump();
+    assert_eq!(t.app.selected_range(), None, "V again ends the range");
+}
+
+#[test]
+fn range_across_a_merge_matches_git_diff() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-qb", "feature"]);
+    f.write("f.txt", "f\n");
+    f.commit("feature work", 1_700_000_100);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "m\n");
+    f.commit("main work", 1_700_000_200);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge feature", "feature"], &[("GIT_AUTHOR_DATE", "1700000300 +0000".into()), ("GIT_COMMITTER_DATE", "1700000300 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    let Some(FilesOf::Range { oldest, newest }) = t.app.files_of() else { panic!("{:?}", t.app.files_of()) };
+    assert_eq!(file_paths(&t), git_names(&f, &format!("{oldest}^"), &newest.to_string()));
+}
+
+#[test]
+fn a_stale_range_file_list_is_dropped_after_the_selection_moves() {
+    let (f, ids) = range_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    let first = t.app.take_requests();
+    assert!(first.iter().any(|r| matches!(r, Request::Files { of: FilesOf::Range { .. }, prefetch: false, .. })));
+    t.ch('j');
+    let msgs = t.exec_all(first);
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    assert_ne!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[2]), newest: id(&ids[3]) }), "old range not installed");
+    t.pump();
+    assert_eq!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[1]), newest: id(&ids[3]) }));
+
+    // ending the range does not move the selection: only the list identity tells the replies apart
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    let reqs = t.app.take_requests();
+    t.ch('V');
+    for m in t.exec_all(reqs) {
+        t.app.handle_msg(m);
+    }
+    assert!(!matches!(t.app.files_of(), Some(FilesOf::Range { .. })), "a range list arriving after the range ended is dropped");
+    t.pump();
+    assert_eq!(t.app.files_for(), Some(id(&ids[2])));
+}
+
+#[test]
+fn fuzzy_branch_ranking() {
+    use gitty::app::compare::fuzzy_rank;
+    let names: Vec<String> = ["feature", "fix-tests", "main", "origin/feature"].map(String::from).to_vec();
+    let rank = |q: &str| fuzzy_rank(q, &names).into_iter().map(|i| names[i].as_str()).collect::<Vec<_>>();
+    assert_eq!(rank("ft"), ["fix-tests", "feature", "origin/feature"], "word starts beat scattered letters; ties by name");
+    assert_eq!(rank("FT"), rank("ft"), "case-insensitive");
+    assert_eq!(rank("feat"), ["feature", "origin/feature"]);
+    assert_eq!(rank("mn"), ["main"]);
+    assert_eq!(rank(""), ["feature", "fix-tests", "main", "origin/feature"]);
+    assert!(rank("zz").is_empty());
+}
+
+/// main: base, m1, m2 · feature (from base): f1, f2, f3 and a merge of m1. main checked out.
+fn compare_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["branch", "feature"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_100);
+    f.write("m.txt", "2\n");
+    f.commit("m2", 1_700_000_200);
+    f.git(&["checkout", "-q", "feature"]);
+    for i in 1..=3 {
+        f.write("f.txt", format!("{i}\n"));
+        f.commit(&format!("f{i}"), 1_700_000_300 + i * 100);
+    }
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge m1", "main~1"], &[("GIT_AUTHOR_DATE", "1700001000 +0000".into()), ("GIT_COMMITTER_DATE", "1700001000 +0000".into())]);
+    f.git(&["checkout", "-q", "main"]);
+    f
+}
+
+#[test]
+fn compare_flow_picks_a_branch_switches_tabs_and_esc_restores() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    let before = (t.app.selected, t.selected_id());
+    t.ch('b');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::BranchPicker { .. })));
+    typed(&mut t, "fea");
+    t.key(KeyCode::Enter);
+    t.pump();
+    let tip = id(&f.git(&["rev-parse", "feature"]));
+    let head = id(&f.git(&["rev-parse", "main"]));
+    let mb = id(&f.git(&["merge-base", "main", "feature"]));
+    {
+        let c = t.app.compare.as_ref().expect("compare mode");
+        assert_eq!(c.other, "feature");
+        let r = c.result.as_ref().unwrap();
+        assert_eq!((r.behind.len(), r.ahead.len()), (4, 1));
+    }
+    assert_eq!(t.selected_id(), tip, "Behind tab selects the branch's newest commit");
+    assert_eq!(t.app.files_for(), Some(tip));
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.files_for(), Some(id(&f.git(&["rev-parse", "feature~1"]))), "j moves in the compare list");
+    t.ch('l');
+    t.pump();
+    assert_eq!(t.selected_id(), head, "Ahead tab");
+    t.ch('l');
+    t.pump();
+    assert_eq!(t.app.files_of(), Some(FilesOf::Between { from: Some(mb), to: tip }));
+    assert_eq!(file_paths(&t), git_names(&f, &mb.to_string(), "feature"));
+    t.ch('l');
+    t.ch('h');
+    t.pump();
+    assert_eq!(t.selected_id(), head, "h goes back to Ahead");
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert!(t.app.compare.is_none());
+    assert_eq!((t.app.selected, t.selected_id()), before, "Esc restores the history selection");
+    assert_eq!(t.app.files_for(), Some(before.1));
+}
+
+#[test]
+fn branch_picker_takes_letters_as_query_and_esc_cancels() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('b');
+    typed(&mut t, "jkq");
+    assert!(!t.app.quit);
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::BranchPicker { query, .. }) => assert_eq!(query.text(), "jkq"),
+        _ => panic!("picker closed"),
+    }
+    t.key(KeyCode::Enter);
+    assert!(t.app.compare.is_none(), "Enter with no match does nothing");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none() && t.app.compare.is_none());
+}
+
+#[test]
+fn a_history_refresh_during_compare_keeps_both_selections() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    let before = t.selected_id();
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    let shown = t.selected_id();
+    f.write("new.txt", "n\n");
+    f.commit("new on main", 1_700_002_000);
+    let msgs = t.exec_all(vec![Request::Refs]);
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(t.selected_id(), shown, "the walk does not steal the compare selection");
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.selected_id(), before, "the same commit is selected again, at its new row");
+    assert_eq!(t.app.selected, 2);
+}
+
+fn tree_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("seed", "s\n");
+    f.commit("seed", 1_700_000_000);
+    for p in ["a.txt", "src/ui/x.rs", "src/ui/y.rs", "src/main.rs", "z.txt"] {
+        f.write(p, "x\n");
+    }
+    f.commit("tree", 1_700_000_100);
+    f
+}
+
+fn rows_text(t: &H) -> Vec<String> {
+    use gitty::app::tree::FileRow;
+    let files = t.app.files.clone().unwrap();
+    t.app.file_rows().iter().cloned().map(|r| match r {
+        FileRow::Dir { name, depth, collapsed, .. } => format!("{}{}{name}/", "  ".repeat(depth), if collapsed { "+" } else { "-" }),
+        FileRow::File { idx, depth } => format!("{}{}", "  ".repeat(depth), files[idx].path.rsplit('/').next().unwrap()),
+    }).collect()
+}
+
+#[test]
+fn tree_view_groups_by_directory_collapses_and_selection_follows_files() {
+    let f = tree_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('t');
+    assert!(t.app.ui_state.tree_view, "the setting is kept in UI state");
+    assert_eq!(rows_text(&t), ["-src/", "  -ui/", "    x.rs", "    y.rs", "  main.rs", "a.txt", "z.txt"]);
+    assert_eq!(t.app.current_file().unwrap().path, "a.txt", "toggling keeps the selected file");
+    assert_eq!(t.app.file_cursor(), 5);
+    t.app.select(1);
+    t.pump();
+    t.app.select(0);
+    t.pump();
+    assert_eq!(t.app.current_file().unwrap().path, "src/ui/x.rs", "a new list starts on the first file row");
+    t.key(KeyCode::Enter); // history → files
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('k');
+    t.ch('k');
+    assert_eq!(t.app.file_cursor(), 0, "the cursor can rest on a directory");
+    t.ch('j');
+    t.key(KeyCode::Enter);
+    assert_eq!(rows_text(&t), ["-src/", "  +ui/", "  main.rs", "a.txt", "z.txt"], "Enter on a directory collapses it");
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.current_file().unwrap().path, "src/main.rs");
+    assert_eq!(t.app.diff.as_ref().map(|d| d.key.path.as_str()), Some("src/main.rs"), "the diff follows file rows");
+    t.ch('}');
+    assert_eq!(t.app.current_file().unwrap().path, "a.txt", "}} goes to the next file row");
+    t.ch('{');
+    t.ch('{');
+    assert_eq!(t.app.current_file().unwrap().path, "src/main.rs", "{{ skips directories and hidden files");
+    t.key(KeyCode::Esc);
+    t.ch('t');
+    assert_eq!(rows_text(&t).len(), 5, "list view: one row per file");
+    assert!(rows_text(&t).iter().all(|r| !r.ends_with('/')));
+}
+
+fn keys_config(s: &str) -> Config {
+    Config { keys: toml::from_str(s).unwrap(), ..Config::default() }
+}
+
+#[test]
+fn a_remapped_fetch_runs_on_the_new_key_only() {
+    let (f, _bare) = remote_fixture();
+    let mut t = H::with(&f, keys_config("fetch = \"F5\"\n"), None);
+    t.pump();
+    t.ch('f');
+    assert!(!t.app.take_requests().iter().any(|r| matches!(r, Request::Net { .. })), "f no longer fetches");
+    t.key(KeyCode::F(5));
+    assert!(t.app.take_requests().iter().any(|r| matches!(r, Request::Net { op: gitty::msg::NetOp::Fetch, .. })));
+}
+
+#[test]
+fn text_inputs_ignore_remaps() {
+    let f = staged_fixture();
+    let mut t = H::with(&f, keys_config("quit = \"a\"\nstage = \"x\"\n"), None);
+    t.pump();
+    t.ch('1');
+    t.pump();
+    t.ch('c');
+    typed(&mut t, "a fix");
+    assert!(!t.app.quit, "typing a in the commit box is text");
+    assert_eq!(t.app.changes.commit.summary.text(), "a fix");
+    t.key(KeyCode::Esc);
+    t.ch('2');
+    t.ch('/');
+    typed(&mut t, "a");
+    assert!(!t.app.quit, "nor in the search bar");
+    t.key(KeyCode::Esc);
+    t.ch('a');
+    assert!(t.app.quit, "outside text inputs the remap applies");
+}
+
+// ---- M5 follow-ups ----
+
+fn started(t: &mut H, op: gitty::msg::NetOp, label: &str, background: bool) {
+    t.app.handle_msg(Msg::NetStarted { op, label: label.into(), remote: Some("origin".into()), cancel: None });
+    if background {
+        t.app.net.as_mut().unwrap().background = true;
+    }
+}
+
+fn done(t: &mut H, op: gitty::msg::NetOp, background: bool, outcome: gitty_core::net::Outcome) {
+    t.app.handle_msg(Msg::NetDone { op, background, outcome });
+}
+
+fn ask(id: u64, prompt: &str) -> gitty::askpass::Ask {
+    gitty::askpass::Ask { id, prompt: prompt.into(), kind: gitty::askpass::classify(prompt) }
+}
+
+#[test]
+fn a_hook_decline_says_the_remote_refused_not_pull_first() {
+    let (f, bare) = remote_fixture();
+    let hook = bare.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\necho 'policy: frozen' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.write("c.txt", "c\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('P');
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    let s = toast_text(&t);
+    assert!(s.contains("refused") && !s.contains("pull first"), "{s}");
+    assert!(s.contains("policy: frozen") || s.contains("hook declined"), "the reason is in the details: {s}");
+}
+
+#[test]
+fn esc_at_a_prompt_reads_as_cancelled_and_prompts_close_with_their_job() {
+    use gitty::msg::NetOp;
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    started(&mut t, NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(1, "Username for 'https://example.com': ")));
+    t.key(KeyCode::Esc);
+    done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: could not read Username".into() });
+    let s = toast_text(&t);
+    assert!(s.contains("cancelled at the prompt") && !s.contains("refused"), "{s}");
+
+    started(&mut t, NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(2, "Username for 'https://example.com': ")));
+    t.app.handle_msg(Msg::Ask(ask(3, "Password for 'https://ann@example.com': ")));
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })));
+    done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::Failed { detail: "fatal: boom".into() });
+    assert!(!matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "the job's prompt closes");
+    assert_eq!(t.app.pending_asks(), 0, "and its queued prompts go too");
+}
+
+#[test]
+fn quitting_while_a_job_runs_asks_and_then_cancels_it() {
+    let (f, _) = remote_fixture();
+    f.script_remote("hang", "sleep 30");
+    f.git(&["config", "branch.main.remote", "hang"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('f');
+    let req = t.app.take_requests().into_iter().find(|r| matches!(r, Request::Net { .. })).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (path, gens) = (f.path(), t.gens.clone());
+    std::thread::spawn(move || {
+        let h = gitty_core::Repo::open(&path).unwrap().handle();
+        exec(&h, req, &mut |m| {
+            let _ = tx.send(m);
+        }, &gens)
+    });
+    t.app.handle_msg(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    t.ch('q');
+    assert!(!t.app.quit, "asks first");
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Quit { label }) => assert!(label.contains("Fetching"), "{label}"),
+        _ => panic!("no quit question"),
+    }
+    t.ch('n');
+    assert!(!t.app.quit && t.app.overlay.is_none());
+    t.ch('q');
+    t.ch('y');
+    assert!(t.app.quit);
+    let end = loop {
+        if let m @ Msg::NetDone { .. } = rx.recv_timeout(Duration::from_secs(5)).expect("the job ends") {
+            break m;
+        }
+    };
+    assert!(matches!(end, Msg::NetDone { outcome: gitty_core::net::Outcome::Cancelled, .. }), "{end:?}");
+}
+
+#[test]
+fn background_fetch_failures_and_cancels_are_visible() {
+    use gitty::msg::NetOp;
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    started(&mut t, NetOp::Fetch, "Fetching origin", true);
+    done(&mut t, NetOp::Fetch, true, gitty_core::net::Outcome::Failed { detail: "fatal: unable to access: Could not resolve host".into() });
+    assert!(t.app.toast.is_none(), "no toast for a background job");
+    assert_eq!(t.app.background_problem().as_deref(), Some("auto-fetch failed · !"));
+    t.ch('!');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::ErrorDetail)));
+    assert!(toast_text(&t).contains("Could not resolve host"), "{}", toast_text(&t));
+    t.key(KeyCode::Esc);
+    started(&mut t, NetOp::Fetch, "Fetching origin", true);
+    done(&mut t, NetOp::Fetch, true, gitty_core::net::Outcome::Ok { summary: String::new() });
+    assert_eq!(t.app.background_problem(), None, "a good fetch clears it");
+    started(&mut t, NetOp::Fetch, "Fetching origin", true);
+    t.ch('x');
+    done(&mut t, NetOp::Fetch, true, gitty_core::net::Outcome::Cancelled);
+    assert!(toast_text(&t).contains("Auto-fetch cancelled"), "{}", toast_text(&t));
+}
+
+#[test]
+fn a_diverged_pull_waits_behind_an_open_overlay() {
+    use gitty::msg::NetOp;
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    started(&mut t, NetOp::Pull, "Pulling origin", false);
+    t.ch('?');
+    done(&mut t, NetOp::Pull, false, gitty_core::net::Outcome::Diverged);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })), "help stays up");
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Diverged)), "then the question comes");
+}
+
+#[test]
+fn a_merge_or_rebase_pull_rechecks_tuning() {
+    use gitty::msg::NetOp;
+    let f = many_commits_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.take_requests();
+    for op in [NetOp::PullMerge, NetOp::PullRebase] {
+        started(&mut t, op, "Merging", false);
+        done(&mut t, op, false, gitty_core::net::Outcome::Ok { summary: String::new() });
+        assert!(t.app.take_requests().iter().any(|r| matches!(r, Request::Tune { .. })), "{op:?}: HEAD moved, so tuning is checked again");
+    }
+}
+
+#[test]
+fn editor_debug_never_prints_the_text() {
+    let mut e = gitty::editor::Editor::single();
+    e.insert("hunter2");
+    let d = format!("{e:?}");
+    assert!(!d.contains("hunter2") && d.contains('7'), "{d}");
 }

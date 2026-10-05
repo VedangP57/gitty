@@ -139,7 +139,8 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
         let _ = ask_tx.send(crate::msg::Msg::Ask(a));
     });
     let workers = Workers::spawn(repo.clone(), gens.clone(), msg_tx);
-    input::spawn(in_tx);
+    let gate = input::Gate::default();
+    input::spawn(in_tx, gate.clone());
 
     let mut app = App::new(AppInit {
         repo_name,
@@ -157,6 +158,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
     });
     // focus reports arrive only on change, so assume the terminal is focused at launch
     app.focused = true;
+    app.workdir = repo.workdir().map(std::path::Path::to_path_buf);
     let mut problems: Vec<String> = warnings;
     match (&asker, std::env::current_exe()) {
         (Ok(s), Ok(exe)) => {
@@ -171,6 +173,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
         Err(e) => problems.push(format!("watching the repository for changes failed; refresh on focus only: {e:#}")),
     }
     problems.extend(app.registry.errors().iter().cloned());
+    problems.extend(app.key_warnings.iter().cloned());
     problems.extend(theme_error);
     if !problems.is_empty() {
         app.toast = Some(Toast { what: problems[0].lines().next().unwrap_or("").to_string(), detail: problems.join("\n"), error: true });
@@ -192,6 +195,27 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
         }
         if app.quit {
             break;
+        }
+        if let Some(ask) = app.external.take() {
+            let editor = ["VISUAL", "EDITOR"].iter().find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()));
+            let result = match crate::external::prepare(&ask, editor.as_deref(), app.config.difftool.as_deref()) {
+                Err(e) => Err(e),
+                Ok(prepared) => {
+                    gate.pause();
+                    let ran = guard.hand_over(|| crate::external::run_foreground(&prepared.argv, &root));
+                    gate.resume();
+                    let ran = ran?;
+                    ran.map(|s| s.code()).map_err(|e| format!("{}: {e}", prepared.argv[0]))
+                }
+            };
+            // the alternate screen is new: resizing resets ratatui's buffers so the next frame
+            // draws everything (Terminal::clear would query the cursor, and the input thread
+            // would eat the reply)
+            let (w, h) = crossterm::terminal::size().unwrap_or(app.size);
+            terminal_resize(&mut terminal, w, h)?;
+            app.handle_resize(w, h);
+            app.external_done(result);
+            continue;
         }
         if app.suspend {
             app.suspend = false;
@@ -237,7 +261,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                     }
                     Event::FocusGained => app.handle_focus(true),
                     Event::FocusLost => app.handle_focus(false),
-                    Event::Paste(s) => app.handle_paste(&s),
+                    Event::Paste(mut s) => {
+                        app.handle_paste(&s);
+                        // it may have been a password
+                        crate::editor::wipe(&mut s);
+                    }
                 }
             }
             Ok(())
@@ -249,10 +277,13 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                 recv(in_rx) -> b => match b {
                     Ok(b) => on_input(&mut app, b, &mut terminal)?,
                     // the terminal is gone (input thread ended): quit instead of spinning
-                    Err(_) => break,
+                    Err(_) => {
+                        app.quit_now();
+                        break;
+                    }
                 },
                 recv(msg_rx) -> m => if let Ok(m) = m { trace!("msg {m:?}"); app.handle_msg(m) },
-                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; break },
+                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; app.quit_now(); break },
                 default(t) => fired = true,
             },
             None => select! {
@@ -262,7 +293,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                     Err(_) => break,
                 },
                 recv(msg_rx) -> m => if let Ok(m) = m { trace!("msg {m:?}"); app.handle_msg(m) },
-                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; break },
+                recv(sig_rx) -> s => if let Ok(s) = s { exit = 128 + s; app.quit_now(); break },
             },
         }
         while let Ok(b) = in_rx.try_recv() {

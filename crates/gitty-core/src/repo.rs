@@ -16,6 +16,7 @@ struct Inner {
     ts: gix::ThreadSafeRepository,
     git: GitBin,
     git_dir: PathBuf,
+    common_dir: PathBuf,
     workdir: Option<PathBuf>,
 }
 
@@ -26,14 +27,20 @@ impl Repo {
             .with_context(|| format!("not a git repository: {}", path.display()))?;
         let local = ts.to_thread_local();
         let git_dir = local.git_dir().to_path_buf();
+        let common_dir = local.common_dir().to_path_buf();
         let workdir = local.workdir().map(Path::to_path_buf);
-        Ok(Repo { inner: Arc::new(Inner { ts, git: GitBin::resolve(), git_dir, workdir }) })
+        Ok(Repo { inner: Arc::new(Inner { ts, git: GitBin::resolve(), git_dir, common_dir, workdir }) })
     }
     pub fn workdir(&self) -> Option<&Path> {
         self.inner.workdir.as_deref()
     }
     pub fn git_dir(&self) -> &Path {
         &self.inner.git_dir
+    }
+    /// Where branches, tags and config live: the main `.git` for a linked worktree, otherwise
+    /// the git dir itself.
+    pub fn common_dir(&self) -> &Path {
+        &self.inner.common_dir
     }
     pub fn git(&self) -> &GitBin {
         &self.inner.git

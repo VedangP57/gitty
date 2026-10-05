@@ -48,19 +48,8 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                 h.warm();
             }
             while let Some(req) = next(&high_rx, &low_rx) {
-                let files_req = match &req {
-                    Request::Files { generation, id, prefetch } => Some((*generation, *id, *prefetch)),
-                    _ => None,
-                };
-                // a write that panics still reports done, so the app stops waiting for it
-                let write_req = match &req {
-                    Request::Write(op) => Some(op.clone()),
-                    _ => None,
-                };
-                let net_req = match &req {
-                    Request::Net { op, background, .. } => Some((*op, *background)),
-                    _ => None,
-                };
+                // a request that panics still gets its answer, so the app stops waiting for it
+                let reply = panic_reply(&req);
                 let r = catch_unwind(AssertUnwindSafe(|| {
                     exec(&h, req, &mut |m| {
                         let _ = wtx.send(m);
@@ -72,14 +61,7 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                         .map(|s| s.to_string())
                         .or_else(|| p.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".into());
-                    let _ = match (files_req, write_req, net_req) {
-                        (Some((generation, id, prefetch)), _, _) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
-                        (_, Some(op), _) => wtx.send(Msg::WriteDone { op, result: Err(format!("internal error: {detail}")) }),
-                        (_, _, Some((op, background))) => {
-                            wtx.send(Msg::NetDone { op, background, outcome: gitty_core::net::Outcome::Failed { detail: format!("internal error: {detail}") } })
-                        }
-                        _ => wtx.send(Msg::Error { what: "internal error in a worker".into(), detail }),
-                    };
+                    let _ = wtx.send(reply(detail));
                 }
             }
         });
@@ -88,6 +70,21 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
         }
     }
     Pool { high, low }
+}
+
+/// What a worker sends when `req` panics.
+pub fn panic_reply(req: &Request) -> Box<dyn FnOnce(String) -> Msg + Send> {
+    let internal = |d: String| format!("internal error: {d}");
+    match req {
+        &Request::Files { generation, of, prefetch } => Box::new(move |detail| Msg::FilesError { generation, of, prefetch, detail }),
+        Request::Write(op) => {
+            let op = op.clone();
+            Box::new(move |d| Msg::WriteDone { op, result: Err(internal(d)) })
+        }
+        &Request::Net { op, background, .. } => Box::new(move |d| Msg::NetDone { op, background, outcome: gitty_core::net::Outcome::Failed { detail: internal(d) } }),
+        &Request::Status { generation, .. } => Box::new(move |d| Msg::Status { generation, result: Err(internal(d)) }),
+        _ => Box::new(|detail| Msg::Error { what: "internal error in a worker".into(), detail }),
+    }
 }
 
 impl Workers {

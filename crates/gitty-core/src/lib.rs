@@ -2,6 +2,7 @@
 
 pub mod ahead_behind;
 pub mod commit_files;
+pub mod compare;
 pub mod diff;
 pub mod diff_lines;
 pub mod error;
@@ -11,6 +12,7 @@ pub mod history;
 pub mod net;
 pub mod refs;
 pub mod repo;
+pub mod search;
 pub mod stage;
 pub mod status;
 pub mod tune;

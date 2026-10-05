@@ -64,3 +64,31 @@ fn worktree_index_and_ignored_paths() {
     let m = collect(&rx, Duration::from_millis(800));
     assert!(m.contains(Changed::INDEX), "{m:?}");
 }
+
+#[test]
+fn a_linked_worktree_sees_refs_made_from_the_main_one() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let wt = f.path().parent().unwrap().join("linked");
+    f.git(&["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+    let repo = Repo::open(&wt).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let _w = Watcher::spawn(&repo, move |c| {
+        let _ = tx.send(c);
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    collect(&rx, Duration::from_millis(200));
+
+    // branches live in the common git dir, outside this worktree's own
+    f.git(&["branch", "other"]);
+    let m = collect(&rx, Duration::from_millis(800));
+    assert!(m.contains(Changed::REFS), "{m:?}");
+
+    // the main worktree's index and HEAD are not this worktree's
+    f.write("a.txt", "a\nmain\n");
+    f.git(&["add", "a.txt"]);
+    let m = collect(&rx, Duration::from_millis(800));
+    assert!(!m.intersects(Changed::INDEX | Changed::WORKTREE), "{m:?}");
+}
