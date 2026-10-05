@@ -1303,3 +1303,28 @@ fn an_unpublished_branch_says_so_and_marks_its_commits() {
     let base = s.lines().find(|l| l.contains("base") && l.contains("main")).expect("the base row");
     assert!(!base.contains('↑'), "already on the remote: {base}");
 }
+
+#[test]
+fn committing_everything_leaves_no_stale_diff_title() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    f.write("a.txt", "a\nchanged\n");
+    let mut t = H::new(&f, "github-dark", (140, 24));
+    t.pump();
+    t.key(KeyCode::Char('1'));
+    t.pump();
+    assert!(text(&t.render(140, 24)).contains("a.txt"));
+    t.key(KeyCode::Char('a'));
+    t.pump();
+    t.key(KeyCode::Char('c'));
+    for c in "Change a".chars() {
+        t.key(KeyCode::Char(c));
+    }
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT));
+    t.pump();
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Change a");
+    let s = text(&t.render(140, 24));
+    assert!(s.contains("No local changes"), "{s}");
+    assert!(!s.contains("a.txt"), "no diff title for a file that has no change left:\n{s}");
+}

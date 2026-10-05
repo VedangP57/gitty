@@ -6,6 +6,8 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-05
+
 ### Added
 
 - A branch that was never pushed marks with ↑ the commits no remote branch has (what pushing it
@@ -16,7 +18,8 @@ All notable changes to gitty are listed here. The format follows
 - An upstream set or removed outside gitty (`git push -u` in a terminal) shows up on the next
   refresh; it used to need a restart.
 - When the branch has nothing to compare with, the last upstream's ↑/↓ marks no longer stay.
-
+- After committing everything, the Changes diff pane no longer shows the History tab's file as its
+  title.
 - Switching from Changes back to History returns to the pane History had focused, not the
   Changes file list (or the commit editor, after a click on the tab).
 - In split view, a long hunk header label no longer runs across the divider.
@@ -43,5 +46,6 @@ The first public release.
 - Automatic tuning of large repositories (commit-graph, untracked cache, fsmonitor where git
   supports it), reverted exactly by `gitty untune`.
 
-[Unreleased]: https://github.com/VedangP57/gitty/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/VedangP57/gitty/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/VedangP57/gitty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VedangP57/gitty/releases/tag/v0.1.0

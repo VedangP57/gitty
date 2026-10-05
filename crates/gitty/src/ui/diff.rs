@@ -236,7 +236,11 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let focused = app.focus == Focus::Diff;
     let split = app.split_active();
     let loading = app.diff_loading();
-    let wanted_path = app.current_file().map(|f| f.path.clone());
+    // the selected file of the tab on screen: History's selection says nothing about Changes
+    let wanted_path = match app.tab {
+        crate::app::Tab::Changes => app.changes.selected().map(|e| e.path.clone()),
+        crate::app::Tab::History => app.current_file().map(|f| f.path.clone()),
+    };
     if let Some(err) = app.wanted_diff_error().map(str::to_string) {
         title(app, buf, r, wanted_path.as_deref().unwrap_or("Diff"), focused, "");
         let first = err.lines().next().unwrap_or("").to_string();
