@@ -156,10 +156,10 @@ fn a_range_count_for_an_old_selection_answers_nothing() {
     let gens = Gens::default();
     gens.commit.store(9, SeqCst);
     let (oldest, newest) = (id(&ids[1]), id(&ids[3]));
-    let msgs = run_with(&f.path(), &gens, Request::RangeCount { generation: 1, oldest, newest });
+    let msgs = run_with(&f.path(), &gens, Request::RangeCount { generation: 1, oldest, newest, rows: vec![newest, id(&ids[2]), oldest] });
     assert!(msgs.is_empty(), "{msgs:?}");
-    let msgs = run_with(&f.path(), &gens, Request::RangeCount { generation: 9, oldest, newest });
-    assert!(matches!(msgs[..], [Msg::RangeCount { count: 3, .. }]), "{msgs:?}");
+    let msgs = run_with(&f.path(), &gens, Request::RangeCount { generation: 9, oldest, newest, rows: vec![newest, id(&ids[2]), oldest] });
+    assert!(matches!(msgs[..], [Msg::RangeCount { extra: 0, .. }]), "{msgs:?}");
 }
 
 #[test]
@@ -579,7 +579,7 @@ fn a_panicking_status_run_still_answers_the_status_request() {
 fn search_work_has_its_own_pool_so_readers_never_wait_behind_it() {
     use gitty::workers::{Pool, route};
     assert_eq!(route(&Request::SearchPath { generation: 1, tips: vec![], path: "p".into() }), Pool::Search);
-    assert_eq!(route(&Request::RangeCount { generation: 1, oldest: CommitId::from_hex(&"a".repeat(40)).unwrap(), newest: CommitId::from_hex(&"b".repeat(40)).unwrap() }), Pool::Search);
+    assert_eq!(route(&Request::RangeCount { generation: 1, oldest: CommitId::from_hex(&"a".repeat(40)).unwrap(), newest: CommitId::from_hex(&"b".repeat(40)).unwrap(), rows: vec![] }), Pool::Search);
     assert_eq!(route(&Request::Refs), Pool::Readers);
     assert_eq!(route(&Request::Status { generation: 1, mark: None }), Pool::Readers);
 }

@@ -2330,6 +2330,39 @@ fn a_range_ending_at_a_merge_counts_the_merged_side() {
 }
 
 #[test]
+fn a_range_note_counts_commits_not_rows_in_all_refs_scope() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_200);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_300);
+    f.git(&["checkout", "-q", "-b", "other", "main~1"]);
+    f.write("o.txt", "1\n");
+    f.commit("o1", 1_700_000_350);
+    f.git(&["checkout", "-q", "main"]);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.toggle_scope();
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    let top: Vec<String> = (0..3).map(|i| summary(&t, i)).collect();
+    assert_eq!(top, ["merge side", "o1", "m1"]);
+    // merge, o1, m1 selected: the diff m1^..merge holds merge, m1, s1 and s2, not o1
+    t.ch('V');
+    t.ch('j');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(2));
+}
+
+#[test]
 fn a_history_refresh_during_compare_keeps_both_selections() {
     let f = compare_fixture();
     let mut t = H::new(&f);

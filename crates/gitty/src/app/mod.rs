@@ -428,8 +428,8 @@ impl App {
     pub fn range_extra(&self) -> Option<usize> {
         let (oldest, newest) = self.selected_range()?;
         let ends = (self.history_id(oldest)?, self.history_id(newest)?);
-        let ((e, count), rows) = (self.range_count?, oldest - newest + 1);
-        (e == ends && count > rows).then(|| count - rows)
+        let (e, extra) = self.range_count?;
+        (e == ends && extra > 0).then_some(extra)
     }
     pub fn current_file(&self) -> Option<&FileChange> {
         self.files.as_ref()?.get(self.file_sel)
@@ -661,7 +661,7 @@ impl App {
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
-            Msg::RangeCount { oldest, newest, count } => self.range_count = Some(((oldest, newest), count)),
+            Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
@@ -717,6 +717,8 @@ impl App {
         let Some(refs) = &self.refs else { return };
         let tips = refs.tips(self.scope);
         self.session = Gens::bump(&self.gens.session);
+        // a count's excluded rows belong to the old walk's list
+        self.range_count = None;
         self.history = None;
         self.history_len = 0;
         self.history_done = false;
@@ -871,7 +873,8 @@ impl App {
         if let FilesOf::Range { oldest, newest } = of
             && self.range_count.is_none_or(|(ends, _)| ends != (oldest, newest))
         {
-            self.outbox.push(Request::RangeCount { generation: self.commit_gen, oldest, newest });
+            let rows = self.selected_range().map_or_else(Vec::new, |(o, n)| (n..=o).filter_map(|i| self.history_id(i)).collect());
+            self.outbox.push(Request::RangeCount { generation: self.commit_gen, oldest, newest, rows });
         }
         self.files = None;
         self.file_rows.clear();
