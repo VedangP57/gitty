@@ -3,11 +3,53 @@
 A fast terminal git client with the GitHub Desktop experience: History, Changes, line staging,
 fetch / pull / push, search and compare, in Rust with Ratatui.
 
+- **History:** local and remote commits with their refs, and marks for what is ahead of or
+  behind the upstream. Select a commit (or a `V` range of them) for its files and a syntax-highlighted diff, unified
+  or split.
+- **Changes:** status that follows the file system, staging by file, hunk or line (Space, or a
+  click in the gutter), discard with a copy kept in the Trash, and a commit box with amend and
+  undo.
+- **Network:** fetch, pull (fast-forward, merge or rebase) and push with progress, cancel, and
+  password or passphrase prompts inside the app. A background fetch runs every few minutes.
+- **Search and compare:** `/` searches the whole history (text, author, `path:`) while you keep
+  working; `b` compares HEAD with any branch (behind, ahead, and the files that differ).
+
+gitty runs `git` for everything that writes and reads with [gitoxide](https://github.com/GitoxideLabs/gitoxide),
+so hooks, signing, credential helpers and your git config work as they do on the command line.
+It is developed and tested on macOS.
+
+## Install
+
+You need a Rust toolchain (1.88 or newer) and `git` on your `PATH`.
+
+```sh
+cargo install --locked --git https://github.com/VedangP57/gitty gitty
+```
+
+From a clone: `cargo install --locked --path crates/gitty`. Building without the bundled
+tree-sitter grammars (`--no-default-features`) makes a smaller binary that highlights through the
+syntect fallback.
+
+## Usage
+
+```sh
+gitty              # the repository containing the current directory
+gitty path/to/repo
+gitty --theme dracula
+gitty untune [PATH]
+```
+
+The window has a History tab (`2`) and a Changes tab (`1`). `Tab` moves between panes and `?`
+shows every key. The mouse works throughout: click to select, scroll any pane, drag the diff
+gutter to pick lines, Shift-click for a commit range, and double-click a file or diff line to
+open it in `$EDITOR` at that line.
+
 ## Keys
 
 Every key below can be rebound in `~/.config/gitty/config.toml` under `[keys]`, using the
 config name: `fetch = "F5"` or `down = ["j", "ctrl-n"]`. A rebound action loses its default
-keys. Text inputs (the commit box, prompts, the search bar) are never remapped.
+keys. Text inputs (the commit box, prompts, the search bar) are never remapped. A key bound
+twice, or an unknown name, is reported at startup and the first binding wins.
 
 <!-- keys:start -->
 | Keys | Action | Config name |
@@ -73,3 +115,93 @@ keys. Text inputs (the commit box, prompts, the search bar) are never remapped.
 | `Enter` | open / drill in (a directory: fold) | `open` |
 | `Esc` | back (ends a range, search or compare) | `back` |
 <!-- keys:end -->
+
+## Configuration
+
+`~/.config/gitty/config.toml` (or `$XDG_CONFIG_HOME/gitty/config.toml`). Every key is optional;
+unknown keys and bad values are reported at startup and fall back to the default.
+
+| Key | Default | Values |
+|---|---|---|
+| `theme` | `"auto"` | a theme name, or `"auto"` (light or dark by the terminal background) |
+| `tab_size` | `4` | 1–16 |
+| `diff_algorithm` | `"myers"` | `"myers"`, `"histogram"` |
+| `whitespace` | `"show"` | `"show"`, `"ignore-all"` (`-w`), `"ignore-amount"` (`-b`) |
+| `split_threshold` | `200` | terminal width at which split view turns on by itself |
+| `date_mode` | `"relative"` | `"relative"`, `"absolute"`, `"both"` |
+| `density` | `"compact"` | `"compact"`, `"comfortable"` |
+| `emph_alpha` | theme's | 0.0–1.0, strength of the changed-word highlight |
+| `auto_fetch_minutes` | `5` | 0 turns the background fetch off |
+| `auto_tune` | `true` | tune large repositories (see below) |
+| `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"` |
+| `[keys]` | | action → key or keys, see above |
+
+```toml
+theme = "rose-pine"
+difftool = "delta --side-by-side"
+auto_fetch_minutes = 10
+
+[keys]
+fetch = "F5"
+down = ["j", "ctrl-n"]
+```
+
+`$EDITOR` (or `$VISUAL`) and `difftool` are split like shell words but never run by a shell,
+and file paths are always passed as separate arguments. Per-repository UI state (pane sizes,
+history scope, tree view) is kept under `~/.local/state/gitty/`.
+
+## Themes
+
+Built in: `github-dark`, `github-light`, `rose-pine`, `rose-pine-dawn`, `catppuccin-mocha`,
+`catppuccin-latte`, `tokyo-night`, `dracula`, `gruvbox-dark`, `solarized-dark`,
+`solarized-light`. `T` opens a picker with a live preview.
+
+Your own themes go in `~/.config/gitty/themes/<name>.toml`. A theme names a `[palette]` (`bg`,
+`fg`, `muted`, `accent`, `border`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, and
+optionally `panel` and `orange`) and overrides only what differs. `inherit = "<theme>"` layers
+it over another theme:
+
+```toml
+inherit = "github-dark"
+
+[palette]
+accent = "#ff79c6"
+```
+
+Colours are truecolor where the terminal supports it and the nearest xterm-256 colour elsewhere.
+
+## Large repositories and `gitty untune`
+
+On a repository with at least 10,000 commits or 20,000 index entries, gitty tunes git once, in
+the background, unless `auto_tune = false`:
+
+- writes a commit-graph (`git commit-graph write --reachable --changed-paths --split`), when
+  `core.commitGraph` is not off and the clone is not shallow;
+- sets `core.fsmonitor` and `core.untrackedCache` for faster status, but never a key you have
+  already set.
+
+The keys gitty sets are recorded in `gitty.tuned`. `gitty untune [PATH]` unsets exactly those
+(skipping any you have since changed) and leaves everything else alone.
+
+## Performance
+
+Measured on Apple Silicon (macOS), release build, warm cache, against the git/git repository
+(85,887 commits, 1,010 refs) and a blobless Linux kernel clone (1,484,291 commits). `bench/run.sh`
+checks these budgets and exits non-zero when one is missed; `bench/README.md` has the details
+and the history.
+
+| Operation | Measured | Budget |
+|---|---|---|
+| first frame (layout drawn) | 14 ms | < 16 ms |
+| first 500 history rows, kernel | 23 ms | < 50 ms |
+| full history walk, kernel | 225–258 ms | < 400 ms |
+| a 220×60 frame (history and a highlighted diff) | 0.5 ms | < 16 ms |
+| commit file list, p50 | 0.12 ms | < 5 ms |
+| file diff, p50 | 0.19 ms | < 10 ms |
+| ahead/behind, 360,606 commits | 88 ms | < 150 ms |
+| status, git/git | 16–17 ms | < 70 ms |
+| search, one 20,000-row chunk, kernel | 337 ms on one reader; the UI never waits | — |
+
+## License
+
+MIT
