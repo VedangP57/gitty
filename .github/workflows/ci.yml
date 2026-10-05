@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # private repos pay for Actions minutes (macOS 10x): only Linux x86_64 until the repo is
+        # public (a job-level `if` cannot read `matrix`, so the list itself is chosen here)
+        os: ${{ fromJSON(github.event.repository.private && '["ubuntu-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.99
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: git identity for test fixtures
+        run: |
+          git config --global user.name "gitty CI"
+          git config --global user.email "ci@example.com"
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --no-fail-fast
+
+  msrv:
+    name: build on the minimum Rust (1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --locked

@@ -158,11 +158,13 @@ fn matches_git_on_long_shared_prefix_and_suffix() {
 }
 
 /// Review finding: trimming a common suffix stopped the indent heuristic from sliding an append
-/// past the trim window (real pair from git/git: t/t5000-tar-tree.sh 72b8d0ff..5465054f).
+/// past the trim window. Synthetic pair shaped like the git/git change that found it (repeated
+/// test blocks with identical tails, a new block inserted, a long shared suffix); it fails on the
+/// code before the fix (12f7027^).
 #[test]
 fn slider_into_long_shared_suffix_matches_git() {
-    let old = include_bytes!("data/t5000-tar-tree.old");
-    let new = include_bytes!("data/t5000-tar-tree.new");
+    let old = include_bytes!("data/slider-suffix.old");
+    let new = include_bytes!("data/slider-suffix.new");
     let (git, text) = git_hunks(old, new);
     assert_eq!(our_hunks(old, new), git, "git said:\n{text}");
 }

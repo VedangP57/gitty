@@ -3,6 +3,11 @@ name = "gitty-highlight"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Syntax highlighting for gitty: tree-sitter grammars with a syntect fallback"
 
 [features]
 default = ["rust", "typescript", "javascript", "python", "go", "c", "cpp", "json", "yaml", "toml", "bash", "css", "html", "sql", "swift"]

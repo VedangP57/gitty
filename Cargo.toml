@@ -6,7 +6,10 @@ members = ["crates/gitty-core", "crates/gitty-highlight", "crates/gitty"]
 edition = "2024"
 version = "0.1.0"
 license = "MIT"
-rust-version = "1.88"
+rust-version = "1.90"
+authors = ["Vedang Patel"]
+repository = "https://github.com/VedangP57/gitty"
+homepage = "https://github.com/VedangP57/gitty"
 
 [workspace.dependencies]
 gix = { version = "0.88", features = ["anyhow"] }

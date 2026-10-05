@@ -16,11 +16,28 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
 
 gitty runs `git` for everything that writes and reads with [gitoxide](https://github.com/GitoxideLabs/gitoxide),
 so hooks, signing, credential helpers and your git config work as they do on the command line.
-It is developed and tested on macOS.
 
 ## Install
 
-You need a Rust toolchain (1.88 or newer) and `git` on your `PATH`.
+**Homebrew** (macOS and Linux):
+
+```sh
+brew install vedangp57/tap/gitty
+```
+
+Use the full name: it tells Homebrew to trust this one formula from the tap.
+
+**Shell installer** (a prebuilt binary into `~/.cargo/bin`):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VedangP57/gitty/releases/latest/download/gitty-installer.sh | sh
+```
+
+**Prebuilt archives** for each release are on the
+[Releases page](https://github.com/VedangP57/gitty/releases). On macOS, a binary downloaded with
+a browser is quarantined: run `xattr -d com.apple.quarantine gitty` once.
+
+**From source** (Rust 1.90 or newer, and a C compiler for the bundled grammars and Oniguruma):
 
 ```sh
 cargo install --locked --git https://github.com/VedangP57/gitty gitty
@@ -29,6 +46,16 @@ cargo install --locked --git https://github.com/VedangP57/gitty gitty
 From a clone: `cargo install --locked --path crates/gitty`. Building without the bundled
 tree-sitter grammars (`--no-default-features`) makes a smaller binary that highlights through the
 syntect fallback.
+
+## Requirements
+
+- macOS (Apple Silicon or Intel) or Linux (x86_64 or arm64).
+- `git` 2.30 or newer on your `PATH`.
+- On Linux, live refresh watches every directory of the worktree with inotify. A repository with
+  more directories than `fs.inotify.max_user_watches` allows (often 8,192 on older kernels) opens
+  with a notice and refreshes when the terminal regains focus instead.
+- A terminal with mouse reporting; truecolor is used where the terminal has it, the nearest
+  256-colour palette entry elsewhere.
 
 ## Usage
 
@@ -181,8 +208,9 @@ the background, unless `auto_tune = false`:
 
 - writes a commit-graph (`git commit-graph write --reachable --changed-paths --split`), when
   `core.commitGraph` is not off and the clone is not shallow;
-- sets `core.fsmonitor` and `core.untrackedCache` for faster status, but never a key you have
-  already set.
+- sets `core.untrackedCache`, and `core.fsmonitor` where your git has the builtin fsmonitor
+  daemon (macOS and Windows builds; most Linux packages do not), for faster status, but never a
+  key you have already set.
 
 The keys gitty sets are recorded in `gitty.tuned`. `gitty untune [PATH]` unsets exactly those
 (skipping any you have since changed) and leaves everything else alone.
@@ -208,4 +236,13 @@ and the history.
 
 ## License
 
-MIT
+MIT: see [LICENSE](LICENSE). The binary includes third-party code under MIT, Apache-2.0, BSD,
+ISC, Zlib, Unicode, CC0 and MPL-2.0 licenses, listed with their texts in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (regenerate it with
+`scripts/third-party-licenses.sh`).
+
+gitty is built on [gitoxide](https://github.com/GitoxideLabs/gitoxide),
+[Ratatui](https://github.com/ratatui/ratatui), [tree-sitter](https://github.com/tree-sitter/tree-sitter)
+and [syntect](https://github.com/trishume/syntect) with [bat](https://github.com/sharkdp/bat)'s
+syntax definitions. The built-in themes reproduce the palettes of Catppuccin, Dracula, GitHub,
+Gruvbox, Rosé Pine, Solarized and Tokyo Night.

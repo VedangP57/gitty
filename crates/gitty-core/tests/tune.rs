@@ -24,8 +24,21 @@ fn local_config(f: &Fixture) -> String {
 fn plan_follows_the_thresholds() {
     let f = three_commits();
     let h = Repo::open(f.path()).unwrap().handle();
-    assert_eq!(plan(&h, 3, LOW), [Action::CommitGraph, Action::Fsmonitor, Action::UntrackedCache]);
+    let mut want = vec![Action::CommitGraph, Action::Fsmonitor, Action::UntrackedCache];
+    if !f.git(&["version", "--build-options"]).contains("feature: fsmonitor--daemon") {
+        want.retain(|&a| a != Action::Fsmonitor);
+    }
+    assert_eq!(plan(&h, 3, LOW), want);
     assert_eq!(plan(&h, 3, Thresholds::DEFAULT), []);
+}
+
+/// git builds without the fsmonitor daemon (most Linux packages) cannot honour core.fsmonitor.
+#[test]
+fn fsmonitor_is_planned_only_where_git_has_the_daemon() {
+    let f = three_commits();
+    let h = Repo::open(f.path()).unwrap().handle();
+    let has = f.git(&["version", "--build-options"]).contains("feature: fsmonitor--daemon");
+    assert_eq!(plan(&h, 3, LOW).contains(&Action::Fsmonitor), has);
 }
 
 #[test]
@@ -55,13 +68,18 @@ fn apply_then_untune_restores_the_config_exactly() {
     let actions = plan(&h, 3, LOW);
     let done = apply(&h, &actions).unwrap();
     assert_eq!(done, actions);
-    assert_eq!(f.git(&["config", "core.fsmonitor"]), "true");
+    // fsmonitor only where git has the daemon (fsmonitor_is_planned_only_where_git_has_the_daemon)
+    let fsmonitor = actions.contains(&Action::Fsmonitor);
+    if fsmonitor {
+        assert_eq!(f.git(&["config", "core.fsmonitor"]), "true");
+    }
     assert_eq!(f.git(&["config", "core.untrackedCache"]), "true");
     assert!(f.path().join(".git/objects/info/commit-graph").exists() || f.path().join(".git/objects/info/commit-graphs").exists());
     let h = Repo::open(f.path()).unwrap().handle();
     assert_eq!(plan(&h, 3, LOW), [], "nothing left to do: the graph holds HEAD, the keys are set");
     let removed = untune(&cli).unwrap();
-    assert_eq!(removed, ["core.fsmonitor", "core.untrackedCache"]);
+    let want: &[&str] = if fsmonitor { &["core.fsmonitor", "core.untrackedCache"] } else { &["core.untrackedCache"] };
+    assert_eq!(removed, want);
     assert_eq!(local_config(&f), before);
     assert_eq!(untune(&cli).unwrap(), Vec::<String>::new(), "idempotent");
 }

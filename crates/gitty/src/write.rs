@@ -1,5 +1,6 @@
 //! Writer-thread side of [`WriteOp`]s: every mutating git call and every worktree write.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
@@ -17,9 +18,96 @@ pub fn lock() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Where discarded files are copied first: `$GITTY_TRASH_DIR`, else the macOS Trash.
-fn trash_dir() -> Option<PathBuf> {
-    std::env::var_os("GITTY_TRASH_DIR").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".Trash")))
+/// Where discarded files are copied first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trash {
+    /// A plain directory: the macOS Trash, or `$GITTY_TRASH_DIR`.
+    Dir(PathBuf),
+    /// A freedesktop.org Trash (Linux desktops): each copy in `files/` with a `.trashinfo`
+    /// record in `info/`, so the file manager lists it and can restore it.
+    Xdg(PathBuf),
+}
+
+/// `$GITTY_TRASH_DIR`, else the desktop Trash: `~/.Trash` on macOS, `$XDG_DATA_HOME/Trash`
+/// (`~/.local/share/Trash` by default) elsewhere. None without a home directory.
+pub fn trash_location(get: impl Fn(&str) -> Option<OsString>, macos: bool) -> Option<Trash> {
+    if let Some(d) = get("GITTY_TRASH_DIR") {
+        return Some(Trash::Dir(d.into()));
+    }
+    let home = get("HOME").map(PathBuf::from);
+    if macos {
+        return home.map(|h| Trash::Dir(h.join(".Trash")));
+    }
+    // the spec ignores a relative XDG_DATA_HOME
+    let data = get("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| home.map(|h| h.join(".local/share")))?;
+    Some(Trash::Xdg(data.join("Trash")))
+}
+
+/// Copies `file` into `trash` under a name of its own; returns the copy's path.
+pub fn copy_to_trash(file: &Path, trash: &Trash) -> anyhow::Result<PathBuf> {
+    match trash {
+        Trash::Dir(dir) => copy_into(file, dir),
+        Trash::Xdg(root) => copy_into_xdg(file, root),
+    }
+}
+
+/// The freedesktop.org Trash: the `.trashinfo` record is created first and exclusively, which
+/// reserves the name; then the copy goes to `files/` under that name.
+fn copy_into_xdg(file: &Path, root: &Path) -> anyhow::Result<PathBuf> {
+    use std::io::Write;
+    let (files, info) = (root.join("files"), root.join("info"));
+    for d in [&files, &info] {
+        std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+    }
+    let original = std::path::absolute(file).with_context(|| format!("resolving {}", file.display()))?;
+    let name = file.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+    let record = format!("[Trash Info]\nPath={}\nDeletionDate={}\n", percent_encode(&original), local_timestamp());
+    for k in 1.. {
+        let candidate = if k == 1 { name.clone() } else { format!("{name}.{k}") };
+        let dest = files.join(&candidate);
+        if dest.exists() {
+            continue;
+        }
+        let info_path = info.join(format!("{candidate}.trashinfo"));
+        let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&info_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("writing {}", info_path.display())),
+        };
+        f.write_all(record.as_bytes()).with_context(|| format!("writing {}", info_path.display()))?;
+        if let Err(e) = std::fs::copy(file, &dest) {
+            let _ = std::fs::remove_file(&info_path);
+            return Err(e).with_context(|| format!("copying {} to {}", file.display(), files.display()));
+        }
+        return Ok(dest);
+    }
+    unreachable!("the name search above is unbounded")
+}
+
+/// A path as a `.trashinfo` `Path=` value: bytes outside the unreserved set are %XX-escaped.
+fn percent_encode(p: &Path) -> String {
+    use std::os::unix::ffi::OsStrExt;
+    let mut s = String::new();
+    for &b in p.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            s.push(b as char);
+        } else {
+            s.push_str(&format!("%{b:02X}"));
+        }
+    }
+    s
+}
+
+/// Local time as `YYYY-MM-DDThh:mm:ss`, the `.trashinfo` `DeletionDate` format.
+fn local_timestamp() -> String {
+    // SAFETY: time() with a null argument only returns; localtime_r writes into `tm` only
+    let tm = unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        tm
+    };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
 /// Where copies go when the Trash cannot be written (macOS refuses it without Full Disk Access).
@@ -27,16 +115,17 @@ fn fallback_trash_dir() -> PathBuf {
     crate::config::paths::state_dir(|k| std::env::var(k).ok()).join("trash")
 }
 
-/// Copies `file` into the Trash under a unique name, or into [`fallback_trash_dir`] when the
-/// Trash is not writable; returns the fallback directory when it was used. Missing files need
-/// no backup.
+/// Copies `file` into the Trash ([`trash_location`]) under a unique name, or into
+/// [`fallback_trash_dir`] when the Trash is not writable; returns the fallback directory when it
+/// was used. Missing files need no backup.
 fn to_trash(file: &Path) -> anyhow::Result<Option<PathBuf>> {
     if !file.is_file() {
         return Ok(None);
     }
-    let primary = trash_dir().context("no Trash directory (HOME is unset)").and_then(|d| copy_into(file, &d));
+    let trash = trash_location(|k| std::env::var_os(k), cfg!(target_os = "macos"));
+    let primary = trash.context("no Trash directory (HOME is unset)").and_then(|t| copy_to_trash(file, &t));
     match primary {
-        Ok(()) => Ok(None),
+        Ok(_) => Ok(None),
         Err(e) => {
             let dir = fallback_trash_dir();
             copy_into(file, &dir).with_context(|| format!("{e:#}; and then"))?;
@@ -45,7 +134,7 @@ fn to_trash(file: &Path) -> anyhow::Result<Option<PathBuf>> {
     }
 }
 
-fn copy_into(file: &Path, dir: &Path) -> anyhow::Result<()> {
+fn copy_into(file: &Path, dir: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let name = file.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
@@ -56,7 +145,7 @@ fn copy_into(file: &Path, dir: &Path) -> anyhow::Result<()> {
         k += 1;
     }
     std::fs::copy(file, &dest).with_context(|| format!("copying {} to {}", file.display(), dir.display()))?;
-    Ok(())
+    Ok(dest)
 }
 
 /// The note a discard returns when its copies did not go to the Trash.

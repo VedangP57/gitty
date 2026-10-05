@@ -3,3 +3,7 @@
 /.superpowers/
 /.cargo-home/
 /.worktrees/
+/.claude/
+# internal planning notes: kept locally, not published
+/docs/superpowers/
+/docs/research/
