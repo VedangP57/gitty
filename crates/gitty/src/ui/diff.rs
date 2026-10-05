@@ -188,12 +188,13 @@ impl Ctx<'_> {
         }
     }
 
-    fn gap(&self, buf: &mut Buffer, x: u16, y: u16, max_x: u16, up: Option<(u16, bool)>, down: Option<(u16, bool)>, label: &str) {
+    /// `arrows`: where the ↑ and ↓ expanders sit, and whether each can expand.
+    fn gap(&self, buf: &mut Buffer, x: u16, y: u16, max_x: u16, arrows: [Option<(u16, bool)>; 2], label: &str) {
         let d = &self.theme.diff;
         let st = Style::new().bg(d.expand_bg).fg(d.hunk_fg);
         fill(buf, Rect::new(x, y, max_x.saturating_sub(x), 1), st);
         let arrow = Style::new().bg(d.expand_bg).fg(d.expand_fg).add_modifier(Modifier::BOLD);
-        for (pos, sym) in [(up, "↑"), (down, "↓")] {
+        for (pos, sym) in arrows.into_iter().zip(["↑", "↓"]) {
             if let Some((gx, true)) = pos {
                 text(buf, gx + 1 + self.digits.saturating_sub(1) / 2, y, max_x, sym, arrow);
             }
@@ -357,7 +358,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             }
             VRow::Row(row) => match row {
                 Row::Gap { hidden, header, can_up, can_down, .. } => {
-                    cx.gap(buf, x, y, right, Some((x, can_up)), Some((x + digits + 2, can_down)), &label_gap(hidden, &header));
+                    cx.gap(buf, x, y, right, [Some((x, can_up)), Some((x + digits + 2, can_down))], &label_gap(hidden, &header));
                 }
                 Row::Context { old, new } => {
                     let l = Line { numbers: [Some(old), Some(new)], n_numbers: 2, kind: Kind::Ctx, bytes: Some(fd.new.line(new)), emph: &[], syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
@@ -387,7 +388,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                 };
                 match row {
                     SplitRow::Gap { hidden, header, can_up, can_down, .. } => {
-                        cx.gap(buf, x, y, right, Some((x, can_up)), Some((mid + 1, can_down)), &label_gap(hidden, &header));
+                        cx.gap(buf, x, y, right, [Some((x, can_up)), Some((mid + 1, can_down))], &label_gap(hidden, &header));
                         divider(buf);
                     }
                     SplitRow::Context { old, new } => {

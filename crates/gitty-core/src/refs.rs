@@ -55,10 +55,10 @@ impl RefsSnapshot {
             HistoryScope::AllRefs => self.all_tips.clone(),
             HistoryScope::HeadAndUpstream => {
                 let mut v: Vec<CommitId> = self.head_id().into_iter().collect();
-                if let Some((_, u)) = &self.upstream {
-                    if !v.contains(u) {
-                        v.push(*u);
-                    }
+                if let Some((_, u)) = &self.upstream
+                    && !v.contains(u)
+                {
+                    v.push(*u);
                 }
                 v
             }
