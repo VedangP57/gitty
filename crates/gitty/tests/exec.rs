@@ -569,3 +569,25 @@ fn search_work_has_its_own_pool_so_readers_never_wait_behind_it() {
     assert_eq!(route(&Request::Refs), Pool::Readers);
     assert_eq!(route(&Request::Status { generation: 1, mark: None }), Pool::Readers);
 }
+
+#[test]
+fn a_lock_replaced_after_the_offer_is_not_removed() {
+    // SAFETY: tests in this binary that read GITTY_PGREP all set the same value
+    unsafe { std::env::set_var("GITTY_PGREP", "false") };
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let seen = gitty::write::LockId::of(&lock).expect("the lock exists");
+    // another git takes the lock again in between
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::write(&lock, "busy").unwrap();
+    let (r, _) = write(&f, gitty::msg::WriteOp::RemoveIndexLock { seen });
+    assert!(r.unwrap_err().contains("changed"), "a different lock");
+    assert!(lock.exists());
+    let seen = gitty::write::LockId::of(&lock).unwrap();
+    let (r, _) = write(&f, gitty::msg::WriteOp::RemoveIndexLock { seen });
+    assert_eq!(r, Ok(None));
+    assert!(!lock.exists());
+}

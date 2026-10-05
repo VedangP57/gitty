@@ -85,12 +85,33 @@ pub fn git_running() -> bool {
 /// `ps -o command=` lines of git processes: does any of them count? A git that exited since
 /// pgrep leaves no line.
 fn any_live_git(commands: &str) -> bool {
-    commands.lines().any(|l| !l.trim().is_empty() && !l.contains("fsmonitor--daemon"))
+    // `--daemon` helpers (fsmonitor, credential-cache) run for minutes or days and never take
+    // the index lock
+    commands.lines().any(|l| !l.trim().is_empty() && !l.contains("--daemon"))
 }
 
-/// A failed write left `index.lock` behind and no git holds it.
-pub fn stale_index_lock(h: &Handle, error: &str) -> bool {
-    error.contains("index.lock") && h.owner().git_dir().join("index.lock").exists() && !git_running()
+/// One particular lock file: removal is refused if the lock was replaced since it was offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockId {
+    ino: u64,
+    mtime_ns: i128,
+}
+
+impl LockId {
+    pub fn of(path: &Path) -> Option<LockId> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::symlink_metadata(path).ok()?;
+        Some(LockId { ino: m.ino(), mtime_ns: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()) })
+    }
+}
+
+/// A failed write left `index.lock` behind and no git holds it: the lock to offer removing.
+pub fn stale_index_lock(h: &Handle, error: &str) -> Option<LockId> {
+    if !error.contains("index.lock") {
+        return None;
+    }
+    let id = LockId::of(&h.owner().git_dir().join("index.lock"))?;
+    (!git_running()).then_some(id)
 }
 
 fn workdir(h: &Handle) -> anyhow::Result<PathBuf> {
@@ -181,11 +202,14 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             }
             return Ok(note);
         }
-        WriteOp::RemoveIndexLock => {
+        WriteOp::RemoveIndexLock { seen } => {
             if git_running() {
                 bail!("a git process is running and may hold the lock; nothing was removed");
             }
             let lock = h.owner().git_dir().join("index.lock");
+            if LockId::of(&lock).is_some_and(|now| now != *seen) {
+                bail!("the index.lock changed since it was offered (another git took it); nothing was removed");
+            }
             match std::fs::remove_file(&lock) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("removing {}", lock.display())),
                 _ => {}
@@ -208,5 +232,7 @@ mod tests {
         assert!(!super::any_live_git(daemon));
         assert!(!super::any_live_git(""));
         assert!(super::any_live_git(&format!("{daemon}git commit -q\n")));
+        // the credential cache stays up for 15 minutes after a push and never touches the index
+        assert!(!super::any_live_git("git credential-cache--daemon /Users/u/.cache/git/credential/socket\n"));
     }
 }

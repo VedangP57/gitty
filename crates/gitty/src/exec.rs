@@ -255,10 +255,13 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 let _write = crate::write::lock();
                 crate::write::run(h, &op, &mut |line| sink(Msg::WriteLog { line: line.to_string() })).map_err(|e| format!("{e:#}"))
             };
-            let stale = matches!(&result, Err(e) if !matches!(op, crate::msg::WriteOp::RemoveIndexLock) && crate::write::stale_index_lock(h, e));
+            let stale = match &result {
+                Err(e) if !matches!(op, crate::msg::WriteOp::RemoveIndexLock { .. }) => crate::write::stale_index_lock(h, e),
+                _ => None,
+            };
             sink(Msg::WriteDone { op, result });
-            if stale {
-                sink(Msg::StaleIndexLock);
+            if let Some(seen) = stale {
+                sink(Msg::StaleIndexLock { seen });
             }
         }
         Request::Net { op, mode, background } => crate::netjob::run(h, op, mode, background, sink),

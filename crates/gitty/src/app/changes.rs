@@ -330,9 +330,9 @@ impl App {
                 }
             }
             Msg::HeadMessage { result } => self.install_head_message(result),
-            Msg::StaleIndexLock => {
+            Msg::StaleIndexLock { seen } => {
                 // queued like the other dialogs: it never replaces an open overlay
-                self.pending_stale_lock = true;
+                self.pending_stale_lock = Some(seen);
                 self.next_ask();
             }
             Msg::StatusSlow => {

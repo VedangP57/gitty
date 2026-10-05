@@ -283,11 +283,11 @@ impl App {
             self.overlay = Some(Overlay::Diverged);
             return;
         }
-        if std::mem::take(&mut self.pending_stale_lock) {
+        if let Some(seen) = self.pending_stale_lock.take() {
             self.overlay = Some(Overlay::Confirm {
                 title: "Remove the stale .git/index.lock?".into(),
                 body: "A git command failed because the index is locked, and no git process is running. The lock was probably left by a git that crashed.".into(),
-                op: crate::msg::WriteOp::RemoveIndexLock,
+                op: crate::msg::WriteOp::RemoveIndexLock { seen },
             });
             return;
         }

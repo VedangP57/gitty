@@ -916,7 +916,7 @@ fn a_stale_index_lock_is_offered_for_removal() {
     t.app.write(gitty::msg::WriteOp::StageAll);
     t.pump();
     match &t.app.overlay {
-        Some(gitty::app::Overlay::Confirm { title, op: gitty::msg::WriteOp::RemoveIndexLock, .. }) => {
+        Some(gitty::app::Overlay::Confirm { title, op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. }) => {
             assert_eq!(title, "Remove the stale .git/index.lock?")
         }
         _ => panic!("no offer to remove the lock; toast {:?}", t.app.toast.as_ref().map(|t| &t.detail)),
@@ -935,10 +935,13 @@ fn the_stale_lock_offer_waits_for_an_open_overlay() {
     let mut t = changes_tab(&f);
     t.ch('?');
     assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })));
-    t.app.handle_msg(Msg::StaleIndexLock);
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let seen = gitty::write::LockId::of(&lock).unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen });
     assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })), "help stays open");
     t.key(KeyCode::Esc);
-    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock, .. })), "then the offer");
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
 }
 
 #[test]
@@ -989,7 +992,7 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
                 gitty::msg::WriteOp::UndoCommit { .. } => "undo".into(),
-                gitty::msg::WriteOp::RemoveIndexLock => "remove index.lock".into(),
+                gitty::msg::WriteOp::RemoveIndexLock { .. } => "remove index.lock".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
             }),

@@ -267,7 +267,7 @@ pub struct App {
     /// A Diverged question waiting for the open overlay to close.
     pending_diverged: bool,
     /// The stale index.lock offer, waiting for the open overlay to close.
-    pending_stale_lock: bool,
+    pending_stale_lock: Option<crate::write::LockId>,
     /// The last auto-fetch failed: its details, until a fetch works.
     bg_failure: Option<String>,
     pub search: search::Search,
@@ -377,7 +377,7 @@ impl App {
             tune_announced: false,
             prompt_cancelled: false,
             pending_diverged: false,
-            pending_stale_lock: false,
+            pending_stale_lock: None,
             bg_failure: None,
             search: Default::default(),
             compare: None,
@@ -658,7 +658,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, count } => self.range_count = Some(((oldest, newest), count)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
