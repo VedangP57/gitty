@@ -51,7 +51,7 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
             match k.code {
-                KeyCode::Char('c') => return self.quit = true,
+                KeyCode::Char('c') => return self.quit_now(),
                 KeyCode::Char('z') => return self.suspend = true,
                 _ => {}
             }
@@ -80,7 +80,7 @@ impl App {
         let in_diff = self.focus == Focus::Diff;
         let comparing = self.compare.is_some();
         match a {
-            Action::Quit => self.quit = true,
+            Action::Quit => self.request_quit(),
             Action::ChangesTab => self.set_tab(Tab::Changes),
             Action::HistoryTab => self.set_tab(Tab::History),
             Action::Fetch => self.start_net(crate::msg::NetOp::Fetch),
@@ -91,6 +91,9 @@ impl App {
             Action::Theme => self.open_theme_picker(),
             Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             Action::ErrorDetails => {
+                if self.toast.as_ref().is_none_or(|t| !t.error) {
+                    self.show_background_problem();
+                }
                 if self.toast.is_some() {
                     self.overlay = Some(Overlay::ErrorDetail);
                 }
@@ -282,6 +285,11 @@ impl App {
             Overlay::Confirm { .. } => self.overlay = Some(ov),
             Overlay::Prompt { ask, input } => self.prompt_key(ask, input, k),
             Overlay::BranchPicker { query, sel } => self.picker_key(query, sel, k),
+            Overlay::Quit { .. } => match k.code {
+                KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
+                KeyCode::Char('n') | KeyCode::Esc => {}
+                _ => self.overlay = Some(ov),
+            },
             Overlay::Diverged => match k.code {
                 KeyCode::Char('m') => self.start_net(crate::msg::NetOp::PullMerge),
                 KeyCode::Char('r') => self.start_net(crate::msg::NetOp::PullRebase),

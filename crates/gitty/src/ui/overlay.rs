@@ -179,6 +179,13 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 text(buf, inner.x, inner.bottom() - 1, inner.right(), "type to filter · ↑/↓ · Enter compare · Esc cancel", st.fg(ui.muted));
             }
         }
+        Overlay::Quit { label } => {
+            let inner = boxed(app, buf, area, 56, 6, "Quit");
+            text(buf, inner.x, inner.y, inner.right(), &format!("{label} is still running"), st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            if inner.height > 3 {
+                spans(buf, inner.x, inner.y + 2, inner.right(), &[("Quit and cancel it? ", st), ("y", st.fg(ui.accent)), (" / ", st), ("n", st.fg(ui.accent))]);
+            }
+        }
         Overlay::Diverged => {
             let inner = boxed(app, buf, area, 60, 6, "Pull");
             text(buf, inner.x, inner.y, inner.right(), "Your branch and its upstream have both moved on", st.fg(ui.warning).add_modifier(Modifier::BOLD));

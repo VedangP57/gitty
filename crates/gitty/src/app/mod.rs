@@ -63,6 +63,8 @@ pub enum Overlay {
     Diverged,
     /// `b`: pick the branch to compare with.
     BranchPicker { query: crate::editor::Editor, sel: usize },
+    /// `q` while a network job runs.
+    Quit { label: String },
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +258,12 @@ pub struct App {
     pub tune_thresholds: gitty_core::tune::Thresholds,
     last_tune: Option<Instant>,
     tune_announced: bool,
+    /// The user dismissed a credential prompt of the running job.
+    prompt_cancelled: bool,
+    /// A Diverged question waiting for the open overlay to close.
+    pending_diverged: bool,
+    /// The last auto-fetch failed: its details, until a fetch works.
+    bg_failure: Option<String>,
     pub search: search::Search,
     /// Compare mode (`b`); the history pane lists its commits instead.
     pub compare: Option<compare::CompareMode>,
@@ -359,6 +367,9 @@ impl App {
             tune_thresholds: gitty_core::tune::Thresholds::DEFAULT,
             last_tune: None,
             tune_announced: false,
+            prompt_cancelled: false,
+            pending_diverged: false,
+            bg_failure: None,
             search: Default::default(),
             compare: None,
             external: None,

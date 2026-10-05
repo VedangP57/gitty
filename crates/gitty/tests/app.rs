@@ -2064,3 +2064,160 @@ fn text_inputs_ignore_remaps() {
     t.ch('a');
     assert!(t.app.quit, "outside text inputs the remap applies");
 }
+
+// ---- M5 follow-ups ----
+
+fn started(t: &mut H, op: gitty::msg::NetOp, label: &str, background: bool) {
+    t.app.handle_msg(Msg::NetStarted { op, label: label.into(), remote: Some("origin".into()), cancel: None });
+    if background {
+        t.app.net.as_mut().unwrap().background = true;
+    }
+}
+
+fn done(t: &mut H, op: gitty::msg::NetOp, background: bool, outcome: gitty_core::net::Outcome) {
+    t.app.handle_msg(Msg::NetDone { op, background, outcome });
+}
+
+fn ask(id: u64, prompt: &str) -> gitty::askpass::Ask {
+    gitty::askpass::Ask { id, prompt: prompt.into(), kind: gitty::askpass::classify(prompt) }
+}
+
+#[test]
+fn a_hook_decline_says_the_remote_refused_not_pull_first() {
+    let (f, bare) = remote_fixture();
+    let hook = bare.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\necho 'policy: frozen' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    f.write("c.txt", "c\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('P');
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    let s = toast_text(&t);
+    assert!(s.contains("refused") && !s.contains("pull first"), "{s}");
+    assert!(s.contains("policy: frozen") || s.contains("hook declined"), "the reason is in the details: {s}");
+}
+
+#[test]
+fn esc_at_a_prompt_reads_as_cancelled_and_prompts_close_with_their_job() {
+    use gitty::msg::NetOp;
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    started(&mut t, NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(1, "Username for 'https://example.com': ")));
+    t.key(KeyCode::Esc);
+    done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: could not read Username".into() });
+    let s = toast_text(&t);
+    assert!(s.contains("cancelled at the prompt") && !s.contains("refused"), "{s}");
+
+    started(&mut t, NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(2, "Username for 'https://example.com': ")));
+    t.app.handle_msg(Msg::Ask(ask(3, "Password for 'https://ann@example.com': ")));
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })));
+    done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::Failed { detail: "fatal: boom".into() });
+    assert!(!matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "the job's prompt closes");
+    assert_eq!(t.app.pending_asks(), 0, "and its queued prompts go too");
+}
+
+#[test]
+fn quitting_while_a_job_runs_asks_and_then_cancels_it() {
+    let (f, _) = remote_fixture();
+    f.script_remote("hang", "sleep 30");
+    f.git(&["config", "branch.main.remote", "hang"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('f');
+    let req = t.app.take_requests().into_iter().find(|r| matches!(r, Request::Net { .. })).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (path, gens) = (f.path(), t.gens.clone());
+    std::thread::spawn(move || {
+        let h = gitty_core::Repo::open(&path).unwrap().handle();
+        exec(&h, req, &mut |m| {
+            let _ = tx.send(m);
+        }, &gens)
+    });
+    t.app.handle_msg(rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    t.ch('q');
+    assert!(!t.app.quit, "asks first");
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Quit { label }) => assert!(label.contains("Fetching"), "{label}"),
+        _ => panic!("no quit question"),
+    }
+    t.ch('n');
+    assert!(!t.app.quit && t.app.overlay.is_none());
+    t.ch('q');
+    t.ch('y');
+    assert!(t.app.quit);
+    let end = loop {
+        if let m @ Msg::NetDone { .. } = rx.recv_timeout(Duration::from_secs(5)).expect("the job ends") {
+            break m;
+        }
+    };
+    assert!(matches!(end, Msg::NetDone { outcome: gitty_core::net::Outcome::Cancelled, .. }), "{end:?}");
+}
+
+#[test]
+fn background_fetch_failures_and_cancels_are_visible() {
+    use gitty::msg::NetOp;
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    started(&mut t, NetOp::Fetch, "Fetching origin", true);
+    done(&mut t, NetOp::Fetch, true, gitty_core::net::Outcome::Failed { detail: "fatal: unable to access: Could not resolve host".into() });
+    assert!(t.app.toast.is_none(), "no toast for a background job");
+    assert_eq!(t.app.background_problem().as_deref(), Some("auto-fetch failed · !"));
+    t.ch('!');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::ErrorDetail)));
+    assert!(toast_text(&t).contains("Could not resolve host"), "{}", toast_text(&t));
+    t.key(KeyCode::Esc);
+    started(&mut t, NetOp::Fetch, "Fetching origin", true);
+    done(&mut t, NetOp::Fetch, true, gitty_core::net::Outcome::Ok { summary: String::new() });
+    assert_eq!(t.app.background_problem(), None, "a good fetch clears it");
+    started(&mut t, NetOp::Fetch, "Fetching origin", true);
+    t.ch('x');
+    done(&mut t, NetOp::Fetch, true, gitty_core::net::Outcome::Cancelled);
+    assert!(toast_text(&t).contains("Auto-fetch cancelled"), "{}", toast_text(&t));
+}
+
+#[test]
+fn a_diverged_pull_waits_behind_an_open_overlay() {
+    use gitty::msg::NetOp;
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    let mut t = H::new(&f);
+    t.pump();
+    started(&mut t, NetOp::Pull, "Pulling origin", false);
+    t.ch('?');
+    done(&mut t, NetOp::Pull, false, gitty_core::net::Outcome::Diverged);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })), "help stays up");
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Diverged)), "then the question comes");
+}
+
+#[test]
+fn a_merge_or_rebase_pull_rechecks_tuning() {
+    use gitty::msg::NetOp;
+    let f = many_commits_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.take_requests();
+    for op in [NetOp::PullMerge, NetOp::PullRebase] {
+        started(&mut t, op, "Merging", false);
+        done(&mut t, op, false, gitty_core::net::Outcome::Ok { summary: String::new() });
+        assert!(t.app.take_requests().iter().any(|r| matches!(r, Request::Tune { .. })), "{op:?}: HEAD moved, so tuning is checked again");
+    }
+}
+
+#[test]
+fn editor_debug_never_prints_the_text() {
+    let mut e = gitty::editor::Editor::single();
+    e.insert("hunter2");
+    let d = format!("{e:?}");
+    assert!(!d.contains("hunter2") && d.contains('7'), "{d}");
+}

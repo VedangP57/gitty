@@ -261,7 +261,11 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
                     }
                     Event::FocusGained => app.handle_focus(true),
                     Event::FocusLost => app.handle_focus(false),
-                    Event::Paste(s) => app.handle_paste(&s),
+                    Event::Paste(mut s) => {
+                        app.handle_paste(&s);
+                        // it may have been a password
+                        crate::editor::wipe(&mut s);
+                    }
                 }
             }
             Ok(())

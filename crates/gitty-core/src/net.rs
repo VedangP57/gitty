@@ -143,6 +143,14 @@ pub struct PushRef {
     pub summary: String,
 }
 
+impl PushRef {
+    /// Rejected because the remote moved on (`fetch first`, `non-fast-forward`, a stale
+    /// lease): pulling fixes it. Other rejections (hooks, protected branches) do not.
+    pub fn needs_pull(&self) -> bool {
+        self.flag == '!' && !self.summary.contains("remote rejected") && ["fetch first", "non-fast-forward", "stale info"].iter().any(|s| self.summary.contains(s))
+    }
+}
+
 pub fn parse_push_porcelain(stdout: &str) -> Vec<PushRef> {
     stdout
         .lines()
@@ -162,7 +170,8 @@ pub enum Outcome {
     Cancelled,
     /// `merge --ff-only` found local commits: offer merge or rebase.
     Diverged,
-    Rejected { refs: Vec<PushRef> },
+    /// `detail`: what the remote said (a hook's message).
+    Rejected { refs: Vec<PushRef>, detail: String },
     NeedsAuth { detail: String },
     Failed { detail: String },
 }
@@ -252,12 +261,15 @@ impl Cancel {
         }
         // SAFETY: plain syscalls on a group this job created with setsid
         unsafe { libc::killpg(self.pgid, libc::SIGTERM) };
-        let pgid = self.pgid;
+        let (pgid, exited) = (self.pgid, self.exited.clone());
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(2));
-            // the leader may be gone while helpers it started still run: kill the group anyway
-            // SAFETY: as above
-            unsafe { libc::killpg(pgid, libc::SIGKILL) };
+            // once the leader is reaped its pid (the group id) can be reused: leave it alone.
+            // Until then the group is ours; `wait` kills leftover helpers when the leader exits.
+            if !exited.load(Ordering::SeqCst) {
+                // SAFETY: as above
+                unsafe { libc::killpg(pgid, libc::SIGKILL) };
+            }
         });
     }
 }
@@ -269,6 +281,28 @@ pub struct Job {
 }
 
 const STDERR_CAP: usize = 64 * 1024;
+/// How long stderr may stay open after git itself exited (helpers it left behind).
+const STDERR_GRACE: Duration = Duration::from_secs(1);
+
+/// Whether `pid` (our child) has exited, without reaping it: until it is reaped, its pid and
+/// so its process group id cannot be reused.
+fn exited_unreaped(pid: i32) -> bool {
+    // SAFETY: waitid only writes the siginfo we pass; WNOWAIT leaves the child waitable
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    r == 0 && si_pid(&info) != 0
+}
+
+#[cfg(target_os = "linux")]
+fn si_pid(i: &libc::siginfo_t) -> i32 {
+    // SAFETY: filled in by waitid for WEXITED
+    unsafe { i.si_pid() }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn si_pid(i: &libc::siginfo_t) -> i32 {
+    i.si_pid
+}
 
 impl Job {
     pub fn spawn(cli: &GitCli, cmd: NetCmd, mode: Mode) -> anyhow::Result<Job> {
@@ -302,7 +336,9 @@ impl Job {
         self.cancel.clone()
     }
 
-    /// Streams progress (fractions in 0..=1, increasing) until git exits.
+    /// Streams progress (fractions in 0..=1, increasing) until git exits. stderr is read on its
+    /// own thread: a helper that keeps it open after git exits gets [`STDERR_GRACE`], not the
+    /// rest of its life.
     pub fn wait(mut self, on_progress: &mut dyn FnMut(f32)) -> Outcome {
         let mut out = self.child.stdout.take().expect("piped");
         let reader = std::thread::spawn(move || {
@@ -311,16 +347,20 @@ impl Job {
             v
         });
         let mut err = self.child.stderr.take().expect("piped");
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = err.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
         let mut tracker = Tracker::new(self.cmd.weights());
         let mut stderr = String::new();
         let mut pending = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            let n = match err.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
-            };
-            pending.extend_from_slice(&buf[..n]);
+        let mut take = |chunk: Vec<u8>, stderr: &mut String| {
+            pending.extend_from_slice(&chunk);
             while let Some(i) = pending.iter().position(|b| *b == b'\r' || *b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=i).collect();
                 let repaint = line[line.len() - 1] == b'\r';
@@ -339,14 +379,39 @@ impl Job {
                     }
                 }
             }
+        };
+        let pid = self.child.id() as i32;
+        let mut grace: Option<std::time::Instant> = None;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(chunk) => take(chunk, &mut stderr),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // every holder of stderr closed it
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+            if grace.is_none() && exited_unreaped(pid) {
+                if self.cancel.cancelled.load(Ordering::SeqCst) {
+                    // the leader is a zombie, so the group id is still ours: finish the helpers
+                    // SAFETY: plain syscall on the group this job created
+                    unsafe { libc::killpg(self.cancel.pgid, libc::SIGKILL) };
+                }
+                grace = Some(std::time::Instant::now() + STDERR_GRACE);
+            }
+            if grace.is_some_and(|g| std::time::Instant::now() >= g) {
+                break;
+            }
+        }
+        while let Ok(chunk) = rx.try_recv() {
+            take(chunk, &mut stderr);
         }
         let status = self.child.wait();
         self.cancel.exited.store(true, Ordering::SeqCst);
         let stdout = String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned();
-        if self.cancel.cancelled.load(Ordering::SeqCst) {
+        let ok = status.as_ref().is_ok_and(|s| s.success());
+        // a cancel that arrived after git finished does not undo what git did
+        if self.cancel.cancelled.load(Ordering::SeqCst) && !ok {
             return Outcome::Cancelled;
         }
-        let ok = status.as_ref().is_ok_and(|s| s.success());
         let refs = matches!(self.cmd, NetCmd::Push(_)).then(|| parse_push_porcelain(&stdout)).unwrap_or_default();
         // merge and rebase explain conflicts on stdout
         let detail = match &self.cmd {
@@ -361,7 +426,7 @@ impl Job {
             return Outcome::Ok { summary };
         }
         if refs.iter().any(|r| r.flag == '!') {
-            return Outcome::Rejected { refs };
+            return Outcome::Rejected { refs, detail };
         }
         if is_auth_failure(&detail) {
             return Outcome::NeedsAuth { detail };

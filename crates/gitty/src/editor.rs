@@ -3,8 +3,9 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-/// Editable text with a byte cursor that always sits on a grapheme boundary.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Editable text with a byte cursor that always sits on a grapheme boundary. It may hold a
+/// password, so Debug shows only the length and drop zeroes the bytes.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Editor {
     text: String,
     cursor: usize,
@@ -173,16 +174,36 @@ impl Editor {
 }
 
 /// Prompt answers pass through an editor: leave no copy behind in freed memory.
+impl std::fmt::Debug for Editor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Editor {{ {} bytes, cursor {} }}", self.text.len(), self.cursor)
+    }
+}
+
+/// Zeroes a string's bytes in place (pasted secrets, editor text on drop).
+pub fn wipe(s: &mut str) {
+    // SAFETY: zero bytes are valid UTF-8
+    unsafe { s.as_bytes_mut() }.fill(0);
+}
+
 impl Drop for Editor {
     fn drop(&mut self) {
-        // SAFETY: zero bytes are valid UTF-8
-        unsafe { self.text.as_bytes_mut() }.fill(0);
+        wipe(&mut self.text);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wipe_zeroes_in_place() {
+        let mut s = String::from("hunter2");
+        let p = s.as_ptr();
+        wipe(&mut s);
+        assert_eq!(s.as_bytes(), [0u8; 7]);
+        assert_eq!(s.as_ptr(), p, "same buffer, not a copy");
+    }
 
     fn ed(s: &str) -> Editor {
         let mut e = Editor::multi();

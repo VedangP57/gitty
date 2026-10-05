@@ -52,6 +52,8 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
     }
     if let Some(r) = app.needs_auth.as_deref().filter(|_| app.net.is_none()) {
         text(buf, x, y, max_x, &format!("  {r} needs auth · f"), base.fg(ui.warning));
+    } else if let Some(p) = app.background_problem().filter(|_| app.net.is_none()) {
+        text(buf, x, y, max_x, &format!("  {p}"), base.fg(ui.warning));
     } else if let Some(bar) = app.net_bar() {
         text(buf, x, y, max_x, &format!("  {bar}"), base.fg(ui.accent));
     } else if let Some(t) = app.fetched_at {

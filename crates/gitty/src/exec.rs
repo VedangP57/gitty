@@ -247,7 +247,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
         Request::Net { op, mode, background } => crate::netjob::run(h, op, mode, background, sink),
         Request::Tune { history_len, th } => {
             let actions = gitty_core::tune::plan(h, history_len, th);
-            let (applied, error) = match gitty_core::tune::apply(&gitty_core::git_cli::GitCli::new(h.owner()), &actions) {
+            let (applied, error) = match gitty_core::tune::apply(h, &actions) {
                 Ok(done) => (done, None),
                 Err(e) => (Vec::new(), Some(format!("{e:#}"))),
             };
