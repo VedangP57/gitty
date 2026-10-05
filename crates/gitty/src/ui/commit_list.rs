@@ -96,7 +96,13 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             text(buf, x0, y, right, "…", base.fg(ui.muted));
             continue;
         };
-        let summary_st = if behind { base.fg(ui.muted) } else { base };
+        let summary_st = if app.search.hits.contains(&i) {
+            base.fg(ui.warning).add_modifier(Modifier::BOLD)
+        } else if behind {
+            base.fg(ui.muted)
+        } else {
+            base
+        };
         let date = format_date(row.author.time, row.author.offset_secs, app.now, app.date_mode);
         let ini = initials(&row.author.name);
         let ini_st = base.fg(app.theme.avatar[identity_hue(&row.author.email) as usize]).add_modifier(Modifier::BOLD);

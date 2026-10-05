@@ -11,6 +11,7 @@ pub mod history;
 pub mod net;
 pub mod refs;
 pub mod repo;
+pub mod search;
 pub mod stage;
 pub mod status;
 pub mod tune;

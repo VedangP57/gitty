@@ -810,3 +810,44 @@ fn host_key_prompt_shows_the_fingerprint_and_the_question() {
     assert!(s.contains("continue connecting"), "{s}");
     assert!(s.contains("y yes"), "{s}");
 }
+
+#[test]
+fn search_bar_shows_position_and_progress_and_matches_are_highlighted() {
+    let f = Fixture::new();
+    for i in 0..30 {
+        f.write("a.txt", format!("{i}\n"));
+        let msg = if i % 5 == 0 { format!("plain {i}") } else { format!("fix {i}") };
+        f.commit(&msg, NOW - DAY + i * 60);
+    }
+    let mut t = H::new(&f, "github-dark", (120, 40));
+    t.app.search_chunk = 6;
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    for c in "fix".chars() {
+        t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let b = t.render(120, 40);
+    assert!(text(&b).lines().last().unwrap().starts_with(" /fix"), "the bar shows what is typed");
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // answer the first two of five chunks only: 12 rows, 40%
+    let reqs: Vec<_> = t.app.take_requests().into_iter().take(2).collect();
+    let mut out = Vec::new();
+    for r in reqs {
+        exec(&t.h, r, &mut |m| out.push(m), &t.gens);
+    }
+    for m in out {
+        t.app.handle_msg(m);
+    }
+    t.app.search_step(true);
+    t.app.search_step(true);
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    term.draw(|fr| ui::draw(&mut t.app, fr)).unwrap();
+    let b = term.backend().buffer().clone();
+    let s = text(&b);
+    let bottom = s.lines().last().unwrap();
+    assert!(bottom.starts_with(" /fix  3/10 · searching… 40%"), "{bottom}");
+    let warning = t.app.theme.ui.warning;
+    let (x, y) = find(&b, "fix 29").expect("newest match drawn");
+    assert_eq!(b[(x, y)].fg, warning, "matched summaries are highlighted");
+    let (x, y) = find(&b, "plain 25").expect("non-match drawn");
+    assert_ne!(b[(x, y)].fg, warning);
+}

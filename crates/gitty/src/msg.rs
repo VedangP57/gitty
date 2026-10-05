@@ -3,6 +3,8 @@
 //! Requests carry the generation they were made under; workers stop early and the app drops
 //! results once the matching counter in [`Gens`] has moved on.
 
+use std::collections::HashSet;
+use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -20,12 +22,14 @@ use gitty_core::CommitId;
 
 pub type SharedHistory = Arc<RwLock<History>>;
 
-/// Current generations: `session` (history walk), `commit` (selected commit), `file` (diff).
+/// Current generations: `session` (history walk), `commit` (selected commit), `file` (diff),
+/// `search` (history search).
 #[derive(Debug, Default)]
 pub struct Gens {
     pub session: AtomicU64,
     pub commit: AtomicU64,
     pub file: AtomicU64,
+    pub search: AtomicU64,
 }
 
 impl Gens {
@@ -123,6 +127,10 @@ pub enum Request {
     Walk { session: u64, tips: Vec<CommitId> },
     AheadBehind { local: CommitId, upstream: CommitId },
     Rows { session: u64, ids: Vec<(usize, CommitId)> },
+    /// Match history rows `range` against `query`, keeping only `paths` when set.
+    Search { generation: u64, query: Arc<gitty_core::search::Query>, paths: Option<Arc<HashSet<CommitId>>>, history: SharedHistory, range: Range<usize> },
+    /// The commits reachable from `tips` that touch `path` (the `path:` filter).
+    SearchPath { generation: u64, tips: Vec<CommitId>, path: String },
     Detail { generation: u64, id: CommitId },
     /// File list then line stats. Prefetches are never cancelled (they fill the cache).
     Files { generation: u64, id: CommitId, prefetch: bool },
@@ -171,7 +179,7 @@ impl NetOp {
 impl Request {
     /// Prefetches go to the low-priority queue.
     pub fn is_background(&self) -> bool {
-        matches!(self, Request::Files { prefetch: true, .. })
+        matches!(self, Request::Files { prefetch: true, .. } | Request::Search { .. } | Request::SearchPath { .. })
     }
 }
 
@@ -180,6 +188,9 @@ pub enum Msg {
     HistoryStarted { session: u64, history: SharedHistory },
     HistoryProgress { session: u64, len: usize, done: bool },
     Rows { session: u64, rows: Vec<(usize, CommitRow)> },
+    /// History indices in `range` that match, ascending.
+    SearchHits { generation: u64, range: Range<usize>, hits: Vec<usize> },
+    SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
     AheadBehind { local: CommitId, upstream: CommitId, ab: AheadBehind },
     Detail { generation: u64, detail: CommitDetail },
     Files { generation: u64, id: CommitId, files: Arc<Vec<FileChange>>, prefetch: bool },
@@ -226,6 +237,8 @@ impl std::fmt::Debug for Msg {
             Msg::HistoryStarted { session, .. } => write!(f, "HistoryStarted {{ session: {session} }}"),
             Msg::HistoryProgress { session, len, done } => write!(f, "HistoryProgress {{ session: {session}, len: {len}, done: {done} }}"),
             Msg::Rows { session, rows } => write!(f, "Rows {{ session: {session}, n: {} }}", rows.len()),
+            Msg::SearchHits { generation, range, hits } => write!(f, "SearchHits {{ generation: {generation}, {range:?}: {} }}", hits.len()),
+            Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
             Msg::AheadBehind { ab, .. } => write!(f, "AheadBehind {{ ahead: {}, behind: {} }}", ab.ahead.len(), ab.behind.len()),
             Msg::Detail { generation, detail } => write!(f, "Detail {{ generation: {generation}, id: {:?} }}", detail.row.id),
             Msg::Files { generation, id, files, prefetch } => write!(f, "Files {{ generation: {generation}, id: {id:?}, n: {}, prefetch: {prefetch} }}", files.len()),

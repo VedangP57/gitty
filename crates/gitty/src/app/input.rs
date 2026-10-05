@@ -62,6 +62,9 @@ impl App {
         if self.tab == Tab::Changes && self.focus == Focus::Commit {
             return self.commit_key(k);
         }
+        if self.search.bar.is_some() {
+            return self.search_bar_key(k);
+        }
         match k.code {
             KeyCode::Char('q') => return self.quit = true,
             KeyCode::Char('1') => return self.set_tab(Tab::Changes),
@@ -77,6 +80,15 @@ impl App {
         }
         if self.tab == Tab::Changes && self.changes_key(k) {
             return;
+        }
+        if self.tab == Tab::History && !ctrl {
+            match k.code {
+                KeyCode::Char('/') => return self.open_search(),
+                KeyCode::Char('n') => return self.search_step(true),
+                KeyCode::Char('N') => return self.search_step(false),
+                KeyCode::Esc if self.focus == Focus::History && self.search_active() => return self.clear_search(),
+                _ => {}
+            }
         }
         let split = self.split_active();
         match (k.code, ctrl) {

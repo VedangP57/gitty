@@ -333,7 +333,7 @@ impl App {
 
     /// Bracketed paste: into the commit box when it has focus.
     pub fn handle_paste(&mut self, s: &str) {
-        if self.paste_into_prompt(s) {
+        if self.paste_into_prompt(s) || self.paste_into_search(s) {
             self.dirty = true;
             return;
         }

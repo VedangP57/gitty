@@ -1,6 +1,5 @@
 ---
 source: crates/gitty/tests/render.rs
-assertion_line: 200
 expression: digest(&b)
 ---
  0 7:0969da/f6f8fa 12:1f2328/f6f8fa 4:9a6700/f6f8fa 3:1b7c83/f6f8fa 89:1f2328/f6f8fa 11:656d76/f6f8fa 2:1f2328/f6f8fa 11:0969da/f6f8fa 1:1f2328/f6f8fa
@@ -32,4 +31,4 @@ expression: digest(&b)
 26 56:1f2328/ffffff 1:d0d7de/ffffff 83:1f2328/ffffff
 27 56:1f2328/ffffff 1:d0d7de/ffffff 83:1f2328/ffffff
 28 56:1f2328/ffffff 1:d0d7de/ffffff 83:1f2328/ffffff
-29 1:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 5:0969da/f6f8fa 8:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 10:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 59:656d76/f6f8fa
+29 1:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 5:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 9:656d76/f6f8fa 3:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 10:656d76/f6f8fa 1:0969da/f6f8fa 8:656d76/f6f8fa 1:0969da/f6f8fa 7:656d76/f6f8fa 1:0969da/f6f8fa 49:656d76/f6f8fa

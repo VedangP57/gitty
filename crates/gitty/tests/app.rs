@@ -1601,3 +1601,120 @@ fn a_conflicting_merge_says_what_to_do() {
     assert!(toast.what.contains("conflict") && toast.what.contains("git merge --abort"), "{toast:?}");
     assert!(toast.detail.contains("CONFLICT"), "{toast:?}");
 }
+
+/// 12 commits; i % 3 == 0 are "Fix thing i" (history indices 2, 5, 8, 11), the rest "commit i".
+fn search_fixture() -> Fixture {
+    let f = Fixture::new();
+    for i in 0..12 {
+        f.write("a.txt", format!("line {i}\n"));
+        let msg = if i % 3 == 0 { format!("Fix thing {i}") } else { format!("commit {i}") };
+        f.commit(&msg, 1_700_000_000 + i * 100);
+    }
+    f
+}
+
+fn search(t: &mut H, q: &str) {
+    t.ch('/');
+    typed(t, q);
+    t.key(KeyCode::Enter);
+}
+
+fn hits(t: &H) -> Vec<usize> {
+    t.app.search.hits.iter().copied().collect()
+}
+
+#[test]
+fn search_jumps_to_the_first_match_at_or_after_the_selection_and_n_wraps() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(3);
+    t.pump();
+    search(&mut t, "fix");
+    t.pump();
+    assert_eq!(hits(&t), [2, 5, 8, 11]);
+    assert_eq!(t.app.selected, 5);
+    t.ch('n');
+    assert_eq!(t.app.selected, 8);
+    t.ch('n');
+    t.ch('n');
+    assert_eq!(t.app.selected, 2, "n wraps to the first match");
+    t.ch('N');
+    assert_eq!(t.app.selected, 11, "N wraps to the last match");
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  4/4"));
+}
+
+#[test]
+fn search_chunks_merge_in_any_order_and_a_stale_generation_is_dropped() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.search_chunk = 5;
+    search(&mut t, "fix");
+    let reqs = t.app.take_requests();
+    let ranges: Vec<_> = reqs.iter().filter_map(|r| match r {
+        Request::Search { range, .. } => Some(range.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(ranges, [0..5, 5..10, 10..12]);
+    // the last chunk answers first: the selection jumps, then moves back as earlier hits arrive
+    for r in reqs.into_iter().rev() {
+        for m in t.exec_all(vec![r]) {
+            t.app.handle_msg(m);
+        }
+        assert!(t.app.search.hits.contains(&t.app.selected));
+    }
+    assert_eq!(hits(&t), [2, 5, 8, 11]);
+    assert_eq!(t.app.selected, 2);
+
+    search(&mut t, "commit");
+    let reqs = t.app.take_requests();
+    let old = t.exec_all(reqs);
+    search(&mut t, "thing 9");
+    for m in old {
+        t.app.handle_msg(m);
+    }
+    assert!(hits(&t).is_empty(), "hits of a replaced query are dropped");
+    t.pump();
+    assert_eq!(hits(&t), [2]);
+}
+
+#[test]
+fn search_bar_takes_every_key_and_esc_clears() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('/');
+    typed(&mut t, "q1n?");
+    assert!(!t.app.quit && t.app.overlay.is_none());
+    assert_eq!(t.app.search.bar.as_ref().map(|b| b.text()), Some("q1n?"));
+    t.key(KeyCode::Esc);
+    assert!(t.app.search.bar.is_none() && t.app.search_label().is_none());
+
+    search(&mut t, "fix");
+    t.pump();
+    assert_eq!(hits(&t).len(), 4);
+    t.key(KeyCode::Esc);
+    assert!(hits(&t).is_empty() && t.app.search_label().is_none(), "Esc clears an active search");
+    let before = t.app.selected;
+    t.ch('n');
+    assert_eq!(t.app.selected, before);
+}
+
+#[test]
+fn path_search_keeps_commits_touching_the_path() {
+    let f = Fixture::new();
+    commits(&f, 6); // dir/f0, f2, f4 → history indices 5, 3, 1
+    let mut t = H::new(&f);
+    t.pump();
+    search(&mut t, "path:dir");
+    t.pump();
+    assert_eq!(hits(&t), [1, 3, 5]);
+    search(&mut t, "commit 4 path:dir");
+    t.pump();
+    assert_eq!(hits(&t), [1]);
+    search(&mut t, "path:nowhere");
+    t.pump();
+    assert!(hits(&t).is_empty());
+    assert_eq!(t.app.search_label().as_deref(), Some("/path:nowhere  no matches"));
+}

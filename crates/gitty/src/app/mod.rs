@@ -6,6 +6,7 @@ pub mod commit;
 pub mod net;
 pub mod diffstate;
 mod input;
+pub mod search;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -240,6 +241,9 @@ pub struct App {
     pub tune_thresholds: gitty_core::tune::Thresholds,
     last_tune: Option<Instant>,
     tune_announced: bool,
+    pub search: search::Search,
+    /// Rows per search request (lowered in tests).
+    pub search_chunk: usize,
 }
 
 impl App {
@@ -323,6 +327,8 @@ impl App {
             tune_thresholds: gitty_core::tune::Thresholds::DEFAULT,
             last_tune: None,
             tune_announced: false,
+            search: Default::default(),
+            search_chunk: search::SEARCH_CHUNK,
         };
         app.request_status();
         app
@@ -437,6 +443,7 @@ impl App {
         self.dirty = true;
         let Some(m) = self.handle_changes_msg(m) else { return };
         let Some(m) = self.handle_net_msg(m) else { return };
+        let Some(m) = self.handle_search_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
@@ -485,6 +492,7 @@ impl App {
                     self.select_at(0);
                 }
                 self.request_visible_rows();
+                self.request_search_chunks();
             }
             Msg::Rows { session, rows } => {
                 if session == self.session {
@@ -570,6 +578,7 @@ impl App {
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
+            Msg::SearchHits { .. } | Msg::SearchPaths { .. } => {}
         }
     }
 
@@ -627,6 +636,7 @@ impl App {
         self.rows.clear();
         self.requested_rows.clear();
         self.outbox.push(Request::Walk { session: self.session, tips });
+        self.restart_search();
     }
 
     pub fn toggle_scope(&mut self) {

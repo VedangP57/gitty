@@ -71,7 +71,7 @@ fn hints(app: &App) -> &'static [(&'static str, &'static str)] {
         };
     }
     match app.focus {
-        Focus::History => &[("j/k", "move"), ("enter", "files"), ("tab", "pane"), ("r", "scope"), ("D", "dates"), ("z", "density"), ("T", "theme"), ("?", "help"), ("q", "quit")],
+        Focus::History => &[("j/k", "move"), ("enter", "files"), ("/", "search"), ("tab", "pane"), ("r", "scope"), ("D", "dates"), ("z", "density"), ("T", "theme"), ("?", "help"), ("q", "quit")],
         Focus::Files => &[("j/k", "file"), ("enter", "diff"), ("esc", "back"), ("{ }", "file"), ("[ ]", "hunk"), ("?", "help"), ("q", "quit")],
         Focus::Commit => &[],
         Focus::Diff => &[("j/k", "line"), ("[ ]", "hunk"), ("e/E", "expand"), ("s", "split"), ("w", "whitespace"), ("h/l", "scroll"), ("F", "full"), ("esc", "back")],
@@ -98,6 +98,18 @@ pub fn bottom(app: &App, buf: &mut Buffer, r: Rect) {
         max_x = x;
     }
     let mut x = r.x + 1;
+    if let Some(label) = app.search_label() {
+        let end = text(buf, x, r.y, max_x, &label, base.fg(ui.accent).add_modifier(Modifier::BOLD));
+        if let Some(bar) = &app.search.bar {
+            // block cursor after "/" and the text before the editor's cursor
+            let cx = x + 1 + width(&bar.text()[..bar.cursor()]);
+            if cx < max_x {
+                let cell = &mut buf[(cx, r.y)];
+                cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+            }
+        }
+        x = end + 2;
+    }
     for (k, d) in hints(app) {
         if x + width(k) + width(d) + 3 > max_x {
             break;

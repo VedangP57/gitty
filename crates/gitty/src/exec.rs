@@ -14,6 +14,8 @@ const WALK_FIRST_CHUNK: usize = 256;
 const WALK_CHUNK: usize = 4096;
 /// Line stats are sent in batches of this many files; staleness is checked as often.
 const STATS_CHUNK: usize = 32;
+/// A search chunk checks for a newer query this often (rows).
+const SEARCH_CHECK: usize = 1024;
 
 thread_local! {
     static HIGHLIGHTER: RefCell<gitty_highlight::Highlighter> = RefCell::new(gitty_highlight::Highlighter::new());
@@ -115,6 +117,34 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
         Request::Rows { session, ids } => {
             let rows = ids.into_iter().filter_map(|(i, id)| h.decode_row(id).ok().map(|r| (i, r))).collect();
             sink(Msg::Rows { session, rows });
+        }
+        Request::Search { generation, query, paths, history, range } => {
+            let ids = {
+                let h = history.read().unwrap_or_else(PoisonError::into_inner);
+                h.ids(range.start.min(h.len())..range.end.min(h.len()))
+            };
+            let mut hits = Vec::new();
+            for (n, id) in ids.into_iter().enumerate() {
+                if n % SEARCH_CHECK == 0 && !Gens::is(&gens.search, generation) {
+                    return;
+                }
+                if paths.as_ref().is_some_and(|p| !p.contains(&id)) {
+                    continue;
+                }
+                // a path-only query needs no decoding
+                if query.text.is_none() || h.decode_row(id).is_ok_and(|r| query.matches(&r)) {
+                    hits.push(range.start + n);
+                }
+            }
+            sink(Msg::SearchHits { generation, range, hits });
+        }
+        Request::SearchPath { generation, tips, path } => {
+            if !Gens::is(&gens.search, generation) {
+                return;
+            }
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            let result = gitty_core::search::path_commits(&cli, &tips, &path).map(Arc::new).map_err(|e| format!("{e:#}"));
+            sink(Msg::SearchPaths { generation, result });
         }
         Request::Detail { generation, id } => {
             if !Gens::is(&gens.commit, generation) {
