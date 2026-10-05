@@ -49,7 +49,8 @@ syntect fallback.
 
 ## Requirements
 
-- macOS (Apple Silicon or Intel) or Linux (x86_64 or arm64).
+- macOS (Apple Silicon or Intel) or Linux (x86_64 or arm64). The prebuilt Linux binaries need
+  glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later); build from source elsewhere.
 - `git` 2.30 or newer on your `PATH`.
 - On Linux, live refresh watches every directory of the worktree with inotify. A repository with
   more directories than `fs.inotify.max_user_watches` allows (often 8,192 on older kernels) opens
