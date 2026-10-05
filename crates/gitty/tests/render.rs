@@ -369,6 +369,26 @@ fn split_auto_at_220_unified_at_180() {
 }
 
 #[test]
+fn a_split_gap_label_stays_left_of_the_divider() {
+    let f = fixture();
+    for w in [120u16, 140, 180] {
+        let mut t = H::new(&f, "github-dark", (w, 40));
+        t.app.select(2);
+        t.pump();
+        t.select_file("src/main.rs");
+        t.app.split_pref = Some(true);
+        let s = text(&t.render(w, 40));
+        assert!(t.app.split_active(), "{w}: split");
+        let gaps: Vec<&str> = s.lines().filter(|l| l.contains('⋯')).collect();
+        assert!(!gaps.is_empty(), "{w}: a gap row is drawn");
+        for row in gaps {
+            let right = &row[row.rfind('│').expect("the split divider") + '│'.len_utf8()..];
+            assert!(["", "↑", "↓"].contains(&right.trim()), "{w}: the label runs past the divider: {row:?}");
+        }
+    }
+}
+
+#[test]
 fn gap_row_click_expands() {
     let f = fixture();
     let mut t = H::new(&f, "github-dark", (180, 40));

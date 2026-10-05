@@ -811,6 +811,29 @@ fn startup_reads_status_and_changes_tab_loads_the_first_file() {
 }
 
 #[test]
+fn history_gets_back_the_pane_it_had_focused() {
+    let f = changes_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    assert_eq!(t.app.focus, Focus::History);
+    t.app.handle_key(key('1'));
+    t.app.handle_key(key('2'));
+    assert_eq!(t.app.focus, Focus::History, "not the Changes file list");
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(t.app.focus, Focus::Files);
+    t.app.handle_key(key('1'));
+    t.app.handle_key(key('2'));
+    assert_eq!(t.app.focus, Focus::Files, "History remembers its own pane");
+    // a click on the History tab while writing a message must not carry the editor over
+    t.app.handle_key(key('1'));
+    t.app.handle_key(key('c'));
+    assert_eq!(t.app.focus, Focus::Commit);
+    t.app.set_tab(gitty::app::Tab::History);
+    assert_eq!(t.app.focus, Focus::Files);
+}
+
+#[test]
 fn stale_change_diff_is_dropped() {
     let f = changes_fixture();
     let mut t = H::new(&f);

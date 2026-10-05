@@ -189,11 +189,13 @@ impl App {
         self.file_gen = crate::msg::Gens::bump(&self.gens.file);
         match tab {
             Tab::Changes => {
+                self.history_focus = self.focus;
                 self.focus = super::Focus::Files;
                 self.request_status();
                 self.request_change_diff();
             }
             Tab::History => {
+                self.focus = self.history_focus;
                 self.last_diff_request = None;
                 if self.current_file().is_some() {
                     self.schedule_diff();
