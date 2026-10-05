@@ -893,10 +893,10 @@ impl App {
         } else {
             self.schedule_diff();
         }
-        if let Some(path) = self.files_restore.take() {
-            if let Some(i) = self.files.as_ref().and_then(|f| f.iter().position(|f| f.path == path)) {
-                self.select_file(i);
-            }
+        if let Some(path) = self.files_restore.take()
+            && let Some(i) = self.files.as_ref().and_then(|f| f.iter().position(|f| f.path == path))
+        {
+            self.select_file(i);
         }
         self.prefetch_neighbours();
     }
