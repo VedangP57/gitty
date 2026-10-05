@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "gitty"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "criterion",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "gitty-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "criterion",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "gitty-highlight"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "syntect",
  "tree-sitter",
