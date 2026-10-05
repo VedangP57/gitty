@@ -187,6 +187,8 @@ pub struct App {
     reselect: Option<CommitId>,
     /// A file to select by path when the next file list is installed (leaving compare).
     files_restore: Option<String>,
+    /// A range anchor to restore by commit once its row is known (leaving compare).
+    anchor_restore: Option<CommitId>,
     /// Commits covered by a range's diff, by its ends.
     range_count: Option<((CommitId, CommitId), usize)>,
     commit_gen: u64,
@@ -325,6 +327,7 @@ impl App {
             selected_id: None,
             reselect: None,
             files_restore: None,
+            anchor_restore: None,
             range_count: None,
             commit_gen: 0,
             detail: None,
@@ -562,9 +565,11 @@ impl App {
                     });
                     if let Some(i) = found {
                         self.reselect = None;
+                        self.restore_anchor();
                         self.select_at(i);
                     } else if done {
                         self.reselect = None;
+                        self.anchor_restore = None;
                     }
                 }
                 if self.reselect.is_none() && self.selected_id.is_none() && len > 0 {
@@ -750,6 +755,32 @@ impl App {
         self.start_walk();
     }
 
+    /// Selects the file saved by path once the wanted list is installed; a list still loading
+    /// keeps the request for its arrival.
+    pub(super) fn apply_files_restore(&mut self) {
+        if self.files_of.is_none() || self.files_of != self.files_wanted {
+            return;
+        }
+        if let Some(path) = self.files_restore.take()
+            && let Some(i) = self.files.as_ref().and_then(|f| f.iter().position(|f| f.path == path))
+        {
+            self.select_file(i);
+        }
+    }
+
+    /// Sets the range anchor saved by commit, if its row is in the walk so far.
+    pub(super) fn restore_anchor(&mut self) {
+        let Some(id) = self.anchor_restore.take() else { return };
+        let Some(h) = self.history.clone() else { return };
+        let h = h.read().unwrap_or_else(PoisonError::into_inner);
+        self.range_anchor = (0..h.len()).find(|&i| h.id(i) == id);
+    }
+
+    /// The commit at history row `i`.
+    pub fn history_id_at(&self, i: usize) -> Option<CommitId> {
+        self.history_id(i)
+    }
+
     fn history_id(&self, i: usize) -> Option<CommitId> {
         let h = self.history.as_ref()?.read().unwrap_or_else(PoisonError::into_inner);
         (i < h.len()).then(|| h.id(i))
@@ -782,6 +813,7 @@ impl App {
     pub fn select(&mut self, idx: usize) {
         self.reselect = None;
         self.files_restore = None;
+        self.anchor_restore = None;
         self.select_at(idx);
     }
 
@@ -839,7 +871,7 @@ impl App {
         if let FilesOf::Range { oldest, newest } = of
             && self.range_count.is_none_or(|(ends, _)| ends != (oldest, newest))
         {
-            self.outbox.push(Request::RangeCount { oldest, newest });
+            self.outbox.push(Request::RangeCount { generation: self.commit_gen, oldest, newest });
         }
         self.files = None;
         self.file_rows.clear();
@@ -893,11 +925,7 @@ impl App {
         } else {
             self.schedule_diff();
         }
-        if let Some(path) = self.files_restore.take()
-            && let Some(i) = self.files.as_ref().and_then(|f| f.iter().position(|f| f.path == path))
-        {
-            self.select_file(i);
-        }
+        self.apply_files_restore();
         self.prefetch_neighbours();
     }
 

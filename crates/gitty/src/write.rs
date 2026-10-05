@@ -114,6 +114,20 @@ pub fn stale_index_lock(h: &Handle, error: &str) -> Option<LockId> {
     (!git_running()).then_some(id)
 }
 
+/// The worktree file's git-form blob now. A file that needed no conversion when its diff was
+/// made is hashed as it is (no filter pipeline, which re-reads the whole index); otherwise the
+/// conversion runs again.
+fn worktree_blob(h: &Handle, entry: &gitty_core::status::StatusEntry, texts: &gitty_core::stage::Texts) -> anyhow::Result<BlobId> {
+    let full = workdir(h)?.join(&entry.path);
+    if texts.wt_is_raw && std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_file()) {
+        let raw = std::fs::read(&full).with_context(|| format!("reading {}", entry.path))?;
+        if BlobId::hash_of(&raw) == texts.wt_blob {
+            return Ok(texts.wt_blob);
+        }
+    }
+    Ok(h.stage_texts(entry)?.wt_blob)
+}
+
 fn workdir(h: &Handle) -> anyhow::Result<PathBuf> {
     h.owner().workdir().map(Path::to_path_buf).context("bare repository")
 }
@@ -131,22 +145,23 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         WriteOp::SetStaged { entry, texts, diff, flags } => {
             // whole-file plans run `git add`/`restore`, which take the file as it is now: refuse
             // if it is not what the user saw (an autosave or formatter in between)
-            let now = h.stage_texts(entry)?;
-            if now.wt_blob != texts.wt_blob {
+            if worktree_blob(h, entry, texts)? != texts.wt_blob {
                 bail!("{} changed on disk since its diff was loaded; refreshing", entry.path);
-            }
-            if cli.index_blob(&entry.path)? != entry.index_blob {
-                bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
             }
             // a rename's HEAD side is the original path
             if h.head_blob(entry.orig_path.as_deref().unwrap_or(&entry.path))? != entry.head_blob {
                 bail!("{} changed in HEAD since its diff was loaded; refreshing", entry.path);
             }
-            match plan(entry, texts, &diff.ops, flags) {
+            let plan = plan(entry, texts, &diff.ops, flags);
+            // a patch checks the index itself, just before applying
+            if !matches!(plan, Plan::Patch { .. }) && h.index_entry_blob(&entry.path)? != entry.index_blob {
+                bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
+            }
+            match plan {
                 Plan::Nothing => {}
                 Plan::StageFile(paths) => cli.stage_paths(&paths)?,
                 Plan::UnstageFile(paths) => cli.unstage_paths(&paths)?,
-                Plan::Patch { patch, expect, target } => cli.apply_cached(&patch, &entry.path, expect, target)?,
+                Plan::Patch { patch, expect, target } => h.apply_cached(&patch, &entry.path, expect, target)?,
             }
         }
         WriteOp::WriteFile { path, bytes, expect, head_path, head } => {

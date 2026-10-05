@@ -51,10 +51,20 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
             match k.code {
-                // like q, a foreground job is not cancelled without asking; a second Ctrl-C at
-                // the question (or over any other overlay, e.g. a password prompt) quits
-                KeyCode::Char('c') if self.overlay.is_none() => return self.request_quit(),
-                KeyCode::Char('c') => return self.quit_now(),
+                // like q, a foreground job is not cancelled without asking
+                KeyCode::Char('c') => {
+                    return match self.overlay.take() {
+                        // a second Ctrl-C at the question quits
+                        Some(Overlay::Quit { .. }) => self.quit_now(),
+                        // at a prompt it answers "cancelled", as Esc does: git stops waiting
+                        Some(ov @ Overlay::Prompt { .. }) => {
+                            self.overlay_key(ov, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+                            self.next_ask();
+                        }
+                        // any other overlay closes, then the usual question (or quit)
+                        _ => self.request_quit(),
+                    };
+                }
                 KeyCode::Char('z') => return self.suspend = true,
                 _ => {}
             }

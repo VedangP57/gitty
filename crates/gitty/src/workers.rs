@@ -34,7 +34,8 @@ pub enum Pool {
 pub fn route(req: &Request) -> Pool {
     match req {
         Request::Walk { .. } => Pool::Walker,
-        Request::Search { .. } | Request::SearchPath { .. } => Pool::Search,
+        // git walks that can run for seconds; never ahead of Rows/Files/Detail
+        Request::Search { .. } | Request::SearchPath { .. } | Request::RangeCount { .. } => Pool::Search,
         Request::Diff { .. } | Request::Intraline { .. } => Pool::Differs,
         Request::Highlight { .. } => Pool::Highlighters,
         Request::Write(_) => Pool::Writer,

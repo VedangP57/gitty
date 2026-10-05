@@ -91,7 +91,8 @@ fn stage_and_check(f: &Fixture, repo: &Repo, path: &str, pick: &dyn Fn(usize, us
         Plan::Nothing => {}
         Plan::StageFile(paths) => cli.stage_paths(&paths).unwrap(),
         Plan::UnstageFile(paths) => cli.unstage_paths(&paths).unwrap(),
-        Plan::Patch { patch, expect, target: t } => cli
+        Plan::Patch { patch, expect, target: t } => repo
+            .handle()
             .apply_cached(&patch, path, expect, t)
             .unwrap_or_else(|err| panic!("{err:#}\npatch:\n{}", String::from_utf8_lossy(&patch))),
     }
@@ -176,7 +177,7 @@ fn index_changed_since_diff_is_refused() {
     // someone stages the file from another terminal meanwhile
     f.git(&["add", P]);
     let before = index_bytes(&f, P);
-    let err = GitCli::new(&repo).apply_cached(&patch, P, expect, target).unwrap_err();
+    let err = repo.handle().apply_cached(&patch, P, expect, target).unwrap_err();
     assert!(format!("{err:#}").contains("changed"), "{err:#}");
     assert_eq!(index_bytes(&f, P), before, "nothing applied");
 }
@@ -191,7 +192,7 @@ fn an_index_that_is_not_the_target_after_apply_is_reported() {
     assert_eq!(target, gitty_core::commit_files::BlobId::hash_of(b"a\nb\nc\n"));
     // git applying the patch differently (a config or a git bug) leaves some other blob
     let wrong = gitty_core::commit_files::BlobId::hash_of(b"what the user picked\n");
-    let err = format!("{:#}", GitCli::new(&repo).apply_cached(&patch, P, expect, wrong).unwrap_err());
+    let err = format!("{:#}", repo.handle().apply_cached(&patch, P, expect, wrong).unwrap_err());
     assert!(err.contains("not what was selected"), "{err}");
     assert!(err.contains(&wrong.to_string()[..7]) && err.contains(&target.to_string()[..7]), "both blobs named: {err}");
 }

@@ -150,9 +150,12 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 sink(Msg::SearchPaths { generation, result });
             }
         }
-        Request::RangeCount { oldest, newest } => {
-            // a failed count only leaves the note out
-            if let Ok(count) = gitty_core::git_cli::GitCli::new(h.owner()).range_count(oldest, newest) {
+        Request::RangeCount { generation, oldest, newest } => {
+            let stale = || !Gens::is(&gens.commit, generation);
+            // a failed or cancelled count only leaves the note out
+            if !stale()
+                && let Ok(count) = gitty_core::git_cli::GitCli::new(h.owner()).range_count(oldest, newest, &stale)
+            {
                 sink(Msg::RangeCount { oldest, newest, count });
             }
         }

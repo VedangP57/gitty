@@ -2190,6 +2190,60 @@ fn leaving_compare_restores_the_range_the_search_and_the_file() {
 }
 
 #[test]
+fn a_range_saved_before_compare_survives_a_refresh_during_it() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    let ends = |t: &H| t.app.selected_range().map(|(o, n)| (t.app.history_id_at(o), t.app.history_id_at(n)));
+    let before = ends(&t);
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    f.write("new.txt", "n\n");
+    f.commit("new on main", 1_700_002_000);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(ends(&t), before, "the same two commits, at their new rows");
+}
+
+#[test]
+fn a_file_restore_never_lands_on_a_later_list() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["branch", "old"]);
+    f.write("a.txt", "a\n");
+    f.write("b.txt", "b\n");
+    f.commit("two files", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select_file(1);
+    t.pump();
+    // nothing behind `old`: compare opens on Ahead, which shows the same HEAD commit
+    t.ch('b');
+    typed(&mut t, "old");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.app.select_file(0);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("b.txt"), "restored at once");
+    t.app.select_file(0);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("a.txt"), "the range list starts on its first file");
+}
+
+#[test]
 fn leaving_compare_mid_walk_still_finds_the_saved_commit() {
     let f = compare_fixture();
     let mut t = H::new(&f);
@@ -2248,6 +2302,31 @@ fn a_range_says_when_it_covers_commits_outside_the_selected_rows() {
     t.pump();
     assert_eq!((summary(&t, 2), summary(&t, 3)), ("s2".into(), "s1".into()));
     assert_eq!(t.app.range_extra(), None);
+}
+
+#[test]
+fn a_range_ending_at_a_merge_counts_the_merged_side() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_200);
+    f.git(&["checkout", "-q", "main"]);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    f.write("a.txt", "1\n");
+    f.commit("after", 1_700_000_500);
+    let mut t = H::new(&f);
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    assert_eq!((summary(&t, 0), summary(&t, 1)), ("after".into(), "merge side".into()));
+    // after + merge: merge^..after diffs against base, so it also holds s1 and s2
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(2));
 }
 
 #[test]
@@ -2451,6 +2530,14 @@ fn esc_at_a_prompt_reads_as_cancelled_and_prompts_close_with_their_job() {
     done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::Failed { detail: "fatal: boom".into() });
     assert!(!matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "the job's prompt closes");
     assert_eq!(t.app.pending_asks(), 0, "and its queued prompts go too");
+
+    // Ctrl-C at a prompt answers it as cancelled, like Esc, and does not quit
+    started(&mut t, NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(4, "Username for 'https://example.com': ")));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(!t.app.quit && t.app.overlay.is_none());
+    done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: could not read Username".into() });
+    assert!(toast_text(&t).contains("cancelled at the prompt"), "{}", toast_text(&t));
 }
 
 #[test]
@@ -2483,6 +2570,12 @@ fn quitting_while_a_job_runs_asks_and_then_cancels_it() {
     t.app.handle_key(ctrl_c);
     assert!(!t.app.quit && matches!(t.app.overlay, Some(gitty::app::Overlay::Quit { .. })), "Ctrl-C asks too");
     t.ch('n');
+    t.ch('?');
+    t.app.handle_key(ctrl_c);
+    assert!(!t.app.quit && matches!(t.app.overlay, Some(gitty::app::Overlay::Quit { .. })), "over help as well");
+    t.app.handle_key(ctrl_c);
+    assert!(t.app.quit, "a second Ctrl-C at the question quits");
+    t.app.quit = false;
     t.ch('q');
     t.ch('y');
     assert!(t.app.quit);

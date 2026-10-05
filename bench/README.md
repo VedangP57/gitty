@@ -156,7 +156,10 @@ git processes to every line toggle. `--example changes` on git/git, staging one 
 | Build | stage a line (median) | Budget |
 |---|---|---|
 | M6 (HEAD checked with `git ls-tree`) | 29.5 ms | < 50 ms ✅ |
-| M7 (HEAD read in process with gix) | **24.1–24.3 ms** | < 50 ms ✅ |
+| M7 (HEAD read in process with gix) | 24.1–24.3 ms | < 50 ms ✅ |
+| M7 final (index read in process; raw files hashed, not re-filtered) | **9.7 ms** | < 50 ms ✅ |
+| M7 final, 120k-entry index (9.6 MB, synthetic) | 55.3 ms (was 70.3 ms) | ≈ status at that size (< 60 ms) |
 
-The rest is two `git ls-files` (the index before and after) and `git apply --cached`. The M4
-figure (11.7–12.0 ms) predates the guards.
+What is left per toggle is `git apply --cached` (git reads and rewrites the whole index) and two
+in-process index reads (~8 ms each at 120k entries), before and after the apply. The M4 figure
+(11.7–12.0 ms) predates the guards.

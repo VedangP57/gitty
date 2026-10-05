@@ -44,7 +44,8 @@ struct Saved {
     commit: Option<CommitId>,
     /// The selected file, restored by path when its list is installed.
     file: Option<String>,
-    range_anchor: Option<usize>,
+    /// The range's anchor commit (rows move when a refresh walks the history again).
+    range_anchor: Option<CommitId>,
     /// The active search's query as typed.
     search: Option<String>,
 }
@@ -182,11 +183,13 @@ impl App {
                 scroll: self.list_scroll,
                 commit: self.selected_id,
                 file: self.current_file().map(|f| f.path.clone()),
-                range_anchor: self.range_anchor,
+                range_anchor: self.range_anchor.and_then(|i| self.history_id_at(i)),
                 search: self.search_active().then(|| self.search.input.clone()),
             },
         };
         self.compare_gen += 1;
+        self.files_restore = None;
+        self.anchor_restore = None;
         self.end_range();
         self.clear_search();
         self.compare = Some(CompareMode {
@@ -210,10 +213,12 @@ impl App {
         let s = c.saved;
         self.list_scroll = s.scroll;
         self.files_restore = s.file;
+        self.anchor_restore = s.range_anchor;
+        // while a new walk is still looking for the saved commit, it restores the rest on arrival
         if self.reselect.is_none() {
-            // row indices are only valid while no new walk is still looking for the commit
-            self.range_anchor = s.range_anchor;
+            self.restore_anchor();
             self.select_at(self.selected);
+            self.apply_files_restore();
         }
         if let Some(input) = s.search {
             self.resume_search(input);

@@ -79,7 +79,6 @@ fn contains_folded(hay: &str, needle: &str) -> bool {
 /// Commits reachable from `tips` that touch `path` (a file or a directory), matched literally:
 /// no globs, no pathspec magic.
 pub fn path_commits(cli: &GitCli, tips: &[CommitId], path: &str, cancelled: &dyn Fn() -> bool) -> anyhow::Result<HashSet<CommitId>> {
-    use std::io::Read;
     if tips.is_empty() {
         return Ok(HashSet::new());
     }
@@ -88,36 +87,9 @@ pub fn path_commits(cli: &GitCli, tips: &[CommitId], path: &str, cancelled: &dyn
     args.extend(hex.iter().map(String::as_str));
     args.extend(["--", path]);
     let mut cmd = cli.cmd(Kind::Read, &args);
-    cmd.env("GIT_LITERAL_PATHSPECS", "1").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().context("running git log")?;
-    let (mut out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
-    let reader = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = out.read_to_end(&mut v);
-        v
-    });
-    let errs = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = err.read_to_string(&mut s);
-        s
-    });
+    cmd.env("GIT_LITERAL_PATHSPECS", "1");
     // on a huge history without changed-path filters this can take many seconds: a newer
-    // search must not leave it holding a reader thread
-    let status = loop {
-        if cancelled() {
-            // SAFETY: the child runs in its own session (GitCli::cmd), so its group is its pid
-            unsafe { libc::killpg(child.id() as i32, libc::SIGKILL) };
-            let _ = child.wait();
-            anyhow::bail!("path search cancelled");
-        }
-        if let Some(st) = child.try_wait()? {
-            break st;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    };
-    let out = reader.join().unwrap_or_default();
-    if !status.success() {
-        anyhow::bail!("git log -- {path}: {}", errs.join().unwrap_or_default().trim());
-    }
+    // search must not leave it holding a thread
+    let out = cli.read_cancellable(cmd, cancelled).with_context(|| format!("git log -- {path}"))?;
     Ok(String::from_utf8_lossy(&out).lines().filter_map(|l| CommitId::from_hex(l.trim())).collect())
 }
