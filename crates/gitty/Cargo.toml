@@ -1,5 +1,5 @@
 [package]
-name = "gitty"
+name = "gitty-cli"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -12,14 +12,22 @@ readme = "../../README.md"
 keywords = ["git", "tui", "terminal", "diff", "ratatui"]
 categories = ["command-line-utilities", "development-tools"]
 
+# the package is gitty-cli (`gitty` is taken on crates.io); the library and command stay `gitty`
+[lib]
+name = "gitty"
+
+[[bin]]
+name = "gitty"
+path = "src/main.rs"
+
 [features]
 default = ["grammars"]
 # bundled tree-sitter grammars; without them every language uses the syntect fallback
 grammars = ["gitty-highlight/default"]
 
 [dependencies]
-gitty-core = { path = "../gitty-core", version = "0.1.1" }
-gitty-highlight = { path = "../gitty-highlight", version = "0.1.1", default-features = false }
+gitty-core = { path = "../gitty-core", version = "0.1.2" }
+gitty-highlight = { path = "../gitty-highlight", version = "0.1.2", default-features = false }
 anyhow.workspace = true
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "underline-color", "layout-cache"] }
 crossterm = "0.29"

@@ -2,7 +2,7 @@
 # Runs the core probe against benchmark repos and checks the spec §8 latency budget.
 # Usage: bench/run.sh <repo-with-blobs>... ; set BLOBLESS=<repo> for history-only checks (e.g. linux).
 # Exits non-zero when any budget is missed; each miss prints the budget and the measured value.
-# The frame budget is a criterion bench: cargo bench -p gitty --bench frame.
+# The frame budget is a criterion bench: cargo bench -p gitty-cli --bench frame.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 cargo build --release -q -p gitty-core --example probe || exit 1

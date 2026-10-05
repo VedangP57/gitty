@@ -1,5 +1,5 @@
 //! Changes-tab latencies on a throwaway `--shared` clone of a repository:
-//! `cargo run --release -p gitty --example changes -- PATH [FILE]`.
+//! `cargo run --release -p gitty-cli --example changes -- PATH [FILE]`.
 //!
 //! - status: `git status --porcelain=v2`, parsed (best and median of 10), before and after the
 //!   index refresh gitty runs when status is slow

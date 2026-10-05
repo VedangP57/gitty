@@ -98,12 +98,12 @@ fn readme_key_table_matches_the_keymap() {
     let start = readme.find("<!-- keys:start -->").expect("keys:start marker") + "<!-- keys:start -->".len();
     let end = readme.find("<!-- keys:end -->").expect("keys:end marker");
     let table = Keymap::default().markdown();
-    // GITTY_BLESS=1 cargo test -p gitty --test keymap rewrites the table
+    // GITTY_BLESS=1 cargo test -p gitty-cli --test keymap rewrites the table
     if std::env::var_os("GITTY_BLESS").is_some() {
         std::fs::write(path, format!("{}\n{}\n{}", &readme[..start], table.trim(), &readme[end..])).unwrap();
         return;
     }
-    assert_eq!(readme[start..end].trim(), table.trim(), "the README key table is stale: GITTY_BLESS=1 cargo test -p gitty --test keymap");
+    assert_eq!(readme[start..end].trim(), table.trim(), "the README key table is stale: GITTY_BLESS=1 cargo test -p gitty-cli --test keymap");
 }
 
 #[test]

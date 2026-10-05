@@ -32,17 +32,18 @@ Use the full name: it tells Homebrew to trust this one formula from the tap.
 **Shell installer** (a prebuilt binary into `~/.cargo/bin`):
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VedangP57/gitty/releases/latest/download/gitty-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VedangP57/gitty/releases/latest/download/gitty-cli-installer.sh | sh
 ```
 
 **Prebuilt archives** for each release are on the
 [Releases page](https://github.com/VedangP57/gitty/releases). On macOS, a binary downloaded with
 a browser is quarantined: run `xattr -d com.apple.quarantine gitty` once.
 
-**From source** (Rust 1.90 or newer, and a C compiler for the bundled grammars and Oniguruma):
+**From crates.io** (Rust 1.90 or newer, and a C compiler for the bundled grammars and Oniguruma).
+The package is `gitty-cli`, because `gitty` on crates.io is another project; the command is `gitty`:
 
 ```sh
-cargo install --locked --git https://github.com/VedangP57/gitty gitty
+cargo install --locked gitty-cli
 ```
 
 From a clone: `cargo install --locked --path crates/gitty`. Building without the bundled

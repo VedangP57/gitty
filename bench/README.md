@@ -64,7 +64,7 @@ timestamps (ms since start). The terminal answers the startup probe (DA1) as a r
   publishes it with `History::append` (regression test `walk_never_starves_readers`).
 - The linux bench repo is a blobless partial clone. Diffs there report "Could not load this diff",
   and line stats are left blank instead of showing `+0 −0`.
-- `cargo run --release -p gitty --example trace -- <repo>` times each worker request in isolation.
+- `cargo run --release -p gitty-cli --example trace -- <repo>` times each worker request in isolation.
 
 ## Syntax highlighting (M3) — 2026-10-04, release build, Apple Silicon
 
@@ -90,7 +90,7 @@ rest are under 1 MB each. Every grammar is a cargo feature of `gitty-highlight`.
 
 ## Changes tab (M4) — 2026-10-04, release build, Apple Silicon, load average ~6.8
 
-`cargo run --release -p gitty --example changes -- <repo> <file>` works on a throwaway `--shared` clone:
+`cargo run --release -p gitty-cli --example changes -- <repo> <file>` works on a throwaway `--shared` clone:
 status (best/median of 10), a worktree save until the watcher fires and the status it triggers, and
 staging one line the way Space does (change diff load, then `SetStaged` → `git apply --cached`).
 
@@ -144,7 +144,7 @@ commit-graph, which gitty writes on large repos.
 | ahead/behind master...v6.0 (360,606) | — | — | 88 ms | < 150 ms ✅ |
 | status median of 10, after a refresh | 16.4 ms | 17.2 ms | — | < 70 ms ✅ |
 
-`cargo bench -p gitty --bench frame`: a 220×60 frame of a 300-commit fixture (history, file list,
+`cargo bench -p gitty-cli --bench frame`: a 220×60 frame of a 300-commit fixture (history, file list,
 and a highlighted 3,000-line Rust diff) takes **0.52 ms** (criterion mean 0.515 ms; slowest of 200
 frames 0.63 ms), against the < 16 ms keypress-to-frame budget. The bench exits 2 on a miss.
 
