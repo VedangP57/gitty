@@ -26,7 +26,7 @@ fn an_unwritable_trash_falls_back_to_the_state_dir() {
     f.commit("base", 1_700_000_000);
     f.write("a.txt", "edited\n");
     let h = Repo::open(f.path()).unwrap().handle();
-    let op = WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\n".to_vec(), expect: BlobId::hash_of(b"edited\n"), head: Some(BlobId::hash_of(b"a\n")) };
+    let op = WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\n".to_vec(), expect: BlobId::hash_of(b"edited\n"), head_path: "a.txt".into(), head: Some(BlobId::hash_of(b"a\n")) };
     let note = gitty::write::run(&h, &op, &mut |_| {}).unwrap().expect("says where the copy went");
     let fallback = state.path().join("gitty/trash");
     assert!(note.contains(&fallback.display().to_string()), "{note}");

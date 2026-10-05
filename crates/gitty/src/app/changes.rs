@@ -550,7 +550,7 @@ impl App {
         let keep: Vec<bool> = (0..n).map(|k| !ks.contains(&k)).collect();
         let bytes = build(&v.diff.old, &v.diff.new, &v.diff.ops, &keep);
         let lines = if ks.len() == 1 { "line".to_string() } else { format!("{} lines", ks.len()) };
-        let mut op = WriteOp::WriteFile { path: v.entry.path.clone(), bytes, expect: v.texts.wt_blob, head: v.entry.head_blob };
+        let mut op = WriteOp::WriteFile { path: v.entry.path.clone(), bytes, expect: v.texts.wt_blob, head_path: v.entry.orig_path.clone().unwrap_or_else(|| v.entry.path.clone()), head: v.entry.head_blob };
         // a staged line would still be committed after leaving the worktree: unstage it first
         if let Some(staged) = v.staged.as_ref().filter(|s| ks.iter().any(|&k| s.get(k).copied().unwrap_or(false))) {
             let mut flags = staged.clone();

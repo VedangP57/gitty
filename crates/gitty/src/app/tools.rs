@@ -6,7 +6,7 @@ use std::time::Duration;
 use gitty_core::diff::view::{Row, SplitRow};
 
 use super::diffstate::VRow;
-use super::{App, Toast};
+use super::{App, Tab, Toast};
 use crate::external::External;
 
 /// Two clicks on the same cell within this are a double-click.
@@ -49,8 +49,23 @@ impl App {
 
     /// Double-click on the diff (`on_diff`) or a file row: open the shown file in the editor.
     pub(super) fn open_shown_file(&mut self, on_diff: bool) {
-        let Some(path) = self.diff.as_ref().map(|d| d.key.path.clone()) else { return };
-        let line = if on_diff { self.diff.as_ref().and_then(|d| self.editor_line(d.cursor)) } else { self.first_change_line() };
+        let shown = self.diff.as_ref().map(|d| d.key.path.clone());
+        // a file row is the file just selected, whose diff may not have arrived yet
+        let path = if on_diff {
+            shown.clone()
+        } else if self.tab == Tab::Changes {
+            self.changes.selected().map(|e| e.path.clone())
+        } else if self.tree_dir.is_some() {
+            None
+        } else {
+            self.current_file().map(|f| f.path.clone())
+        };
+        let Some(path) = path else { return };
+        let line = match () {
+            _ if shown.as_deref() != Some(path.as_str()) => None,
+            _ if on_diff => self.diff.as_ref().and_then(|d| self.editor_line(d.cursor)),
+            _ => self.first_change_line(),
+        };
         let Some(root) = &self.workdir else { return };
         let abs = root.join(&path);
         if !abs.exists() {

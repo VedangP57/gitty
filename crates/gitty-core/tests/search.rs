@@ -51,7 +51,7 @@ fn path_filter_is_literal_and_covers_directories() {
     let cli = GitCli::new(&repo);
     let tips = [CommitId::from_hex(&d).unwrap()];
     let ids = |p: &str| {
-        let mut v: Vec<String> = path_commits(&cli, &tips, p).unwrap().into_iter().map(|i| i.to_string()).collect();
+        let mut v: Vec<String> = path_commits(&cli, &tips, p, &|| false).unwrap().into_iter().map(|i| i.to_string()).collect();
         v.sort();
         v
     };
@@ -59,4 +59,18 @@ fn path_filter_is_literal_and_covers_directories() {
     assert_eq!(ids("dir with space/a b.txt"), [b]);
     assert_eq!(ids("star*.txt"), [c], "no glob: starry.txt is not matched");
     assert!(ids("missing/path").is_empty());
+}
+
+#[test]
+fn a_path_lookup_stops_when_cancelled() {
+    let f = Fixture::new();
+    f.write("src/a.rs", "a\n");
+    let a = f.commit("a", 1_700_000_000);
+    let repo = Repo::open(f.path()).unwrap();
+    let cli = GitCli::new(&repo);
+    let tips = [CommitId::from_hex(&a).unwrap()];
+    let t = std::time::Instant::now();
+    let err = path_commits(&cli, &tips, "src", &|| true).unwrap_err();
+    assert!(format!("{err:#}").contains("cancelled"), "{err:#}");
+    assert!(t.elapsed() < std::time::Duration::from_secs(2));
 }

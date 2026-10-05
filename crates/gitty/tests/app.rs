@@ -1407,6 +1407,32 @@ fn discarding_a_staged_line_unstages_it_too() {
 }
 
 #[test]
+fn a_renamed_file_stages_and_discards_line_by_line() {
+    let _ = trash_dir();
+    let f = Fixture::new();
+    f.write("old.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["mv", "old.txt", "new.txt"]);
+    f.write("new.txt", "1\n2\n3\n4\n5\n");
+    let mut t = changes_tab(&f);
+    let i = t.app.changes.status.as_ref().unwrap().entries.iter().position(|e| e.path == "new.txt").unwrap();
+    t.app.select_change(i);
+    t.pump();
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch(' ');
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast.as_ref().map(|t| &t.detail));
+    assert_eq!(index_of(&f, "new.txt"), "1\n2\n3\n4");
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add4");
+    t.ch('d');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast.as_ref().map(|t| &t.detail));
+    assert_eq!(std::fs::read_to_string(f.path().join("new.txt")).unwrap(), "1\n2\n3\n4\n");
+}
+
+#[test]
 fn line_staging_refuses_after_head_moves_under_it() {
     let f = Fixture::new();
     f.write("a.txt", "1\n2\n3\n");

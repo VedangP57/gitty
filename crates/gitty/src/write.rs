@@ -117,7 +117,8 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             if cli.index_blob(&entry.path)? != entry.index_blob {
                 bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
             }
-            if cli.head_blob(&entry.path)? != entry.head_blob {
+            // a rename's HEAD side is the original path
+            if cli.head_blob(entry.orig_path.as_deref().unwrap_or(&entry.path))? != entry.head_blob {
                 bail!("{} changed in HEAD since its diff was loaded; refreshing", entry.path);
             }
             match plan(entry, texts, &diff.ops, flags) {
@@ -127,13 +128,13 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 Plan::Patch { patch, expect, target } => cli.apply_cached(&patch, &entry.path, expect, target)?,
             }
         }
-        WriteOp::WriteFile { path, bytes, expect, head } => {
+        WriteOp::WriteFile { path, bytes, expect, head_path, head } => {
             let full = workdir(h)?.join(path);
             let now = std::fs::read(&full).with_context(|| format!("reading {path}"))?;
             if BlobId::hash_of(&now) != *expect {
                 bail!("{path} changed on disk since its diff was loaded; nothing was discarded");
             }
-            if cli.head_blob(path)? != *head {
+            if cli.head_blob(head_path)? != *head {
                 bail!("{path} changed in HEAD since its diff was loaded; nothing was discarded");
             }
             let note = fallback_note(to_trash(&full)?);

@@ -143,8 +143,12 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 return;
             }
             let cli = gitty_core::git_cli::GitCli::new(h.owner());
-            let result = gitty_core::search::path_commits(&cli, &tips, &path).map(Arc::new).map_err(|e| format!("{e:#}"));
-            sink(Msg::SearchPaths { generation, result });
+            let stale = || !Gens::is(&gens.search, generation);
+            let result = gitty_core::search::path_commits(&cli, &tips, &path, &stale).map(Arc::new).map_err(|e| format!("{e:#}"));
+            // a cancelled lookup answers nothing: its search is gone
+            if !stale() {
+                sink(Msg::SearchPaths { generation, result });
+            }
         }
         Request::CommitRows { ids } => {
             let rows = ids.into_iter().filter_map(|id| h.decode_row(id).ok()).collect();

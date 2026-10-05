@@ -99,8 +99,9 @@ pub enum WriteOp {
     /// Make the index hold exactly the flagged changes of `diff` (HEAD → worktree).
     SetStaged { entry: StatusEntry, texts: Texts, diff: Arc<FileDiff>, flags: Vec<bool> },
     /// Replace the worktree file's bytes (line discard); the file keeps its mode.
-    /// `expect` is the file's blob on disk and `head` its blob in HEAD when the diff was made.
-    WriteFile { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId, head: Option<gitty_core::commit_files::BlobId> },
+    /// `expect` is the file's blob on disk and `head` its blob in HEAD (at `head_path`, the
+    /// original path of a rename) when the diff was made.
+    WriteFile { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId, head_path: String, head: Option<gitty_core::commit_files::BlobId> },
     /// Discard every change to the paths: `restore` paths go back to HEAD (index and worktree),
     /// `remove` paths (not in HEAD) leave the index and the disk. Each file is copied to the
     /// Trash first.

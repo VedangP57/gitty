@@ -459,15 +459,15 @@ fn discards_copy_to_trash_and_refuse_changed_files() {
     f.write("gone.txt", "edited\n");
     f.write("new.txt", "fresh\n");
     let stale = gitty_core::commit_files::BlobId::hash_of(b"something else");
-    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect: stale, head: None });
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect: stale, head_path: "a.txt".into(), head: None });
     assert!(r.unwrap_err().contains("changed on disk"));
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nB\n");
     let expect = gitty_core::commit_files::BlobId::hash_of(b"a\nB\n");
-    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect, head: Some(stale) });
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect, head_path: "a.txt".into(), head: Some(stale) });
     assert!(r.unwrap_err().contains("changed in HEAD"), "HEAD:a.txt is not the one the diff was made against");
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nB\n");
     let head = Some(gitty_core::commit_files::BlobId::hash_of(b"a\nb\n"));
-    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect, head });
+    let (r, _) = write(&f, gitty::msg::WriteOp::WriteFile { path: "a.txt".into(), bytes: b"a\nb\n".to_vec(), expect, head_path: "a.txt".into(), head });
     assert_eq!(r, Ok(None));
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\nb\n");
     let (r, _) = write(&f, gitty::msg::WriteOp::DiscardFiles { restore: vec!["gone.txt".into()], remove: vec!["new.txt".into()] });

@@ -999,6 +999,38 @@ fn double_click_opens_the_file_at_the_line_in_the_editor() {
 }
 
 #[test]
+fn double_click_opens_the_clicked_file_even_before_its_diff_loads() {
+    use gitty::external::External;
+    let f = Fixture::new();
+    f.write("a.txt", "1\n");
+    f.write("src/b.txt", "1\n");
+    f.commit("base", NOW - DAY);
+    f.write("a.txt", "1\n2\n");
+    f.write("src/b.txt", "1\nB\n");
+    f.commit("both", NOW - DAY + 60);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.workdir = Some(f.path().to_path_buf());
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "b.txt").expect("file row drawn");
+    // two clicks with no time for b.txt's diff to arrive in between
+    let m = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    for _ in 0..2 {
+        t.app.handle_mouse(m(MouseEventKind::Down(MouseButton::Left)));
+        t.app.handle_mouse(m(MouseEventKind::Up(MouseButton::Left)));
+    }
+    assert_eq!(t.app.external, Some(External::Edit { path: f.path().join("src/b.txt"), line: None }), "the clicked file, not the shown one");
+    t.app.external = None;
+    t.pump();
+    // tree view: a directory row folds; a double-click on it opens nothing
+    t.key(KeyCode::Char('t'));
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "src/").expect("directory row drawn");
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, None, "a directory is not opened in the editor");
+}
+
+#[test]
 fn o_sends_both_sides_to_the_difftool_or_says_to_set_one() {
     use gitty::external::External;
     let f = editor_fixture();
@@ -1095,6 +1127,39 @@ fn split_view_space_stages_only_the_side_under_the_pointer() {
     t.key(KeyCode::Char(' '));
     t.render(220, 30);
     assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 2;\nc", "then the deletion too");
+}
+
+#[test]
+fn a_split_click_side_does_not_stick_to_later_keyboard_actions() {
+    let trash = tempfile::tempdir().unwrap();
+    // SAFETY: the only test in this binary that discards
+    unsafe { std::env::set_var("GITTY_TRASH_DIR", trash.path()) };
+    let f = Fixture::new();
+    f.write("n.txt", "a\nlet value = 1;\nc\n");
+    f.commit("base", NOW - DAY);
+    f.write("n.txt", "a\nlet value = 2;\nc\n");
+    let mut t = H::new(&f, "github-dark", (220, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("n.txt");
+    let b = t.render(220, 30);
+    let (rx, ry) = find(&b, "let value = 2;").unwrap();
+    t.click(rx + 4, ry);
+    // moved away and back with the keyboard: Space acts on the whole pair
+    t.key(KeyCode::Char('j'));
+    t.key(KeyCode::Char('k'));
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 2;\nc", "both sides staged");
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    let b = t.render(220, 30);
+    let (lx, ly) = find(&b, "let value = 1;").unwrap();
+    t.click(lx + 4, ly);
+    // d after a click discards the whole change, not only its deletion
+    t.key(KeyCode::Char('d'));
+    t.key(KeyCode::Enter);
+    t.render(220, 30);
+    assert_eq!(std::fs::read_to_string(f.path().join("n.txt")).unwrap(), "a\nlet value = 1;\nc\n");
 }
 
 #[test]

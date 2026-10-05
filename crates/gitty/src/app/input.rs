@@ -75,6 +75,10 @@ impl App {
 
     /// Runs a bound action; what some of them mean depends on the tab and pane.
     fn act(&mut self, a: Action) {
+        // the split side picked by a click applies to the Space right after it, nothing later
+        if a != Action::Stage {
+            self.changes.side = None;
+        }
         let split = self.split_active();
         let changes = self.tab == Tab::Changes;
         let in_diff = self.focus == Focus::Diff;
