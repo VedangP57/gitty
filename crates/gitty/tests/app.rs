@@ -945,6 +945,36 @@ fn the_stale_lock_offer_waits_for_an_open_overlay() {
 }
 
 #[test]
+fn a_lock_gone_before_its_offer_opens_is_never_asked_about() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let seen = gitty::write::LockId::of(&lock).unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen });
+    std::fs::remove_file(&lock).unwrap();
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none(), "{:?}", t.app.overlay.as_ref().map(|_| "an overlay"));
+}
+
+#[test]
+fn a_waiting_prompt_opens_before_a_queued_lock_offer() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen: gitty::write::LockId::of(&lock).unwrap() });
+    started(&mut t, gitty::msg::NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(1, "Username for 'https://example.com': ")));
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "git is waiting on the prompt");
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
+}
+
+#[test]
 fn focus_gained_and_backstop_refresh_status() {
     let f = changes_fixture();
     let mut t = H::new(&f);

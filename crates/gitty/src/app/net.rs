@@ -279,22 +279,24 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        // a running git waits on its prompt; the questions below wait on nothing
+        if let Some(ask) = self.asks.pop_front() {
+            let mut input = Editor::single();
+            input.reserve(256);
+            self.overlay = Some(Overlay::Prompt { ask, input });
+            return;
+        }
         if std::mem::take(&mut self.pending_diverged) {
             self.overlay = Some(Overlay::Diverged);
             return;
         }
-        if let Some(seen) = self.pending_stale_lock.take() {
+        // a lock removed (or replaced) while the offer waited is no longer the question
+        if let Some(seen) = self.pending_stale_lock.take().filter(|s| s.still_there()) {
             self.overlay = Some(Overlay::Confirm {
                 title: "Remove the stale .git/index.lock?".into(),
                 body: "A git command failed because the index is locked, and no git process is running. The lock was probably left by a git that crashed.".into(),
                 op: crate::msg::WriteOp::RemoveIndexLock { seen },
             });
-            return;
-        }
-        if let Some(ask) = self.asks.pop_front() {
-            let mut input = Editor::single();
-            input.reserve(256);
-            self.overlay = Some(Overlay::Prompt { ask, input });
         }
     }
 
