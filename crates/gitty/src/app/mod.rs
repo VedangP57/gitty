@@ -510,7 +510,14 @@ impl App {
         diff.width as usize > 2 * half
     }
 
+    /// Split view, unless the shown file has only one side (added or deleted): an empty half
+    /// would only squeeze the other.
     pub fn split_active(&self) -> bool {
+        self.split_wanted() && !self.diff.as_ref().is_some_and(|d| d.diff.old.is_empty() || d.diff.new.is_empty())
+    }
+
+    /// The `s` preference, or the automatic choice by width.
+    fn split_wanted(&self) -> bool {
         self.split_pref.unwrap_or_else(|| self.size.0 >= self.config.split_threshold && self.split_fits())
     }
 

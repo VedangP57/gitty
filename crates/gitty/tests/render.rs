@@ -288,6 +288,40 @@ fn emphasis_marks_changed_word_only() {
 }
 
 #[test]
+fn an_added_or_deleted_file_uses_the_full_width_even_in_split_view() {
+    let f = Fixture::new();
+    f.write("keep.txt", "a\nold\nc\n");
+    f.write("gone.txt", "bye\n");
+    f.commit("base", NOW - DAY);
+    f.write("keep.txt", "a\nnew\nc\n");
+    f.write("fresh.txt", "a brand new line that is long enough to need more than half the pane\n");
+    f.git(&["rm", "-q", "gone.txt"]);
+    f.git(&["add", "-A"]);
+    f.commit("change", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (220, 30));
+    t.app.select(0);
+    t.pump();
+    t.select_file("keep.txt");
+    t.render(220, 30);
+    assert!(t.app.split_active(), "both sides: split");
+    for path in ["fresh.txt", "gone.txt"] {
+        t.select_file(path);
+        let b = t.render(220, 30);
+        assert!(!t.app.split_active(), "{path}: one side only, so unified");
+        assert!(!text(&b).contains("· split"), "{path}: the title does not say split");
+    }
+    let b = t.render(220, 30);
+    let (x, _) = find(&b, "bye").expect("the deleted line");
+    let d = t.app.hits.panes.diff.unwrap();
+    assert!(x < d.x + d.width / 2, "starts in the left half, not after an empty one");
+    // s still switches the next two-sided file
+    t.key(KeyCode::Char('s'));
+    t.select_file("keep.txt");
+    t.render(220, 30);
+    assert!(!t.app.split_active(), "s turned split off");
+}
+
+#[test]
 fn split_auto_at_220_unified_at_180() {
     let f = fixture();
     let mut t = H::new(&f, "github-dark", (220, 40));
