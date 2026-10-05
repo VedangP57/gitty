@@ -147,7 +147,15 @@ impl App {
             let last = self.changes.log.last().map(String::as_str).unwrap_or("");
             return Some(format!("Committing… {last}").trim_end().to_string());
         }
-        c.committed.as_ref().map(|_| "Committed just now · [u] Undo".into())
+        self.undo_offered().then(|| "Committed just now · [u] Undo".into())
+    }
+
+    /// The commit gitty made can be undone while it is HEAD and the upstream does not have
+    /// it (spec §12.3). Here that is the upstream's tip; the write checks ancestry too.
+    fn undo_offered(&self) -> bool {
+        let Some(c) = &self.changes.commit.committed else { return false };
+        let upstream = self.refs.as_ref().and_then(|r| r.upstream.as_ref()).map(|u| u.1.to_string());
+        upstream.as_deref() != Some(c.head.as_str())
     }
 
     pub fn focus_commit(&mut self) {
@@ -202,11 +210,12 @@ impl App {
     }
 
     pub fn undo_commit(&mut self) {
-        if self.changes.commit.committed.is_none() || self.changes.commit.committing {
+        if !self.undo_offered() || self.changes.commit.committing {
             self.toast = Some(Toast { what: "Nothing to undo: only a commit made here can be undone".into(), detail: String::new(), error: false });
             return;
         }
-        self.write(WriteOp::UndoCommit);
+        let Some(expect) = self.changes.commit.committed.as_ref().map(|c| c.head.clone()) else { return };
+        self.write(WriteOp::UndoCommit { expect });
     }
 
     pub(super) fn install_head_message(&mut self, result: Result<String, String>) {
@@ -245,7 +254,7 @@ impl App {
                 self.overlay = Some(Overlay::Log { title: "Commit failed".into(), body });
                 true
             }
-            (WriteOp::UndoCommit, Ok(Some(m))) => {
+            (WriteOp::UndoCommit { .. }, Ok(Some(m))) => {
                 let c = &mut self.changes.commit;
                 c.committed = None;
                 c.amend = false;

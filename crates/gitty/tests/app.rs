@@ -946,7 +946,7 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::WriteFile { path, .. } => format!("write {path}"),
                 gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
-                gitty::msg::WriteOp::UndoCommit => "undo".into(),
+                gitty::msg::WriteOp::UndoCommit { .. } => "undo".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
             }),
@@ -1024,6 +1024,25 @@ fn space_stages_the_line_under_the_cursor_and_range_and_hunk() {
     let mut want = base.clone();
     want.extend(["x13".to_string(), "x14".to_string()]);
     assert_eq!(index(&f), text(&want));
+}
+
+#[test]
+fn intent_to_add_files_stage_line_by_line() {
+    let f = Fixture::new();
+    f.write("base.txt", "b\n");
+    f.commit("base", 1_700_000_000);
+    f.write("f", "one\ntwo\n");
+    f.git(&["add", "-N", "f"]);
+    let mut t = changes_tab(&f);
+    let i = t.app.changes.status.as_ref().unwrap().entries.iter().position(|e| e.path == "f").unwrap();
+    t.app.select_change(i);
+    t.pump();
+    t.key(KeyCode::Enter);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add0");
+    t.ch(' ');
+    t.pump();
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast.as_ref().map(|t| (&t.what, &t.detail)));
+    assert_eq!(index_of(&f, "f"), "one");
 }
 
 #[test]
@@ -1148,6 +1167,27 @@ fn commit_box_commits_with_trailers_and_undo_restores_the_message() {
     assert_eq!(t.app.changes.commit.body.text(), "Because b matters.");
     assert_eq!(t.app.changes.commit.coauthors.text(), "Ann <ann@example.org>");
     assert_eq!(t.app.commit_bar(), None);
+}
+
+#[test]
+fn undo_is_not_offered_once_the_commit_is_pushed() {
+    let f = staged_fixture();
+    f.add_bare_upstream();
+    let mut t = changes_tab(&f);
+    t.ch('c');
+    typed(&mut t, "Add b");
+    commit_key(&mut t, KeyModifiers::ALT);
+    t.pump();
+    assert!(t.app.commit_bar().is_some());
+    f.git(&["push", "-q"]);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::ALL));
+    t.pump();
+    assert_eq!(t.app.commit_bar(), None, "a pushed commit is not offered for undo");
+    t.app.set_tab(gitty::app::Tab::Changes);
+    t.key(KeyCode::Esc);
+    t.ch('u');
+    assert!(writes(t.app.take_requests_peek()).is_empty());
+    assert_eq!(f.git(&["log", "-1", "--format=%s"]), "Add b");
 }
 
 #[test]
@@ -1305,6 +1345,25 @@ fn discarding_a_staged_line_unstages_it_too() {
     t.pump();
     assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "1\n2\n3\n");
     assert_eq!(f.git(&["status", "--porcelain"]), "", "the discarded line is not left staged");
+}
+
+#[test]
+fn line_staging_refuses_after_head_moves_under_it() {
+    let f = Fixture::new();
+    f.write("a.txt", "1\n2\n3\n");
+    f.commit("base", 1_700_000_000);
+    f.write("a.txt", "1\n2\n3\n4\n5\n");
+    f.git(&["add", "a.txt"]);
+    let mut t = changes_tab(&f);
+    t.key(KeyCode::Enter);
+    // committed elsewhere: the index and the worktree are what gitty saw, HEAD:a.txt is not
+    f.git(&["commit", "-qm", "elsewhere"]);
+    t.app.diff.as_mut().unwrap().cursor = diff_row(&t, "add3");
+    t.ch(' ');
+    t.pump();
+    let toast = t.app.toast.as_ref().map(|t| t.detail.clone()).unwrap_or_default();
+    assert!(toast.contains("changed in HEAD"), "{toast:?}");
+    assert_eq!(index_of(&f, "a.txt"), "1\n2\n3\n4\n5", "the index is left alone");
 }
 
 // ---- network ----

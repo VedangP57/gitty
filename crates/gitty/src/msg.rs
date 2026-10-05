@@ -99,13 +99,15 @@ pub enum WriteOp {
     /// Make the index hold exactly the flagged changes of `diff` (HEAD → worktree).
     SetStaged { entry: StatusEntry, texts: Texts, diff: Arc<FileDiff>, flags: Vec<bool> },
     /// Replace the worktree file's bytes (line discard); the file keeps its mode.
-    WriteFile { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId },
+    /// `expect` is the file's blob on disk and `head` its blob in HEAD when the diff was made.
+    WriteFile { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId, head: Option<gitty_core::commit_files::BlobId> },
     /// Discard every change to the paths: `restore` paths go back to HEAD (index and worktree),
     /// `remove` paths (not in HEAD) leave the index and the disk. Each file is copied to the
     /// Trash first.
     DiscardFiles { restore: Vec<String>, remove: Vec<String> },
     Commit { message: String, amend: bool },
-    UndoCommit,
+    /// Undo the commit gitty made (`expect`, its id), unless HEAD moved or it was pushed.
+    UndoCommit { expect: String },
     /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
     /// re-hashing racily clean files.
     RefreshIndex,
@@ -122,14 +124,14 @@ impl WriteOp {
             WriteOp::WriteFile { .. } | WriteOp::DiscardFiles { .. } => "discarding",
             WriteOp::Commit { amend: false, .. } => "committing",
             WriteOp::Commit { amend: true, .. } => "amending",
-            WriteOp::UndoCommit => "undoing the commit",
+            WriteOp::UndoCommit { .. } => "undoing the commit",
             WriteOp::RefreshIndex => "refreshing the index",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
     /// Commits and undo move HEAD; refs and history refresh after them.
     pub fn moves_head(&self) -> bool {
-        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit)
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. })
     }
 }
 

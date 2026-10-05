@@ -163,7 +163,30 @@ impl GitCli {
         let rec = out.split(|&b| b == 0).next().unwrap_or(&[]);
         let s = String::from_utf8_lossy(rec);
         // "<mode> <hex> <stage>\t<path>"
-        Ok(s.split(' ').nth(1).and_then(BlobId::from_hex))
+        let blob = s.split(' ').nth(1).and_then(BlobId::from_hex);
+        // an intent-to-add entry (`git add -N`) lists the empty blob, but status (which the
+        // entry's index_blob came from) says it has no index side
+        if blob == Some(BlobId::hash_of(b"")) && self.intent_to_add(path)? {
+            return Ok(None);
+        }
+        Ok(blob)
+    }
+
+    /// The blob `path` has in HEAD; None when HEAD lacks it or is unborn.
+    pub fn head_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
+        let Ok(out) = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-tree", "-z", "--full-tree", "HEAD", "--", path], None) else {
+            return Ok(None);
+        };
+        let rec = String::from_utf8_lossy(out.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
+        // "<mode> <type> <hex>\t<path>"
+        Ok(rec.split('\t').next().and_then(|m| m.split(' ').nth(2)).and_then(BlobId::from_hex))
+    }
+
+    fn intent_to_add(&self, path: &str) -> anyhow::Result<bool> {
+        let out = self.quiet(Kind::Read, &["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=no", "--", path], None)?;
+        let rec = String::from_utf8_lossy(out.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
+        // "1 XY sub mH mI mW hH hI path": an all-zero index mode is the intent-to-add marker
+        Ok(rec.strip_prefix("1 ").and_then(|r| r.split(' ').nth(3)).is_some_and(|m| m == "000000"))
     }
 
     /// Applies a patch to the index after checking `path`'s entry is still `expect` (spec §12.2
@@ -192,8 +215,16 @@ impl GitCli {
         Ok(s.strip_suffix('\n').unwrap_or(&s).to_string())
     }
 
-    /// Undoes the latest commit, keeping its changes staged. Returns its message.
-    pub fn undo_commit(&self) -> anyhow::Result<String> {
+    /// Undoes the latest commit, keeping its changes staged, when HEAD is still `expect` and
+    /// the upstream does not have it (spec §12.3). Returns its message.
+    pub fn undo_commit(&self, expect: &str) -> anyhow::Result<String> {
+        let head = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", "HEAD"], None)?;
+        if String::from_utf8_lossy(&head).trim() != expect {
+            anyhow::bail!("HEAD is no longer the commit made here; nothing was undone");
+        }
+        if self.quiet(Kind::Read, &["merge-base", "--is-ancestor", "HEAD", "@{upstream}"], None).is_ok() {
+            anyhow::bail!("that commit is already pushed; nothing was undone");
+        }
         let msg = self.head_message()?;
         let has_parent = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", "HEAD^"], None).is_ok();
         if has_parent {

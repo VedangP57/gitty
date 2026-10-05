@@ -64,6 +64,9 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             if cli.index_blob(&entry.path)? != entry.index_blob {
                 bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
             }
+            if cli.head_blob(&entry.path)? != entry.head_blob {
+                bail!("{} changed in HEAD since its diff was loaded; refreshing", entry.path);
+            }
             match plan(entry, texts, &diff.ops, flags) {
                 Plan::Nothing => {}
                 Plan::StageFile(paths) => cli.stage_paths(&paths)?,
@@ -71,11 +74,14 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 Plan::Patch { patch, expect } => cli.apply_cached(&patch, &entry.path, expect)?,
             }
         }
-        WriteOp::WriteFile { path, bytes, expect } => {
+        WriteOp::WriteFile { path, bytes, expect, head } => {
             let full = workdir(h)?.join(path);
             let now = std::fs::read(&full).with_context(|| format!("reading {path}"))?;
             if BlobId::hash_of(&now) != *expect {
                 bail!("{path} changed on disk since its diff was loaded; nothing was discarded");
+            }
+            if cli.head_blob(path)? != *head {
+                bail!("{path} changed in HEAD since its diff was loaded; nothing was discarded");
             }
             to_trash(&full)?;
             // write in place so the file keeps its mode, owner and inode
@@ -110,7 +116,7 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             let head = cli.run(cli.cmd(gitty_core::git_cli::Kind::Read, &["rev-parse", "HEAD"]), None, log)?;
             return Ok(Some(String::from_utf8_lossy(&head).trim().to_string()));
         }
-        WriteOp::UndoCommit => return Ok(Some(cli.undo_commit()?)),
+        WriteOp::UndoCommit { expect } => return Ok(Some(cli.undo_commit(expect)?)),
         WriteOp::Seq(ops) => {
             for op in ops {
                 run(h, op, log)?;
