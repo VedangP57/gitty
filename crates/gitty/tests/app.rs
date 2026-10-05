@@ -899,6 +899,36 @@ fn writes_refresh_status_and_errors_toast() {
     assert!(toast.error && toast.detail.contains("index.lock"), "{}", toast.detail);
 }
 
+/// The stale-lock check asks `pgrep -x git`; other tests run git all the time, so this binary
+/// answers "none running" (`false` exits 1, as pgrep does when nothing matches).
+fn no_git_running() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    // SAFETY: set once, before any write in this binary reads it
+    ONCE.call_once(|| unsafe { std::env::set_var("GITTY_PGREP", "false") });
+}
+
+#[test]
+fn a_stale_index_lock_is_offered_for_removal() {
+    no_git_running();
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    std::fs::write(f.path().join(".git/index.lock"), "").unwrap();
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    t.pump();
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { title, op: gitty::msg::WriteOp::RemoveIndexLock, .. }) => {
+            assert_eq!(title, "Remove the stale .git/index.lock?")
+        }
+        _ => panic!("no offer to remove the lock; toast {:?}", t.app.toast.as_ref().map(|t| &t.detail)),
+    }
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(!f.path().join(".git/index.lock").exists());
+    t.app.write(gitty::msg::WriteOp::StageAll);
+    t.pump();
+    assert!(t.app.changes.status.as_ref().unwrap().entries.iter().all(|e| e.check() == gitty_core::status::Check::Staged));
+}
+
 #[test]
 fn focus_gained_and_backstop_refresh_status() {
     let f = changes_fixture();
@@ -947,6 +977,7 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
                 gitty::msg::WriteOp::UndoCommit { .. } => "undo".into(),
+                gitty::msg::WriteOp::RemoveIndexLock => "remove index.lock".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
             }),
@@ -1344,6 +1375,17 @@ fn quick_successive_line_toggles_all_apply() {
     t.pump();
     assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "{:?}", t.app.toast);
     assert_eq!(f.git(&["show", ":a.txt"]), "1\nX\n2\n3\n4\n5\n6\n7\n8\n9\nY\n10", "X and Y staged, Z not");
+}
+
+#[test]
+fn a_discard_outside_the_trash_says_where_the_copies_are() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    let note = "The Trash is not writable: copies of the discarded files are in /x/gitty/trash".to_string();
+    let op = gitty::msg::WriteOp::DiscardFiles { restore: vec!["a.txt".into()], remove: vec![] };
+    t.app.handle_msg(Msg::WriteDone { op, result: Ok(Some(note.clone())) });
+    let toast = t.app.toast.as_ref().expect("a toast");
+    assert!(!toast.error && toast.what == note, "{:?}", toast.what);
 }
 
 #[test]

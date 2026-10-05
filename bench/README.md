@@ -97,7 +97,7 @@ staging one line the way Space does (change diff load, then `SetStaged` → `git
 | Operation | git (4,857 files) | gitty (109 files) | Budget |
 |---|---|---|---|
 | status, fresh checkout (racily clean index) | 142–154 ms | 9.4 ms | — |
-| status after gitty's index refresh | **18.5–19.4 ms** | 5.7–5.9 ms | < 50 ms ✅ |
+| status after gitty's index refresh | **18.5–19.4 ms** | 5.7–5.9 ms | < 70 ms ✅ |
 | save → watcher fired | 63–67 ms | 63–67 ms | — (50 ms quiet debounce) |
 | save → status on screen | **92–107 ms** | 73–94 ms | < 150 ms ✅ |
 | change diff load (HEAD → worktree + staged lines) | 0.7 ms | 0.2 ms | < 16 ms ✅ |
@@ -108,6 +108,8 @@ staging one line the way Space does (change diff load, then `SetStaged` → `git
   on git/git, for ever, until some other git command writes the index). When a status takes over
   100 ms, gitty now queues `git update-index -q --refresh` on the writer thread, at most once a
   minute (`slow_status_refreshes_the_index_at_most_once_a_minute`).
+- **Status budget (spec §8):** under 70 ms on a small repo, and under 60 ms on a 120k-file repo with
+  fsmonitor. `bench/run.sh` checks the small-repo figure.
 - Save → watcher is dominated by the 50 ms quiet window of the debouncer (FSEvents itself delivers in
   ~10–15 ms); bursts such as a formatter rewriting many files still produce one status run.
 

@@ -314,7 +314,9 @@ impl App {
                 self.changes.busy = self.changes.busy.saturating_sub(1);
                 match result {
                     _ if self.commit_done(&op, &result) => {}
-                    Ok(_) => {}
+                    // a discard whose copies did not go to the Trash says where they are
+                    Ok(Some(note)) => self.toast = Some(Toast { what: note, detail: String::new(), error: false }),
+                    Ok(None) => {}
                     Err(detail) => {
                         let what = format!("{} failed", op.label());
                         self.toast = Some(Toast { what, detail, error: true });
@@ -326,6 +328,13 @@ impl App {
                 }
             }
             Msg::HeadMessage { result } => self.install_head_message(result),
+            Msg::StaleIndexLock => {
+                self.overlay = Some(Overlay::Confirm {
+                    title: "Remove the stale .git/index.lock?".into(),
+                    body: "A git command failed because the index is locked, and no git process is running. The lock was probably left by a git that crashed.".into(),
+                    op: WriteOp::RemoveIndexLock,
+                });
+            }
             Msg::StatusSlow => {
                 if self.changes.last_refresh.is_none_or(|t| self.clock.saturating_duration_since(t) >= REFRESH_EVERY) {
                     self.changes.last_refresh = Some(self.clock);

@@ -108,6 +108,8 @@ pub enum WriteOp {
     Commit { message: String, amend: bool },
     /// Undo the commit gitty made (`expect`, its id), unless HEAD moved or it was pushed.
     UndoCommit { expect: String },
+    /// Delete the git dir's `index.lock` left by a git that died, once no git is running.
+    RemoveIndexLock,
     /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
     /// re-hashing racily clean files.
     RefreshIndex,
@@ -125,6 +127,7 @@ impl WriteOp {
             WriteOp::Commit { amend: false, .. } => "committing",
             WriteOp::Commit { amend: true, .. } => "amending",
             WriteOp::UndoCommit { .. } => "undoing the commit",
+            WriteOp::RemoveIndexLock => "removing index.lock",
             WriteOp::RefreshIndex => "refreshing the index",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
@@ -246,6 +249,8 @@ pub enum Msg {
     Tuned { applied: Vec<gitty_core::tune::Action>, error: Option<String> },
     /// A status run was slow enough that refreshing the index is worth a try.
     StatusSlow,
+    /// A write failed on an `index.lock` while no git process runs: offer to remove it.
+    StaleIndexLock,
     HeadMessage { result: Result<String, String> },
     Error { what: String, detail: String },
 }
@@ -282,6 +287,7 @@ impl std::fmt::Debug for Msg {
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
             Msg::StatusSlow => write!(f, "StatusSlow"),
+            Msg::StaleIndexLock => write!(f, "StaleIndexLock"),
             Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
             Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
             Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),
