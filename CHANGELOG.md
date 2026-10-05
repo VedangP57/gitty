@@ -6,6 +6,12 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Switching from Changes back to History returns to the pane History had focused, not the
+  Changes file list (or the commit editor, after a click on the tab).
+- In split view, a long hunk header label no longer runs across the divider.
+
 ## [0.1.0] - 2026-10-05
 
 The first public release.
