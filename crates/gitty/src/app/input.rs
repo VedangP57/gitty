@@ -189,9 +189,10 @@ impl App {
                 self.ensure_diff_visible();
             }
             Action::Split => {
-                self.split_pref = Some(!split);
+                self.split_pref = Some(!self.split_wanted());
+                let now = self.split_active();
                 if let Some(d) = self.diff.as_mut() {
-                    d.remap_cursor(split, !split);
+                    d.remap_cursor(split, now);
                 }
                 self.ensure_diff_visible();
             }
