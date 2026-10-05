@@ -185,6 +185,12 @@ pub struct App {
     pub list_scroll: usize,
     selected_id: Option<CommitId>,
     reselect: Option<CommitId>,
+    /// A file to select by path when the next file list is installed (leaving compare).
+    files_restore: Option<String>,
+    /// A range anchor to restore by commit once its row is known (leaving compare).
+    anchor_restore: Option<CommitId>,
+    /// Commits covered by a range's diff, by its ends.
+    range_count: Option<((CommitId, CommitId), usize)>,
     commit_gen: u64,
 
     pub detail: Option<CommitDetail>,
@@ -262,6 +268,8 @@ pub struct App {
     prompt_cancelled: bool,
     /// A Diverged question waiting for the open overlay to close.
     pending_diverged: bool,
+    /// The stale index.lock offer, waiting for the open overlay to close.
+    pending_stale_lock: Option<crate::write::LockId>,
     /// The last auto-fetch failed: its details, until a fetch works.
     bg_failure: Option<String>,
     pub search: search::Search,
@@ -318,6 +326,9 @@ impl App {
             list_scroll: 0,
             selected_id: None,
             reselect: None,
+            files_restore: None,
+            anchor_restore: None,
+            range_count: None,
             commit_gen: 0,
             detail: None,
             header_expanded: false,
@@ -369,6 +380,7 @@ impl App {
             tune_announced: false,
             prompt_cancelled: false,
             pending_diverged: false,
+            pending_stale_lock: None,
             bg_failure: None,
             search: Default::default(),
             compare: None,
@@ -410,6 +422,14 @@ impl App {
     }
     pub fn selected_row(&self) -> Option<&CommitRow> {
         self.rows.get(&self.selected).filter(|r| Some(r.id) == self.selected_id)
+    }
+    /// How many commits outside the selected rows the range's diff includes (merged side
+    /// branches, or unrelated history in the all-refs scope); None when none or unknown.
+    pub fn range_extra(&self) -> Option<usize> {
+        let (oldest, newest) = self.selected_range()?;
+        let ends = (self.history_id(oldest)?, self.history_id(newest)?);
+        let ((e, count), rows) = (self.range_count?, oldest - newest + 1);
+        (e == ends && count > rows).then(|| count - rows)
     }
     pub fn current_file(&self) -> Option<&FileChange> {
         self.files.as_ref()?.get(self.file_sel)
@@ -545,9 +565,11 @@ impl App {
                     });
                     if let Some(i) = found {
                         self.reselect = None;
+                        self.restore_anchor();
                         self.select_at(i);
                     } else if done {
                         self.reselect = None;
+                        self.anchor_restore = None;
                     }
                 }
                 if self.reselect.is_none() && self.selected_id.is_none() && len > 0 {
@@ -639,8 +661,9 @@ impl App {
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
+            Msg::RangeCount { oldest, newest, count } => self.range_count = Some(((oldest, newest), count)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
@@ -732,6 +755,32 @@ impl App {
         self.start_walk();
     }
 
+    /// Selects the file saved by path once the wanted list is installed; a list still loading
+    /// keeps the request for its arrival.
+    pub(super) fn apply_files_restore(&mut self) {
+        if self.files_of.is_none() || self.files_of != self.files_wanted {
+            return;
+        }
+        if let Some(path) = self.files_restore.take()
+            && let Some(i) = self.files.as_ref().and_then(|f| f.iter().position(|f| f.path == path))
+        {
+            self.select_file(i);
+        }
+    }
+
+    /// Sets the range anchor saved by commit, if its row is in the walk so far.
+    pub(super) fn restore_anchor(&mut self) {
+        let Some(id) = self.anchor_restore.take() else { return };
+        let Some(h) = self.history.clone() else { return };
+        let h = h.read().unwrap_or_else(PoisonError::into_inner);
+        self.range_anchor = (0..h.len()).find(|&i| h.id(i) == id);
+    }
+
+    /// The commit at history row `i`.
+    pub fn history_id_at(&self, i: usize) -> Option<CommitId> {
+        self.history_id(i)
+    }
+
     fn history_id(&self, i: usize) -> Option<CommitId> {
         let h = self.history.as_ref()?.read().unwrap_or_else(PoisonError::into_inner);
         (i < h.len()).then(|| h.id(i))
@@ -763,6 +812,8 @@ impl App {
     /// Selects history row `idx` on the user's behalf (cancels a pending re-selection).
     pub fn select(&mut self, idx: usize) {
         self.reselect = None;
+        self.files_restore = None;
+        self.anchor_restore = None;
         self.select_at(idx);
     }
 
@@ -817,6 +868,11 @@ impl App {
             return;
         }
         self.files_wanted = Some(of);
+        if let FilesOf::Range { oldest, newest } = of
+            && self.range_count.is_none_or(|(ends, _)| ends != (oldest, newest))
+        {
+            self.outbox.push(Request::RangeCount { generation: self.commit_gen, oldest, newest });
+        }
         self.files = None;
         self.file_rows.clear();
         self.files_of = None;
@@ -853,6 +909,13 @@ impl App {
         self.refresh_file_rows();
         self.tree_dir = None;
         self.file_sel = self.first_file_row();
+        // every file under a folded directory: the cursor rests on the first directory
+        if !self.file_rows.iter().any(|r| matches!(r, tree::FileRow::File { .. })) {
+            self.tree_dir = self.file_rows.first().and_then(|r| match r {
+                tree::FileRow::Dir { path, .. } => Some(path.clone()),
+                tree::FileRow::File { .. } => None,
+            });
+        }
         self.file_scroll = 0;
         if empty {
             self.diff = None;
@@ -862,6 +925,7 @@ impl App {
         } else {
             self.schedule_diff();
         }
+        self.apply_files_restore();
         self.prefetch_neighbours();
     }
 

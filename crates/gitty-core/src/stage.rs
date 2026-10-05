@@ -306,6 +306,40 @@ impl Handle {
         Ok(Arc::new(Text::new(self.blob_bytes(b)?)))
     }
 
+    /// The blob (or a submodule's commit) `path` has in HEAD; None when HEAD lacks it or is
+    /// unborn. In process: a git call here costs as much as the rest of a line toggle.
+    pub fn head_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
+        let Ok(commit) = self.repo.head_commit() else { return Ok(None) };
+        let entry = commit.tree()?.lookup_entry_by_path(path)?;
+        Ok(entry.filter(|e| !e.mode().is_tree()).map(|e| BlobId::from_oid(e.oid())))
+    }
+
+    /// `path`'s stage-0 index entry as status reports it: None when absent or intent-to-add
+    /// (`git add -N` lists the empty blob, but has no index side). Read from disk each call, in
+    /// process: on a 120k-entry index this is ~8 ms against ~12 ms for `git ls-files`.
+    pub fn index_entry_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
+        use gix::index::entry::{Flags, Stage};
+        let idx = self.repo.open_index()?;
+        let e = idx.entry_by_path_and_stage(path.into(), Stage::Unconflicted);
+        Ok(e.filter(|e| !e.flags.contains(Flags::INTENT_TO_ADD)).map(|e| BlobId::from_oid(&e.id)))
+    }
+
+    /// Applies a patch to the index after checking `path`'s entry is still `expect` (spec §12.2
+    /// TOCTOU guard): a mismatch means the index changed since the diff was made.
+    /// Afterwards the entry must be `target`: anything else is reported, not left silent.
+    pub fn apply_cached(&self, patch: &[u8], path: &str, expect: Option<BlobId>, target: BlobId) -> anyhow::Result<()> {
+        if self.index_entry_blob(path)? != expect {
+            anyhow::bail!("{path} changed in the index since its diff was loaded; refreshing");
+        }
+        crate::git_cli::GitCli::new(self.owner()).apply_to_index(patch)?;
+        let got = self.index_entry_blob(path)?;
+        if got != Some(target) {
+            let got = got.map_or("no entry".to_string(), |b| b.to_string());
+            anyhow::bail!("the index now has {path} as {got}, not what was selected ({target}); check `git diff --cached -- {path}`");
+        }
+        Ok(())
+    }
+
     /// HEAD, index and worktree (git form) versions of a status entry's file.
     pub fn stage_texts(&self, e: &StatusEntry) -> anyhow::Result<Texts> {
         if [e.head_mode, e.index_mode, e.wt_mode].contains(&crate::commit_files::MODE_SUBMODULE) {

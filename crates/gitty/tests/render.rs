@@ -327,6 +327,22 @@ fn gap_row_click_expands() {
 }
 
 #[test]
+fn a_column_zero_gap_click_expands_where_no_hunk_handle_is_drawn() {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (180, 40));
+    t.app.select(2);
+    t.pump();
+    t.select_file("src/main.rs");
+    let b = t.render(180, 40);
+    let (_, y) = find(&b, "⋯").expect("a gap row is drawn");
+    let x0 = t.app.hits.diff_rows.expect("diff drawn").x;
+    let before = t.app.diff.as_ref().unwrap().rows(false);
+    t.click(x0, y);
+    assert!(t.app.diff.as_ref().unwrap().rows(false) > before, "History draws no hunk handle: column 0 is the gap's ↑");
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast.as_ref().map(|t| &t.what));
+}
+
+#[test]
 fn tiny_sizes_never_panic() {
     let f = fixture();
     let mut t = H::new(&f, "github-dark", (180, 40));

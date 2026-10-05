@@ -916,7 +916,7 @@ fn a_stale_index_lock_is_offered_for_removal() {
     t.app.write(gitty::msg::WriteOp::StageAll);
     t.pump();
     match &t.app.overlay {
-        Some(gitty::app::Overlay::Confirm { title, op: gitty::msg::WriteOp::RemoveIndexLock, .. }) => {
+        Some(gitty::app::Overlay::Confirm { title, op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. }) => {
             assert_eq!(title, "Remove the stale .git/index.lock?")
         }
         _ => panic!("no offer to remove the lock; toast {:?}", t.app.toast.as_ref().map(|t| &t.detail)),
@@ -927,6 +927,21 @@ fn a_stale_index_lock_is_offered_for_removal() {
     t.app.write(gitty::msg::WriteOp::StageAll);
     t.pump();
     assert!(t.app.changes.status.as_ref().unwrap().entries.iter().all(|e| e.check() == gitty_core::status::Check::Staged));
+}
+
+#[test]
+fn the_stale_lock_offer_waits_for_an_open_overlay() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })));
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let seen = gitty::write::LockId::of(&lock).unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen });
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })), "help stays open");
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
 }
 
 #[test]
@@ -977,7 +992,7 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::DiscardFiles { restore, remove } => format!("discard {restore:?} {remove:?}"),
                 gitty::msg::WriteOp::Commit { message, amend } => format!("commit {message:?} {amend}"),
                 gitty::msg::WriteOp::UndoCommit { .. } => "undo".into(),
-                gitty::msg::WriteOp::RemoveIndexLock => "remove index.lock".into(),
+                gitty::msg::WriteOp::RemoveIndexLock { .. } => "remove index.lock".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
             }),
@@ -1789,6 +1804,26 @@ fn search_jumps_to_the_first_match_at_or_after_the_selection_and_n_wraps() {
 }
 
 #[test]
+fn the_label_rank_follows_moves_and_late_matches() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    search(&mut t, "fix");
+    t.pump();
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  1/4"));
+    t.ch('n');
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  2/4"));
+    t.ch('j');
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  -/4"));
+    t.ch('k');
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  2/4"));
+    // a match that arrives before the selection moves its rank
+    let generation = t.app.search.generation;
+    t.app.handle_msg(Msg::SearchHits { generation, range: 0..1, hits: vec![0] });
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  3/5"));
+}
+
+#[test]
 fn search_chunks_merge_in_any_order_and_a_stale_generation_is_dropped() {
     let f = search_fixture();
     let mut t = H::new(&f);
@@ -1821,6 +1856,23 @@ fn search_chunks_merge_in_any_order_and_a_stale_generation_is_dropped() {
     assert!(hits(&t).is_empty(), "hits of a replaced query are dropped");
     t.pump();
     assert_eq!(hits(&t), [2]);
+}
+
+#[test]
+fn the_search_bar_closes_on_a_tab_switch_or_a_click() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('/');
+    typed(&mut t, "fi");
+    t.app.set_tab(gitty::app::Tab::Changes);
+    assert!(t.app.search.bar.is_none(), "the tab switch closes the bar");
+    t.ch('2');
+    assert_eq!(t.app.tab, gitty::app::Tab::History, "keys act again");
+    t.ch('/');
+    let m = |kind| crossterm::event::MouseEvent { kind, column: 5, row: 5, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(m(crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)));
+    assert!(t.app.search.bar.is_none(), "a click closes the bar");
 }
 
 #[test]
@@ -2088,6 +2140,196 @@ fn branch_picker_takes_letters_as_query_and_esc_cancels() {
 }
 
 #[test]
+fn leaving_compare_restores_the_range_the_search_and_the_file() {
+    let f = compare_fixture();
+    f.write("a.txt", "a\n");
+    f.write("b.txt", "b\n");
+    f.commit("two files", 1_700_002_000);
+    let mut t = H::new(&f);
+    t.pump();
+    // the file: second file of the newest commit
+    t.app.select_file(1);
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("b.txt"));
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("b.txt"), "file restored");
+    // the range
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    let range = t.app.selected_range();
+    assert!(range.is_some());
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.selected_range(), range, "range restored");
+    t.key(KeyCode::Esc);
+    t.pump();
+    // the search
+    t.ch('/');
+    typed(&mut t, "m");
+    t.key(KeyCode::Enter);
+    t.pump();
+    let (label, sel) = (t.app.search_label(), t.app.selected);
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert!(t.app.search_active(), "search restored");
+    assert_eq!((t.app.search_label(), t.app.selected), (label, sel));
+}
+
+#[test]
+fn a_range_saved_before_compare_survives_a_refresh_during_it() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    let ends = |t: &H| t.app.selected_range().map(|(o, n)| (t.app.history_id_at(o), t.app.history_id_at(n)));
+    let before = ends(&t);
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    f.write("new.txt", "n\n");
+    f.commit("new on main", 1_700_002_000);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(ends(&t), before, "the same two commits, at their new rows");
+}
+
+#[test]
+fn a_file_restore_never_lands_on_a_later_list() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["branch", "old"]);
+    f.write("a.txt", "a\n");
+    f.write("b.txt", "b\n");
+    f.commit("two files", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select_file(1);
+    t.pump();
+    // nothing behind `old`: compare opens on Ahead, which shows the same HEAD commit
+    t.ch('b');
+    typed(&mut t, "old");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.app.select_file(0);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("b.txt"), "restored at once");
+    t.app.select_file(0);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("a.txt"), "the range list starts on its first file");
+}
+
+#[test]
+fn leaving_compare_mid_walk_still_finds_the_saved_commit() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    let before = t.selected_id();
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    f.write("new.txt", "n\n");
+    f.commit("new on main", 1_700_002_000);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    // the refs arrive and a new walk starts, but no rows yet
+    let refs: Vec<_> = t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Refs)).collect();
+    for m in t.exec_all(refs) {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Walk { .. })), "a new walk is queued");
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.selected_id(), before, "the saved commit, found by the new walk");
+}
+
+#[test]
+fn a_range_says_when_it_covers_commits_outside_the_selected_rows() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_200);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_300);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    assert_eq!((summary(&t, 0), summary(&t, 1)), ("merge side".into(), "m1".into()));
+    // merge + m1: m1^..merge also holds s1 and s2
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(2));
+    t.key(KeyCode::Esc);
+    t.pump();
+    // s2 + s1: linear, nothing extra
+    t.app.select(2);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!((summary(&t, 2), summary(&t, 3)), ("s2".into(), "s1".into()));
+    assert_eq!(t.app.range_extra(), None);
+}
+
+#[test]
+fn a_range_ending_at_a_merge_counts_the_merged_side() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_200);
+    f.git(&["checkout", "-q", "main"]);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    f.write("a.txt", "1\n");
+    f.commit("after", 1_700_000_500);
+    let mut t = H::new(&f);
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    assert_eq!((summary(&t, 0), summary(&t, 1)), ("after".into(), "merge side".into()));
+    // after + merge: merge^..after diffs against base, so it also holds s1 and s2
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(2));
+}
+
+#[test]
 fn a_history_refresh_during_compare_keeps_both_selections() {
     let f = compare_fixture();
     let mut t = H::new(&f);
@@ -2112,6 +2354,28 @@ fn a_history_refresh_during_compare_keeps_both_selections() {
     t.pump();
     assert_eq!(t.selected_id(), before, "the same commit is selected again, at its new row");
     assert_eq!(t.app.selected, 2);
+}
+
+#[test]
+fn a_list_hidden_under_a_folded_directory_starts_on_that_directory() {
+    let f = Fixture::new();
+    f.write("src/a.rs", "a\n");
+    f.commit("one", 1_700_000_000);
+    f.write("src/b.rs", "b\n");
+    f.commit("two", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('t');
+    t.pump();
+    t.app.focus = Focus::Files;
+    t.app.select_file_row(0);
+    assert!(t.app.toggle_dir(), "src/ folds");
+    t.app.select(1);
+    t.pump();
+    assert_eq!(t.app.file_rows().len(), 1, "only the folded src/ row");
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Files, "Enter on the directory unfolds it instead of opening a hidden file");
+    assert_eq!(t.app.file_rows().len(), 2);
 }
 
 fn tree_fixture() -> Fixture {
@@ -2266,6 +2530,14 @@ fn esc_at_a_prompt_reads_as_cancelled_and_prompts_close_with_their_job() {
     done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::Failed { detail: "fatal: boom".into() });
     assert!(!matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "the job's prompt closes");
     assert_eq!(t.app.pending_asks(), 0, "and its queued prompts go too");
+
+    // Ctrl-C at a prompt answers it as cancelled, like Esc, and does not quit
+    started(&mut t, NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(4, "Username for 'https://example.com': ")));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+    assert!(!t.app.quit && t.app.overlay.is_none());
+    done(&mut t, NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: could not read Username".into() });
+    assert!(toast_text(&t).contains("cancelled at the prompt"), "{}", toast_text(&t));
 }
 
 #[test]
@@ -2294,6 +2566,16 @@ fn quitting_while_a_job_runs_asks_and_then_cancels_it() {
     }
     t.ch('n');
     assert!(!t.app.quit && t.app.overlay.is_none());
+    let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    t.app.handle_key(ctrl_c);
+    assert!(!t.app.quit && matches!(t.app.overlay, Some(gitty::app::Overlay::Quit { .. })), "Ctrl-C asks too");
+    t.ch('n');
+    t.ch('?');
+    t.app.handle_key(ctrl_c);
+    assert!(!t.app.quit && matches!(t.app.overlay, Some(gitty::app::Overlay::Quit { .. })), "over help as well");
+    t.app.handle_key(ctrl_c);
+    assert!(t.app.quit, "a second Ctrl-C at the question quits");
+    t.app.quit = false;
     t.ch('q');
     t.ch('y');
     assert!(t.app.quit);

@@ -110,7 +110,7 @@ pub enum WriteOp {
     /// Undo the commit gitty made (`expect`, its id), unless HEAD moved or it was pushed.
     UndoCommit { expect: String },
     /// Delete the git dir's `index.lock` left by a git that died, once no git is running.
-    RemoveIndexLock,
+    RemoveIndexLock { seen: crate::write::LockId },
     /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
     /// re-hashing racily clean files.
     RefreshIndex,
@@ -128,7 +128,7 @@ impl WriteOp {
             WriteOp::Commit { amend: false, .. } => "committing",
             WriteOp::Commit { amend: true, .. } => "amending",
             WriteOp::UndoCommit { .. } => "undoing the commit",
-            WriteOp::RemoveIndexLock => "removing index.lock",
+            WriteOp::RemoveIndexLock { .. } => "removing index.lock",
             WriteOp::RefreshIndex => "refreshing the index",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
@@ -150,6 +150,8 @@ pub enum Request {
     SearchPath { generation: u64, tips: Vec<CommitId>, path: String },
     /// Decodes rows by id (compare lists, which are not history indices).
     CommitRows { ids: Vec<CommitId> },
+    /// How many commits a range's diff covers.
+    RangeCount { generation: u64, oldest: CommitId, newest: CommitId },
     /// Both sides of HEAD vs `other`.
     Compare { generation: u64, head: CommitId, other: CommitId },
     Detail { generation: u64, id: CommitId },
@@ -214,6 +216,7 @@ pub enum Msg {
     SearchHits { generation: u64, range: Range<usize>, hits: Vec<usize> },
     SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
     CommitRows { rows: Vec<CommitRow> },
+    RangeCount { oldest: CommitId, newest: CommitId, count: usize },
     Compare { generation: u64, result: Result<gitty_core::compare::Compare, String> },
     AheadBehind { local: CommitId, upstream: CommitId, ab: AheadBehind },
     Detail { generation: u64, detail: CommitDetail },
@@ -251,7 +254,7 @@ pub enum Msg {
     /// A status run was slow enough that refreshing the index is worth a try.
     StatusSlow,
     /// A write failed on an `index.lock` while no git process runs: offer to remove it.
-    StaleIndexLock,
+    StaleIndexLock { seen: crate::write::LockId },
     HeadMessage { result: Result<String, String> },
     Error { what: String, detail: String },
 }
@@ -266,6 +269,7 @@ impl std::fmt::Debug for Msg {
             Msg::SearchHits { generation, range, hits } => write!(f, "SearchHits {{ generation: {generation}, {range:?}: {} }}", hits.len()),
             Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
             Msg::CommitRows { rows } => write!(f, "CommitRows {{ n: {} }}", rows.len()),
+            Msg::RangeCount { count, .. } => write!(f, "RangeCount {{ count: {count} }}"),
             Msg::Compare { generation, result } => write!(f, "Compare {{ generation: {generation}, {:?} }}", result.as_ref().map(|c| (c.behind.len(), c.ahead.len()))),
             Msg::AheadBehind { ab, .. } => write!(f, "AheadBehind {{ ahead: {}, behind: {} }}", ab.ahead.len(), ab.behind.len()),
             Msg::Detail { generation, detail } => write!(f, "Detail {{ generation: {generation}, id: {:?} }}", detail.row.id),
@@ -288,7 +292,7 @@ impl std::fmt::Debug for Msg {
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),
             Msg::StatusSlow => write!(f, "StatusSlow"),
-            Msg::StaleIndexLock => write!(f, "StaleIndexLock"),
+            Msg::StaleIndexLock { .. } => write!(f, "StaleIndexLock"),
             Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
             Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
             Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),

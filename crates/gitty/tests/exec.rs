@@ -150,6 +150,19 @@ fn stale_files_dropped_after_bump() {
 }
 
 #[test]
+fn a_range_count_for_an_old_selection_answers_nothing() {
+    let f = Fixture::new();
+    let ids = five(&f);
+    let gens = Gens::default();
+    gens.commit.store(9, SeqCst);
+    let (oldest, newest) = (id(&ids[1]), id(&ids[3]));
+    let msgs = run_with(&f.path(), &gens, Request::RangeCount { generation: 1, oldest, newest });
+    assert!(msgs.is_empty(), "{msgs:?}");
+    let msgs = run_with(&f.path(), &gens, Request::RangeCount { generation: 9, oldest, newest });
+    assert!(matches!(msgs[..], [Msg::RangeCount { count: 3, .. }]), "{msgs:?}");
+}
+
+#[test]
 fn prefetch_runs_even_if_stale() {
     let f = Fixture::new();
     let ids = five(&f);
@@ -560,4 +573,35 @@ fn a_panicking_status_run_still_answers_the_status_request() {
         Msg::Status { generation: 7, result: Err(e) } => assert!(e.contains("index out of bounds"), "{e}"),
         m => panic!("wanted a failed Status, got {m:?}"),
     }
+}
+
+#[test]
+fn search_work_has_its_own_pool_so_readers_never_wait_behind_it() {
+    use gitty::workers::{Pool, route};
+    assert_eq!(route(&Request::SearchPath { generation: 1, tips: vec![], path: "p".into() }), Pool::Search);
+    assert_eq!(route(&Request::RangeCount { generation: 1, oldest: CommitId::from_hex(&"a".repeat(40)).unwrap(), newest: CommitId::from_hex(&"b".repeat(40)).unwrap() }), Pool::Search);
+    assert_eq!(route(&Request::Refs), Pool::Readers);
+    assert_eq!(route(&Request::Status { generation: 1, mark: None }), Pool::Readers);
+}
+
+#[test]
+fn a_lock_replaced_after_the_offer_is_not_removed() {
+    // SAFETY: tests in this binary that read GITTY_PGREP all set the same value
+    unsafe { std::env::set_var("GITTY_PGREP", "false") };
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let seen = gitty::write::LockId::of(&lock).expect("the lock exists");
+    // another git takes the lock again in between
+    std::fs::remove_file(&lock).unwrap();
+    std::fs::write(&lock, "busy").unwrap();
+    let (r, _) = write(&f, gitty::msg::WriteOp::RemoveIndexLock { seen });
+    assert!(r.unwrap_err().contains("changed"), "a different lock");
+    assert!(lock.exists());
+    let seen = gitty::write::LockId::of(&lock).unwrap();
+    let (r, _) = write(&f, gitty::msg::WriteOp::RemoveIndexLock { seen });
+    assert_eq!(r, Ok(None));
+    assert!(!lock.exists());
 }

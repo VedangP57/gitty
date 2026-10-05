@@ -34,6 +34,9 @@ pub struct Search {
     /// (row the search started from, row the search moved the selection to). Cleared once the
     /// user moves on their own.
     jump: Option<(usize, usize)>,
+    /// (selected row, match count, the selection's rank among the matches): the label is drawn
+    /// every frame, and ranking 1.4M matches each time would cost milliseconds.
+    rank: std::cell::Cell<Option<(usize, usize, Option<usize>)>>,
 }
 
 impl App {
@@ -94,6 +97,14 @@ impl App {
         let Some(query) = Query::parse(&input) else { return };
         self.search.input = input;
         self.search.jump = Some((self.selected, self.selected));
+        self.start_search(Arc::new(query));
+    }
+
+    /// Runs `input` again without moving the selection (leaving compare).
+    pub(super) fn resume_search(&mut self, input: String) {
+        self.clear_search();
+        let Some(query) = Query::parse(&input) else { return };
+        self.search.input = input;
         self.start_search(Arc::new(query));
     }
 
@@ -219,7 +230,15 @@ impl App {
             out.push_str("no matches");
             return Some(out);
         }
-        match s.hits.iter().position(|&h| h == self.selected) {
+        let rank = match s.rank.get() {
+            Some((sel, len, k)) if (sel, len) == (self.selected, n) => k,
+            _ => {
+                let k = s.hits.contains(&self.selected).then(|| s.hits.range(..self.selected).count());
+                s.rank.set(Some((self.selected, n, k)));
+                k
+            }
+        };
+        match rank {
             Some(k) => out.push_str(&format!("{}/{n}", k + 1)),
             None => out.push_str(&format!("-/{n}")),
         }

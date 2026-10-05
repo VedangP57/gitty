@@ -274,6 +274,38 @@ impl Cancel {
     }
 }
 
+/// Reads a pipe to its end on a thread; [`Collector::finish`] takes what arrived.
+struct Collector {
+    rx: std::sync::mpsc::Receiver<Vec<u8>>,
+}
+
+impl Collector {
+    fn spawn(mut r: impl Read + Send + 'static) -> Collector {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = r.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        Collector { rx }
+    }
+
+    /// Everything until end of file, or until `grace` passes without it.
+    fn finish(self, grace: Duration) -> Vec<u8> {
+        let end = std::time::Instant::now() + grace;
+        let mut out = Vec::new();
+        loop {
+            match self.rx.recv_timeout(end.saturating_duration_since(std::time::Instant::now())) {
+                Ok(chunk) => out.extend(chunk),
+                Err(_) => return out,
+            }
+        }
+    }
+}
+
 pub struct Job {
     child: Child,
     cmd: NetCmd,
@@ -340,12 +372,7 @@ impl Job {
     /// own thread: a helper that keeps it open after git exits gets [`STDERR_GRACE`], not the
     /// rest of its life.
     pub fn wait(mut self, on_progress: &mut dyn FnMut(f32)) -> Outcome {
-        let mut out = self.child.stdout.take().expect("piped");
-        let reader = std::thread::spawn(move || {
-            let mut v = Vec::new();
-            let _ = out.read_to_end(&mut v);
-            v
-        });
+        let reader = Collector::spawn(self.child.stdout.take().expect("piped"));
         let mut err = self.child.stderr.take().expect("piped");
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
         std::thread::spawn(move || {
@@ -406,7 +433,8 @@ impl Job {
         }
         let status = self.child.wait();
         self.cancel.exited.store(true, Ordering::SeqCst);
-        let stdout = String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned();
+        // like stderr, stdout may be held by a helper git left behind
+        let stdout = String::from_utf8_lossy(&reader.finish(STDERR_GRACE)).into_owned();
         let ok = status.as_ref().is_ok_and(|s| s.success());
         // a cancel that arrived after git finished does not undo what git did
         if self.cancel.cancelled.load(Ordering::SeqCst) && !ok {
@@ -441,6 +469,20 @@ impl Job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdout_collection_gives_up_on_a_holder_after_the_grace() {
+        use std::io::Write;
+        let (r, mut w) = std::io::pipe().unwrap();
+        w.write_all(b"done\n").unwrap();
+        let c = Collector::spawn(r);
+        let t = std::time::Instant::now();
+        // `w` stays open: a helper that kept git's stdout
+        let got = c.finish(Duration::from_millis(200));
+        assert_eq!(got, b"done\n");
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        drop(w);
+    }
 
     #[test]
     fn parses_progress_lines() {

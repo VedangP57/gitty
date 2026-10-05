@@ -85,12 +85,47 @@ pub fn git_running() -> bool {
 /// `ps -o command=` lines of git processes: does any of them count? A git that exited since
 /// pgrep leaves no line.
 fn any_live_git(commands: &str) -> bool {
-    commands.lines().any(|l| !l.trim().is_empty() && !l.contains("fsmonitor--daemon"))
+    // `--daemon` helpers (fsmonitor, credential-cache) run for minutes or days and never take
+    // the index lock
+    commands.lines().any(|l| !l.trim().is_empty() && !l.contains("--daemon"))
 }
 
-/// A failed write left `index.lock` behind and no git holds it.
-pub fn stale_index_lock(h: &Handle, error: &str) -> bool {
-    error.contains("index.lock") && h.owner().git_dir().join("index.lock").exists() && !git_running()
+/// One particular lock file: removal is refused if the lock was replaced since it was offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockId {
+    ino: u64,
+    mtime_ns: i128,
+}
+
+impl LockId {
+    pub fn of(path: &Path) -> Option<LockId> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::symlink_metadata(path).ok()?;
+        Some(LockId { ino: m.ino(), mtime_ns: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()) })
+    }
+}
+
+/// A failed write left `index.lock` behind and no git holds it: the lock to offer removing.
+pub fn stale_index_lock(h: &Handle, error: &str) -> Option<LockId> {
+    if !error.contains("index.lock") {
+        return None;
+    }
+    let id = LockId::of(&h.owner().git_dir().join("index.lock"))?;
+    (!git_running()).then_some(id)
+}
+
+/// The worktree file's git-form blob now. A file that needed no conversion when its diff was
+/// made is hashed as it is (no filter pipeline, which re-reads the whole index); otherwise the
+/// conversion runs again.
+fn worktree_blob(h: &Handle, entry: &gitty_core::status::StatusEntry, texts: &gitty_core::stage::Texts) -> anyhow::Result<BlobId> {
+    let full = workdir(h)?.join(&entry.path);
+    if texts.wt_is_raw && std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_file()) {
+        let raw = std::fs::read(&full).with_context(|| format!("reading {}", entry.path))?;
+        if BlobId::hash_of(&raw) == texts.wt_blob {
+            return Ok(texts.wt_blob);
+        }
+    }
+    Ok(h.stage_texts(entry)?.wt_blob)
 }
 
 fn workdir(h: &Handle) -> anyhow::Result<PathBuf> {
@@ -110,22 +145,23 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         WriteOp::SetStaged { entry, texts, diff, flags } => {
             // whole-file plans run `git add`/`restore`, which take the file as it is now: refuse
             // if it is not what the user saw (an autosave or formatter in between)
-            let now = h.stage_texts(entry)?;
-            if now.wt_blob != texts.wt_blob {
+            if worktree_blob(h, entry, texts)? != texts.wt_blob {
                 bail!("{} changed on disk since its diff was loaded; refreshing", entry.path);
             }
-            if cli.index_blob(&entry.path)? != entry.index_blob {
-                bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
-            }
             // a rename's HEAD side is the original path
-            if cli.head_blob(entry.orig_path.as_deref().unwrap_or(&entry.path))? != entry.head_blob {
+            if h.head_blob(entry.orig_path.as_deref().unwrap_or(&entry.path))? != entry.head_blob {
                 bail!("{} changed in HEAD since its diff was loaded; refreshing", entry.path);
             }
-            match plan(entry, texts, &diff.ops, flags) {
+            let plan = plan(entry, texts, &diff.ops, flags);
+            // a patch checks the index itself, just before applying
+            if !matches!(plan, Plan::Patch { .. }) && h.index_entry_blob(&entry.path)? != entry.index_blob {
+                bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
+            }
+            match plan {
                 Plan::Nothing => {}
                 Plan::StageFile(paths) => cli.stage_paths(&paths)?,
                 Plan::UnstageFile(paths) => cli.unstage_paths(&paths)?,
-                Plan::Patch { patch, expect, target } => cli.apply_cached(&patch, &entry.path, expect, target)?,
+                Plan::Patch { patch, expect, target } => h.apply_cached(&patch, &entry.path, expect, target)?,
             }
         }
         WriteOp::WriteFile { path, bytes, expect, head_path, head } => {
@@ -134,7 +170,7 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             if BlobId::hash_of(&now) != *expect {
                 bail!("{path} changed on disk since its diff was loaded; nothing was discarded");
             }
-            if cli.head_blob(head_path)? != *head {
+            if h.head_blob(head_path)? != *head {
                 bail!("{path} changed in HEAD since its diff was loaded; nothing was discarded");
             }
             let note = fallback_note(to_trash(&full)?);
@@ -181,11 +217,14 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             }
             return Ok(note);
         }
-        WriteOp::RemoveIndexLock => {
+        WriteOp::RemoveIndexLock { seen } => {
             if git_running() {
                 bail!("a git process is running and may hold the lock; nothing was removed");
             }
             let lock = h.owner().git_dir().join("index.lock");
+            if LockId::of(&lock).is_some_and(|now| now != *seen) {
+                bail!("the index.lock changed since it was offered (another git took it); nothing was removed");
+            }
             match std::fs::remove_file(&lock) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("removing {}", lock.display())),
                 _ => {}
@@ -208,5 +247,7 @@ mod tests {
         assert!(!super::any_live_git(daemon));
         assert!(!super::any_live_git(""));
         assert!(super::any_live_git(&format!("{daemon}git commit -q\n")));
+        // the credential cache stays up for 15 minutes after a push and never touches the index
+        assert!(!super::any_live_git("git credential-cache--daemon /Users/u/.cache/git/credential/socket\n"));
     }
 }

@@ -10,9 +10,9 @@ use std::process::{Command, Stdio};
 use anyhow::Context;
 
 use crate::GitError;
-use crate::commit_files::BlobId;
 use crate::repo::Repo;
 use crate::status::{self, Status};
+use crate::types::CommitId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -101,6 +101,41 @@ impl GitCli {
         Ok(stdout)
     }
 
+    /// Runs a read and returns its stdout, killing it as soon as `cancelled` says so (checked
+    /// every 20 ms) instead of holding the calling thread until it finishes.
+    pub fn read_cancellable(&self, mut cmd: Command, cancelled: &dyn Fn() -> bool) -> anyhow::Result<Vec<u8>> {
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().context("running git")?;
+        let (mut out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = out.read_to_end(&mut v);
+            v
+        });
+        let errs = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = err.read_to_string(&mut s);
+            s
+        });
+        let status = loop {
+            if cancelled() {
+                // SAFETY: the child runs in its own session (`cmd`), so its group is its pid
+                unsafe { libc::killpg(child.id() as i32, libc::SIGKILL) };
+                let _ = child.wait();
+                anyhow::bail!("cancelled");
+            }
+            if let Some(st) = child.try_wait()? {
+                break st;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let out = reader.join().unwrap_or_default();
+        if !status.success() {
+            anyhow::bail!("{}", errs.join().unwrap_or_default().trim());
+        }
+        Ok(out)
+    }
+
     fn quiet(&self, kind: Kind, args: &[&str], stdin: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
         self.run(self.cmd(kind, args), stdin, &mut |_| {})
     }
@@ -157,52 +192,22 @@ impl GitCli {
         }
     }
 
-    /// The index entry (stage 0) for `path`, if any.
-    pub fn index_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
-        let out = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-files", "-s", "-z", "--", path], None)?;
-        let rec = out.split(|&b| b == 0).next().unwrap_or(&[]);
-        let s = String::from_utf8_lossy(rec);
-        // "<mode> <hex> <stage>\t<path>"
-        let blob = s.split(' ').nth(1).and_then(BlobId::from_hex);
-        // an intent-to-add entry (`git add -N`) lists the empty blob, but status (which the
-        // entry's index_blob came from) says it has no index side
-        if blob == Some(BlobId::hash_of(b"")) && self.intent_to_add(path)? {
-            return Ok(None);
-        }
-        Ok(blob)
+    /// Commits in `oldest^..newest`, first parent only: what a range's diff covers. A merge as
+    /// `oldest` brings in its merged side; a root `oldest` has no `^1`, which `--ignore-missing`
+    /// drops, counting all of `newest`'s history.
+    /// Across a big merge on a huge history this takes seconds: a newer selection cancels it.
+    pub fn range_count(&self, oldest: CommitId, newest: CommitId, cancelled: &dyn Fn() -> bool) -> anyhow::Result<usize> {
+        let (o, n) = (format!("{oldest}^1"), newest.to_string());
+        let cmd = self.cmd(Kind::Read, &["rev-list", "--ignore-missing", "--count", &n, "--not", &o]);
+        let out = self.read_cancellable(cmd, cancelled)?;
+        Ok(String::from_utf8_lossy(&out).trim().parse()?)
     }
 
-    /// The blob `path` has in HEAD; None when HEAD lacks it or is unborn.
-    pub fn head_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
-        let Ok(out) = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-tree", "-z", "--full-tree", "HEAD", "--", path], None) else {
-            return Ok(None);
-        };
-        let rec = String::from_utf8_lossy(out.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
-        // "<mode> <type> <hex>\t<path>"
-        Ok(rec.split('\t').next().and_then(|m| m.split(' ').nth(2)).and_then(BlobId::from_hex))
-    }
-
-    fn intent_to_add(&self, path: &str) -> anyhow::Result<bool> {
-        let out = self.quiet(Kind::Read, &["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=no", "--", path], None)?;
-        let rec = String::from_utf8_lossy(out.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
-        // "1 XY sub mH mI mW hH hI path": an all-zero index mode is the intent-to-add marker
-        Ok(rec.strip_prefix("1 ").and_then(|r| r.split(' ').nth(3)).is_some_and(|m| m == "000000"))
-    }
-
-    /// Applies a patch to the index after checking `path`'s entry is still `expect` (spec §12.2
-    /// TOCTOU guard): a mismatch means the index changed since the diff was made.
-    /// Afterwards the entry must be `target`: anything else is reported, not left silent.
-    pub fn apply_cached(&self, patch: &[u8], path: &str, expect: Option<BlobId>, target: BlobId) -> anyhow::Result<()> {
-        if self.index_blob(path)? != expect {
-            anyhow::bail!("{path} changed in the index since its diff was loaded; refreshing");
-        }
-        self.quiet(Kind::Write, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(patch))?;
-        let got = self.index_blob(path)?;
-        if got != Some(target) {
-            let got = got.map_or("no entry".to_string(), |b| b.to_string());
-            anyhow::bail!("the index now has {path} as {got}, not what was selected ({target}); check `git diff --cached -- {path}`");
-        }
-        Ok(())
+    /// `git apply --cached`: the patch goes into the index ([`Handle::apply_cached`] guards it).
+    ///
+    /// [`Handle::apply_cached`]: crate::Handle::apply_cached
+    pub fn apply_to_index(&self, patch: &[u8]) -> anyhow::Result<()> {
+        self.quiet(Kind::Write, &["apply", "--cached", "--whitespace=nowarn", "-"], Some(patch)).map(|_| ())
     }
 
     /// `git commit -F -`; hook output streams through `on_stderr`.

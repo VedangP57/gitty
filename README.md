@@ -48,8 +48,12 @@ open it in `$EDITOR` at that line.
 
 Every key below can be rebound in `~/.config/gitty/config.toml` under `[keys]`, using the
 config name: `fetch = "F5"` or `down = ["j", "ctrl-n"]`. A rebound action loses its default
-keys. Text inputs (the commit box, prompts, the search bar) are never remapped. A key bound
-twice, or an unknown name, is reported at startup and the first binding wins.
+keys. Text inputs (the commit box, prompts, the search bar) are never remapped. These are
+reported at startup:
+- one key bound to two of your actions that share a screen (the first in the file keeps it);
+- a default action left with no key because you gave its key to another action;
+- an unknown action name or key;
+- Ctrl-C or Ctrl-Z, which always quit and suspend.
 
 <!-- keys:start -->
 | Keys | Action | Config name |
@@ -133,7 +137,7 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `emph_alpha` | theme's | 0.0–1.0, strength of the changed-word highlight |
 | `auto_fetch_minutes` | `5` | 0 turns the background fetch off |
 | `auto_tune` | `true` | tune large repositories (see below) |
-| `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"` |
+| `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 
 ```toml
