@@ -851,3 +851,36 @@ fn search_bar_shows_position_and_progress_and_matches_are_highlighted() {
     let (x, y) = find(&b, "plain 25").expect("non-match drawn");
     assert_ne!(b[(x, y)].fg, warning);
 }
+
+#[test]
+fn shift_click_extends_a_range_and_the_header_shows_it() {
+    let f = Fixture::new();
+    for i in 0..5 {
+        f.write("a.txt", format!("{i}\n"));
+        f.write(&format!("f{i}.txt"), "x\nx\n");
+        f.commit(&format!("change {i}"), NOW - DAY + i * 60);
+    }
+    let mut t = H::new(&f, "github-dark", (140, 40));
+    let b = t.render(140, 40);
+    let (x, y) = find(&b, "change 2").unwrap();
+    let m = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::SHIFT };
+    t.app.handle_mouse(m(MouseEventKind::Down(MouseButton::Left)));
+    t.app.handle_mouse(m(MouseEventKind::Up(MouseButton::Left)));
+    t.pump();
+    assert_eq!(t.app.selected_range(), Some((2, 0)), "shift-click anchors at the selection and extends");
+    let b = t.render(140, 40);
+    let s = text(&b);
+    let (oldest, newest) = (f.git(&["rev-parse", "--short=7", "HEAD~2"]), f.git(&["rev-parse", "--short=7", "HEAD"]));
+    let header = s.lines().nth(1).unwrap();
+    assert!(header.contains(&format!("3 commits · {oldest}..{newest}")), "{header}");
+    // a.txt 2→4 (+1 −1) and three new two-line files
+    assert!(header.contains("+7 −1"), "{header}");
+    let ctrl = |kind| MouseEvent { kind, column: x, row: y + 1, modifiers: KeyModifiers::CONTROL };
+    t.app.handle_mouse(ctrl(MouseEventKind::Down(MouseButton::Left)));
+    t.pump();
+    assert_eq!(t.app.selected_range(), Some((3, 0)), "ctrl-click extends like shift-click");
+    let plain = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(plain(MouseEventKind::Down(MouseButton::Left)));
+    t.pump();
+    assert_eq!(t.app.selected_range(), None, "a plain click ends the range");
+}

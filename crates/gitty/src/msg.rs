@@ -22,6 +22,15 @@ use gitty_core::CommitId;
 
 pub type SharedHistory = Arc<RwLock<History>>;
 
+/// Where a file list comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FilesOf {
+    /// One commit against its first parent.
+    Commit(CommitId),
+    /// A contiguous run of history: `oldest^..newest` (the empty tree for a root commit).
+    Range { oldest: CommitId, newest: CommitId },
+}
+
 /// Current generations: `session` (history walk), `commit` (selected commit), `file` (diff),
 /// `search` (history search).
 #[derive(Debug, Default)]
@@ -133,7 +142,7 @@ pub enum Request {
     SearchPath { generation: u64, tips: Vec<CommitId>, path: String },
     Detail { generation: u64, id: CommitId },
     /// File list then line stats. Prefetches are never cancelled (they fill the cache).
-    Files { generation: u64, id: CommitId, prefetch: bool },
+    Files { generation: u64, of: FilesOf, prefetch: bool },
     Diff { generation: u64, file: FileChange, opts: DiffOptions, force_text: bool },
     /// Finish intraline for a cached diff whose computation was cut short.
     Intraline { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
@@ -193,11 +202,11 @@ pub enum Msg {
     SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
     AheadBehind { local: CommitId, upstream: CommitId, ab: AheadBehind },
     Detail { generation: u64, detail: CommitDetail },
-    Files { generation: u64, id: CommitId, files: Arc<Vec<FileChange>>, prefetch: bool },
-    FilesError { generation: u64, id: CommitId, prefetch: bool, detail: String },
-    /// Stats for `files[start..start + stats.len()]` of commit `id`.
+    Files { generation: u64, of: FilesOf, files: Arc<Vec<FileChange>>, prefetch: bool },
+    FilesError { generation: u64, of: FilesOf, prefetch: bool, detail: String },
+    /// Stats for `files[start..start + stats.len()]` of the list `of`.
     /// `None` where a blob could not be read (e.g. a partial clone).
-    Stats { id: CommitId, start: usize, stats: Vec<Option<LineStats>>, done: bool },
+    Stats { of: FilesOf, start: usize, stats: Vec<Option<LineStats>>, done: bool },
     Diff { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
     IntralineDone { key: DiffKey },
     DiffError { generation: u64, key: DiffKey, detail: String },
@@ -241,9 +250,9 @@ impl std::fmt::Debug for Msg {
             Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
             Msg::AheadBehind { ab, .. } => write!(f, "AheadBehind {{ ahead: {}, behind: {} }}", ab.ahead.len(), ab.behind.len()),
             Msg::Detail { generation, detail } => write!(f, "Detail {{ generation: {generation}, id: {:?} }}", detail.row.id),
-            Msg::Files { generation, id, files, prefetch } => write!(f, "Files {{ generation: {generation}, id: {id:?}, n: {}, prefetch: {prefetch} }}", files.len()),
-            Msg::FilesError { id, prefetch, detail, .. } => write!(f, "FilesError {{ id: {id:?}, prefetch: {prefetch}, {detail} }}"),
-            Msg::Stats { id, start, stats, done } => write!(f, "Stats {{ id: {id:?}, start: {start}, n: {}, done: {done} }}", stats.len()),
+            Msg::Files { generation, of, files, prefetch } => write!(f, "Files {{ generation: {generation}, {of:?}, n: {}, prefetch: {prefetch} }}", files.len()),
+            Msg::FilesError { of, prefetch, detail, .. } => write!(f, "FilesError {{ {of:?}, prefetch: {prefetch}, {detail} }}"),
+            Msg::Stats { of, start, stats, done } => write!(f, "Stats {{ {of:?}, start: {start}, n: {}, done: {done} }}", stats.len()),
             Msg::Diff { generation, key, .. } => write!(f, "Diff {{ generation: {generation}, path: {} }}", key.path),
             Msg::IntralineDone { key } => write!(f, "IntralineDone {{ path: {} }}", key.path),
             Msg::DiffError { key, detail, .. } => write!(f, "DiffError {{ {}: {detail} }}", key.path),

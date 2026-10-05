@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use gitty::exec::exec;
-use gitty::msg::{Gens, Msg, Request};
+use gitty::msg::{FilesOf, Gens, Msg, Request};
 use gitty_core::Repo;
 use gitty_core::refs::HistoryScope;
 
@@ -41,6 +41,12 @@ fn main() {
     exec(&h, Request::Rows { session: 0, ids: ids.clone() }, &mut |_| {}, &gens);
     println!("decode 100 rows  {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
     let t = Instant::now();
-    exec(&h, Request::Files { generation: 0, id: ids[0].1, prefetch: true }, &mut |_| {}, &gens);
+    exec(&h, Request::Files { generation: 0, of: FilesOf::Commit(ids[0].1), prefetch: true }, &mut |_| {}, &gens);
     println!("files+stats HEAD {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
+    // one search chunk on this thread; the app spreads chunks over the reader pool
+    let query = std::sync::Arc::new(gitty_core::search::Query::parse("zzz-no-such-text").unwrap());
+    let n = len.min(gitty::app::search::SEARCH_CHUNK);
+    let t = Instant::now();
+    exec(&h, Request::Search { generation: 0, query, paths: None, history: hist.clone(), range: 0..n }, &mut |_| {}, &gens);
+    println!("search chunk     {:>8.1} ms ({n} rows)", t.elapsed().as_secs_f64() * 1e3);
 }

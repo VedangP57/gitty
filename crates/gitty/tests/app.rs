@@ -10,7 +10,7 @@ use gitty::app::diffstate::{DiffState, VRow};
 use gitty::app::{App, AppInit, Focus};
 use gitty::config::{Config, UiState};
 use gitty::exec::exec;
-use gitty::msg::{DiffKey, Gens, HlKey, Msg, Request};
+use gitty::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request};
 use gitty::theme::{ColorDepth, Registry};
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::Row;
@@ -148,7 +148,7 @@ fn selecting_commit_requests_files_and_detail() {
     t.pump();
     t.ch('j');
     let r = t.app.take_requests();
-    let requested = r.iter().any(|r| matches!(r, Request::Files { id, prefetch: false, .. } if *id == CommitId::from_hex(&ids[3]).unwrap()));
+    let requested = r.iter().any(|r| matches!(r, Request::Files { of: FilesOf::Commit(id), prefetch: false, .. } if *id == CommitId::from_hex(&ids[3]).unwrap()));
     assert!(requested || t.app.files_for() == Some(id(&ids[3])), "files requested or served from the prefetch cache");
     assert!(r.iter().any(|r| matches!(r, Request::Detail { .. })) || t.app.detail.is_some());
     for m in t.exec_all(r) {
@@ -170,7 +170,7 @@ fn stale_files_message_ignored() {
     let stale_gen = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
     t.ch('j');
     let shown = t.app.files_for();
-    t.app.handle_msg(Msg::Files { generation: stale_gen, id: id(&ids[3]), files: Arc::new(vec![]), prefetch: false });
+    t.app.handle_msg(Msg::Files { generation: stale_gen, of: FilesOf::Commit(id(&ids[3])), files: Arc::new(vec![]), prefetch: false });
     assert_eq!(t.app.files_for(), shown);
     assert_ne!(t.app.files_for(), Some(id(&ids[3])));
     t.pump();
@@ -603,13 +603,13 @@ fn files_error_is_shown_and_prefetch_errors_are_quiet() {
     }
     let in_flight = t.app.prefetch_in_flight();
     assert_eq!(in_flight, 10);
-    t.app.handle_msg(Msg::FilesError { generation: 0, id: id(&ids[13]), prefetch: true, detail: "boom".into() });
+    t.app.handle_msg(Msg::FilesError { generation: 0, of: FilesOf::Commit(id(&ids[13])), prefetch: true, detail: "boom".into() });
     assert_eq!(t.app.prefetch_in_flight(), 9, "a failed prefetch frees its slot");
     assert!(t.app.toast.is_none(), "prefetch failures are not the user's problem");
     t.ch('G');
     let generation = t.gens.commit.load(std::sync::atomic::Ordering::SeqCst);
     let sel = t.selected_id();
-    t.app.handle_msg(Msg::FilesError { generation, id: sel, prefetch: false, detail: "object not found".into() });
+    t.app.handle_msg(Msg::FilesError { generation, of: FilesOf::Commit(sel), prefetch: false, detail: "object not found".into() });
     assert_eq!(t.app.files_error.as_deref(), Some("object not found"));
     assert!(!t.app.diff_loading());
 }
@@ -1717,4 +1717,132 @@ fn path_search_keeps_commits_touching_the_path() {
     t.pump();
     assert!(hits(&t).is_empty());
     assert_eq!(t.app.search_label().as_deref(), Some("/path:nowhere  no matches"));
+}
+
+/// c0: a=1 · c1: a=2, b · c2: a=3 · c3: c (history indices 3, 2, 1, 0).
+fn range_fixture() -> (Fixture, Vec<String>) {
+    let f = Fixture::new();
+    let mut ids = Vec::new();
+    f.write("a.txt", "1\n");
+    ids.push(f.commit("c0", 1_700_000_000));
+    f.write("a.txt", "2\n");
+    f.write("b.txt", "b\n");
+    ids.push(f.commit("c1", 1_700_000_100));
+    f.write("a.txt", "3\n");
+    ids.push(f.commit("c2", 1_700_000_200));
+    f.write("c.txt", "c\n");
+    ids.push(f.commit("c3", 1_700_000_300));
+    (f, ids)
+}
+
+fn file_paths(t: &H) -> Vec<String> {
+    let mut v: Vec<String> = t.app.files.as_ref().unwrap().iter().map(|f| f.path.clone()).collect();
+    v.sort();
+    v
+}
+
+fn git_names(f: &Fixture, a: &str, b: &str) -> Vec<String> {
+    let mut v: Vec<String> = f.git(&["diff", "--name-only", a, b]).lines().map(str::to_string).collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn range_lists_the_union_of_files_with_one_combined_diff_each() {
+    let (f, ids) = range_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.ch('V');
+    t.ch('j');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.selected_range(), Some((2, 0)));
+    assert_eq!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[1]), newest: id(&ids[3]) }));
+    assert_eq!(file_paths(&t), ["a.txt", "b.txt", "c.txt"]);
+    let i = t.app.files.as_ref().unwrap().iter().position(|f| f.path == "a.txt").unwrap();
+    t.app.select_file(i);
+    t.pump();
+    let d = &t.app.diff.as_ref().unwrap().diff;
+    assert_eq!((d.old.bytes(), d.new.bytes()), (&b"1\n"[..], &b"3\n"[..]), "a file changed twice shows one diff");
+    assert_eq!(t.app.focus, Focus::History);
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.selected_range(), None, "Esc ends the range");
+    assert_eq!(t.app.files_for(), Some(id(&ids[1])));
+}
+
+#[test]
+fn range_from_the_root_commit_diffs_against_the_empty_tree() {
+    let (f, ids) = range_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.ch('V');
+    t.ch('G');
+    t.pump();
+    assert_eq!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[0]), newest: id(&ids[2]) }));
+    assert_eq!(file_paths(&t), ["a.txt", "b.txt"]);
+    t.ch('V');
+    t.pump();
+    assert_eq!(t.app.selected_range(), None, "V again ends the range");
+}
+
+#[test]
+fn range_across_a_merge_matches_git_diff() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-qb", "feature"]);
+    f.write("f.txt", "f\n");
+    f.commit("feature work", 1_700_000_100);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "m\n");
+    f.commit("main work", 1_700_000_200);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge feature", "feature"], &[("GIT_AUTHOR_DATE", "1700000300 +0000".into()), ("GIT_COMMITTER_DATE", "1700000300 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    let Some(FilesOf::Range { oldest, newest }) = t.app.files_of() else { panic!("{:?}", t.app.files_of()) };
+    assert_eq!(file_paths(&t), git_names(&f, &format!("{oldest}^"), &newest.to_string()));
+}
+
+#[test]
+fn a_stale_range_file_list_is_dropped_after_the_selection_moves() {
+    let (f, ids) = range_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    let first = t.app.take_requests();
+    assert!(first.iter().any(|r| matches!(r, Request::Files { of: FilesOf::Range { .. }, prefetch: false, .. })));
+    t.ch('j');
+    let msgs = t.exec_all(first);
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    assert_ne!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[2]), newest: id(&ids[3]) }), "old range not installed");
+    t.pump();
+    assert_eq!(t.app.files_of(), Some(FilesOf::Range { oldest: id(&ids[1]), newest: id(&ids[3]) }));
+
+    // ending the range does not move the selection: only the list identity tells the replies apart
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(0);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    let reqs = t.app.take_requests();
+    t.ch('V');
+    for m in t.exec_all(reqs) {
+        t.app.handle_msg(m);
+    }
+    assert!(!matches!(t.app.files_of(), Some(FilesOf::Range { .. })), "a range list arriving after the range ended is dropped");
+    t.pump();
+    assert_eq!(t.app.files_for(), Some(id(&ids[2])));
 }

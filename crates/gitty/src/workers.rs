@@ -49,7 +49,7 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
             }
             while let Some(req) = next(&high_rx, &low_rx) {
                 let files_req = match &req {
-                    Request::Files { generation, id, prefetch } => Some((*generation, *id, *prefetch)),
+                    Request::Files { generation, of, prefetch } => Some((*generation, *of, *prefetch)),
                     _ => None,
                 };
                 // a write that panics still reports done, so the app stops waiting for it
@@ -73,7 +73,7 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
                         .or_else(|| p.downcast_ref::<String>().cloned())
                         .unwrap_or_else(|| "unknown panic".into());
                     let _ = match (files_req, write_req, net_req) {
-                        (Some((generation, id, prefetch)), _, _) => wtx.send(Msg::FilesError { generation, id, prefetch, detail }),
+                        (Some((generation, of, prefetch)), _, _) => wtx.send(Msg::FilesError { generation, of, prefetch, detail }),
                         (_, Some(op), _) => wtx.send(Msg::WriteDone { op, result: Err(format!("internal error: {detail}")) }),
                         (_, _, Some((op, background))) => {
                             wtx.send(Msg::NetDone { op, background, outcome: gitty_core::net::Outcome::Failed { detail: format!("internal error: {detail}") } })

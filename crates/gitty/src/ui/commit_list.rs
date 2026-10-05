@@ -76,10 +76,16 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         (app.list_scroll..(app.list_scroll + n).min(h.len())).map(|i| (i, h.id(i))).collect()
     };
     let focused = app.focus == Focus::History;
+    let range = app.selected_range();
     for (k, (i, id)) in ids.into_iter().enumerate() {
         let y = rows.y + k as u16 * row_h;
         let selected = i == app.selected;
-        let bg = if selected { if focused { ui.selection } else { ui.selection_inactive } } else { ui.bg };
+        let in_range = range.is_some_and(|(oldest, newest)| (newest..=oldest).contains(&i));
+        let bg = match (selected, in_range) {
+            (true, _) if focused => ui.selection,
+            (true, _) | (false, true) => ui.selection_inactive,
+            _ => ui.bg,
+        };
         let base = Style::new().bg(bg).fg(ui.fg);
         fill(buf, Rect::new(rows.x, y, rows.width, row_h.min(rows.bottom() - y)), base);
         let behind = app.behind.contains(&id);

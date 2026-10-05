@@ -86,6 +86,8 @@ impl App {
                 KeyCode::Char('/') => return self.open_search(),
                 KeyCode::Char('n') => return self.search_step(true),
                 KeyCode::Char('N') => return self.search_step(false),
+                KeyCode::Char('V') => return self.toggle_range(),
+                KeyCode::Esc if self.focus == Focus::History && self.range_anchor.is_some() => return self.end_range(),
                 KeyCode::Esc if self.focus == Focus::History && self.search_active() => return self.clear_search(),
                 _ => {}
             }
@@ -416,7 +418,7 @@ impl App {
         let (x, y) = (m.column, m.row);
         self.dirty = true;
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => self.click(x, y),
+            MouseEventKind::Down(MouseButton::Left) => self.click(x, y, m.modifiers),
             MouseEventKind::Drag(MouseButton::Left) if self.changes.gutter_drag => self.gutter_drag(y),
             MouseEventKind::Drag(MouseButton::Left) => self.drag(x, y),
             MouseEventKind::Up(MouseButton::Left) => {
@@ -433,7 +435,7 @@ impl App {
         }
     }
 
-    fn click(&mut self, x: u16, y: u16) {
+    fn click(&mut self, x: u16, y: u16, mods: KeyModifiers) {
         if self.overlay.is_some() {
             return;
         }
@@ -452,7 +454,12 @@ impl App {
             self.focus = Focus::History;
             let i = self.hits.history_first + ((y - r.y) / self.hits.history_row_h.max(1)) as usize;
             if i < self.history_len {
-                self.select(i);
+                if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL) {
+                    self.extend_range(i);
+                } else {
+                    self.range_anchor = None;
+                    self.select(i);
+                }
             }
         } else if let Some(r) = inside(self.hits.files_rows, x, y) {
             self.focus = Focus::Files;

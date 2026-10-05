@@ -25,7 +25,7 @@ use ratatui::layout::Rect;
 
 use crate::config::{Config, Density, UiState};
 use crate::dates::{DateMode, next_threshold};
-use crate::msg::{DiffKey, Gens, HlKey, Msg, Request, SharedHistory};
+use crate::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
 use crate::ui::layout::{self, LayoutInput, Mode, Panes, Sep};
 use diffstate::{DiffState, Wrap};
@@ -183,14 +183,18 @@ pub struct App {
     pub detail: Option<CommitDetail>,
     pub header_expanded: bool,
     pub files: Option<Arc<Vec<FileChange>>>,
-    files_id: Option<CommitId>,
+    /// The list `files` shows, and the one the selection wants (they differ while loading).
+    files_of: Option<FilesOf>,
+    files_wanted: Option<FilesOf>,
+    /// `V` (or Shift-click): the other end of a contiguous range ending at `selected`.
+    pub range_anchor: Option<usize>,
     pub stats: Vec<Option<LineStats>>,
     pub stats_done: bool,
     /// Listing the selected commit's files failed.
     pub files_error: Option<String>,
     pub file_sel: usize,
     pub file_scroll: usize,
-    file_cache: Lru<CommitId, CachedFiles>,
+    file_cache: Lru<FilesOf, CachedFiles>,
     prefetching: HashSet<CommitId>,
 
     pub diff: Option<DiffState>,
@@ -287,7 +291,9 @@ impl App {
             detail: None,
             header_expanded: false,
             files: None,
-            files_id: None,
+            files_of: None,
+            files_wanted: None,
+            range_anchor: None,
             stats: Vec::new(),
             stats_done: false,
             files_error: None,
@@ -343,9 +349,20 @@ impl App {
     pub fn selected_id(&self) -> Option<CommitId> {
         self.selected_id
     }
-    /// The commit whose file list is shown.
+    /// The commit whose file list is shown (None for a range).
     pub fn files_for(&self) -> Option<CommitId> {
-        self.files_id
+        match self.files_of? {
+            FilesOf::Commit(id) => Some(id),
+            FilesOf::Range { .. } => None,
+        }
+    }
+    pub fn files_of(&self) -> Option<FilesOf> {
+        self.files_of
+    }
+    /// (oldest, newest) history indices of the selected range; None without a range.
+    pub fn selected_range(&self) -> Option<(usize, usize)> {
+        let a = self.range_anchor.filter(|&a| a < self.history_len)?;
+        Some((a.max(self.selected), a.min(self.selected)))
     }
     pub fn selected_row(&self) -> Option<&CommitRow> {
         self.rows.get(&self.selected).filter(|r| Some(r.id) == self.selected_id)
@@ -511,30 +528,32 @@ impl App {
                     self.detail = Some(detail);
                 }
             }
-            Msg::Files { generation, id, files, prefetch } => {
-                if prefetch {
+            Msg::Files { generation, of, files, prefetch } => {
+                if let (true, FilesOf::Commit(id)) = (prefetch, of) {
                     self.prefetching.remove(&id);
                 }
-                if !self.file_cache.contains(&id) {
+                if !self.file_cache.contains(&of) {
                     let n = files.len();
-                    self.file_cache.insert(id, CachedFiles { files: files.clone(), stats: vec![None; n], done: n == 0 });
+                    self.file_cache.insert(of, CachedFiles { files: files.clone(), stats: vec![None; n], done: n == 0 });
                 }
-                if !prefetch && generation == self.commit_gen && Some(id) == self.selected_id && self.files_id != Some(id) {
-                    let cached = self.file_cache.get(&id).cloned();
+                if !prefetch && generation == self.commit_gen && Some(of) == self.files_wanted && self.files_of != Some(of) {
+                    let cached = self.file_cache.get(&of).cloned();
                     if let Some(c) = cached {
-                        self.install_files(id, c);
+                        self.install_files(of, c);
                     }
                 }
             }
-            Msg::FilesError { generation, id, prefetch, detail } => {
+            Msg::FilesError { generation, of, prefetch, detail } => {
                 if prefetch {
-                    self.prefetching.remove(&id);
-                } else if generation == self.commit_gen && Some(id) == self.selected_id {
+                    if let FilesOf::Commit(id) = of {
+                        self.prefetching.remove(&id);
+                    }
+                } else if generation == self.commit_gen && Some(of) == self.files_wanted {
                     self.files_error = Some(detail);
                 }
             }
-            Msg::Stats { id, start, stats, done } => {
-                if let Some(c) = self.file_cache.get(&id) {
+            Msg::Stats { of, start, stats, done } => {
+                if let Some(c) = self.file_cache.get(&of) {
                     for (i, s) in stats.iter().enumerate() {
                         if let Some(slot) = c.stats.get_mut(start + i) {
                             *slot = *s;
@@ -542,7 +561,7 @@ impl App {
                     }
                     c.done |= done;
                 }
-                if self.files_id == Some(id) {
+                if self.files_of == Some(of) {
                     for (i, s) in stats.into_iter().enumerate() {
                         if let Some(slot) = self.stats.get_mut(start + i) {
                             *slot = s;
@@ -635,6 +654,8 @@ impl App {
         self.history_done = false;
         self.rows.clear();
         self.requested_rows.clear();
+        // indices of the old walk mean nothing in the new one
+        self.range_anchor = None;
         self.outbox.push(Request::Walk { session: self.session, tips });
         self.restart_search();
     }
@@ -651,7 +672,9 @@ impl App {
         self.selected = 0;
         self.detail = None;
         self.files = None;
-        self.files_id = None;
+        self.files_of = None;
+        self.files_wanted = None;
+        self.range_anchor = None;
         self.files_error = None;
         self.stats.clear();
         self.diff = None;
@@ -666,6 +689,29 @@ impl App {
     fn history_id(&self, i: usize) -> Option<CommitId> {
         let h = self.history.as_ref()?.read().unwrap_or_else(PoisonError::into_inner);
         (i < h.len()).then(|| h.id(i))
+    }
+
+    /// `V`: starts a range at the selection, or ends the current one.
+    pub fn toggle_range(&mut self) {
+        self.range_anchor = match self.range_anchor {
+            Some(_) => None,
+            None => Some(self.selected),
+        };
+        self.load_files();
+    }
+
+    pub fn end_range(&mut self) {
+        if self.range_anchor.take().is_some() {
+            self.load_files();
+        }
+    }
+
+    /// Shift- or Ctrl-click: extends a range (anchored at the selection) to `idx`.
+    pub fn extend_range(&mut self, idx: usize) {
+        if self.range_anchor.is_none() {
+            self.range_anchor = Some(self.selected);
+        }
+        self.select(idx);
     }
 
     /// Selects history row `idx` on the user's behalf (cancels a pending re-selection).
@@ -683,27 +729,47 @@ impl App {
         self.selected = idx;
         self.ensure_list_visible();
         self.request_visible_rows();
-        if Some(id) == self.selected_id {
+        if Some(id) != self.selected_id {
+            self.selected_id = Some(id);
+            self.commit_gen = Gens::bump(&self.gens.commit);
+            self.detail = None;
+            self.outbox.push(Request::Detail { generation: self.commit_gen, id });
+        }
+        self.load_files();
+    }
+
+    /// The file list the selection asks for: the range when one is selected, else the commit.
+    fn files_target(&self) -> Option<FilesOf> {
+        let id = self.selected_id?;
+        match self.selected_range() {
+            Some((oldest, newest)) if oldest != newest => {
+                Some(FilesOf::Range { oldest: self.history_id(oldest)?, newest: self.history_id(newest)? })
+            }
+            _ => Some(FilesOf::Commit(id)),
+        }
+    }
+
+    /// Shows (or requests) the wanted file list when it changed.
+    fn load_files(&mut self) {
+        let Some(of) = self.files_target() else { return };
+        if self.files_wanted == Some(of) {
             return;
         }
-        self.selected_id = Some(id);
-        self.commit_gen = Gens::bump(&self.gens.commit);
-        self.detail = None;
+        self.files_wanted = Some(of);
         self.files = None;
-        self.files_id = None;
+        self.files_of = None;
         self.stats.clear();
         self.stats_done = false;
         self.files_error = None;
         self.file_sel = 0;
         self.file_scroll = 0;
         self.force_text = false;
-        self.outbox.push(Request::Detail { generation: self.commit_gen, id });
-        match self.file_cache.get(&id).cloned() {
+        match self.file_cache.get(&of).cloned() {
             Some(c) => {
                 if !c.done {
-                    self.outbox.push(Request::Files { generation: self.commit_gen, id, prefetch: false });
+                    self.outbox.push(Request::Files { generation: self.commit_gen, of, prefetch: false });
                 }
-                self.install_files(id, c);
+                self.install_files(of, c);
             }
             None => {
                 // nothing to show for this commit yet: drop the previous commit's diff
@@ -711,13 +777,13 @@ impl App {
                 self.diff_wanted = None;
                 self.diff_deadline = None;
                 self.file_gen = Gens::bump(&self.gens.file);
-                self.outbox.push(Request::Files { generation: self.commit_gen, id, prefetch: false });
+                self.outbox.push(Request::Files { generation: self.commit_gen, of, prefetch: false });
             }
         }
     }
 
-    fn install_files(&mut self, id: CommitId, c: CachedFiles) {
-        self.files_id = Some(id);
+    fn install_files(&mut self, of: FilesOf, c: CachedFiles) {
+        self.files_of = Some(of);
         self.stats = c.stats;
         self.stats_done = c.done;
         let empty = c.files.is_empty();
@@ -747,11 +813,11 @@ impl App {
             if self.prefetching.len() >= MAX_PREFETCH_IN_FLIGHT {
                 break;
             }
-            if self.file_cache.contains(&id) || self.prefetching.contains(&id) {
+            if self.file_cache.contains(&FilesOf::Commit(id)) || self.prefetching.contains(&id) {
                 continue;
             }
             self.prefetching.insert(id);
-            self.outbox.push(Request::Files { generation: 0, id, prefetch: true });
+            self.outbox.push(Request::Files { generation: 0, of: FilesOf::Commit(id), prefetch: true });
         }
     }
 

@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use gitty_core::Handle;
 
-use crate::msg::{DiffKey, Gens, Msg, Request};
+use crate::msg::{DiffKey, FilesOf, Gens, Msg, Request};
 
 /// History entries appended per write-lock hold; the first chunk is small so the first screen
 /// of rows appears quickly even without a commit-graph.
@@ -155,16 +155,20 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 Err(e) => sink(error(format!("reading commit {}", id.short(7)), &e)),
             }
         }
-        Request::Files { generation, id, prefetch } => {
+        Request::Files { generation, of, prefetch } => {
             let stale = || !prefetch && !Gens::is(&gens.commit, generation);
             if stale() {
                 return;
             }
-            let files = match h.commit_files(id, true) {
-                Ok(f) => Arc::new(f),
-                Err(e) => return sink(Msg::FilesError { generation, id, prefetch, detail: format!("{e:#}") }),
+            let listed = match of {
+                FilesOf::Commit(id) => h.commit_files(id, true),
+                FilesOf::Range { oldest, newest } => h.range_files(oldest, newest, true),
             };
-            sink(Msg::Files { generation, id, files: files.clone(), prefetch });
+            let files = match listed {
+                Ok(f) => Arc::new(f),
+                Err(e) => return sink(Msg::FilesError { generation, of, prefetch, detail: format!("{e:#}") }),
+            };
+            sink(Msg::Files { generation, of, files: files.clone(), prefetch });
             if prefetch {
                 // prefetch fills the file-list cache only; stats are computed on selection
                 return;
@@ -176,11 +180,11 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 }
                 let stats = chunk.iter().map(|f| h.line_stats(f).ok()).collect();
                 let done = start + chunk.len() == files.len();
-                sink(Msg::Stats { id, start, stats, done });
+                sink(Msg::Stats { of, start, stats, done });
                 start += chunk.len();
             }
             if files.is_empty() {
-                sink(Msg::Stats { id, start: 0, stats: Vec::new(), done: true });
+                sink(Msg::Stats { of, start: 0, stats: Vec::new(), done: true });
             }
         }
         Request::Diff { generation, file, opts, force_text } => {
