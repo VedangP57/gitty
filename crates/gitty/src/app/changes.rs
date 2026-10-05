@@ -178,6 +178,8 @@ impl App {
         if tab == self.tab {
             return;
         }
+        // a half-typed query belongs to the History tab: the bar must not swallow keys here
+        self.search.bar = None;
         self.tab = tab;
         // the diff pane belongs to the active tab; the other tab reloads from its cache
         self.diff = None;
@@ -329,11 +331,9 @@ impl App {
             }
             Msg::HeadMessage { result } => self.install_head_message(result),
             Msg::StaleIndexLock => {
-                self.overlay = Some(Overlay::Confirm {
-                    title: "Remove the stale .git/index.lock?".into(),
-                    body: "A git command failed because the index is locked, and no git process is running. The lock was probably left by a git that crashed.".into(),
-                    op: WriteOp::RemoveIndexLock,
-                });
+                // queued like the other dialogs: it never replaces an open overlay
+                self.pending_stale_lock = true;
+                self.next_ask();
             }
             Msg::StatusSlow => {
                 if self.changes.last_refresh.is_none_or(|t| self.clock.saturating_duration_since(t) >= REFRESH_EVERY) {

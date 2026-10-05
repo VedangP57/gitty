@@ -51,6 +51,9 @@ impl App {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
             match k.code {
+                // like q, a foreground job is not cancelled without asking; a second Ctrl-C at
+                // the question (or over any other overlay, e.g. a password prompt) quits
+                KeyCode::Char('c') if self.overlay.is_none() => return self.request_quit(),
                 KeyCode::Char('c') => return self.quit_now(),
                 KeyCode::Char('z') => return self.suspend = true,
                 _ => {}
@@ -452,6 +455,8 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        // clicking away from the search bar abandons the query being typed
+        self.search.bar = None;
         let double = self.note_click(x, y);
         self.click_once(x, y, mods);
         if !double {

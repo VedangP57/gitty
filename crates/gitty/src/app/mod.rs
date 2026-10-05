@@ -266,6 +266,8 @@ pub struct App {
     prompt_cancelled: bool,
     /// A Diverged question waiting for the open overlay to close.
     pending_diverged: bool,
+    /// The stale index.lock offer, waiting for the open overlay to close.
+    pending_stale_lock: bool,
     /// The last auto-fetch failed: its details, until a fetch works.
     bg_failure: Option<String>,
     pub search: search::Search,
@@ -375,6 +377,7 @@ impl App {
             tune_announced: false,
             prompt_cancelled: false,
             pending_diverged: false,
+            pending_stale_lock: false,
             bg_failure: None,
             search: Default::default(),
             compare: None,
@@ -874,6 +877,13 @@ impl App {
         self.refresh_file_rows();
         self.tree_dir = None;
         self.file_sel = self.first_file_row();
+        // every file under a folded directory: the cursor rests on the first directory
+        if !self.file_rows.iter().any(|r| matches!(r, tree::FileRow::File { .. })) {
+            self.tree_dir = self.file_rows.first().and_then(|r| match r {
+                tree::FileRow::Dir { path, .. } => Some(path.clone()),
+                tree::FileRow::File { .. } => None,
+            });
+        }
         self.file_scroll = 0;
         if empty {
             self.diff = None;

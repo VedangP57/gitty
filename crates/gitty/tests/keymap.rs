@@ -105,3 +105,14 @@ fn readme_key_table_matches_the_keymap() {
     }
     assert_eq!(readme[start..end].trim(), table.trim(), "the README key table is stale: GITTY_BLESS=1 cargo test -p gitty --test keymap");
 }
+
+#[test]
+fn binding_a_fixed_key_warns_and_is_dropped() {
+    let (map, w) = Keymap::from_config(&table("fetch = [\"ctrl-c\", \"F5\"]\npush = \"ctrl-z\"\n"));
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert!(w[0].contains("Ctrl-c") && w[0].contains("fixed"), "{w:?}");
+    assert!(w[1].contains("Ctrl-z"), "{w:?}");
+    let labels = |a: &str| map.bindings().into_iter().find(|b| b.1 == a).map(|b| b.2.iter().map(|k| k.label()).collect::<Vec<_>>()).unwrap();
+    assert_eq!(labels("fetch"), ["F5"]);
+    assert_eq!(labels("push"), ["P"], "a binding with only fixed keys keeps the default");
+}

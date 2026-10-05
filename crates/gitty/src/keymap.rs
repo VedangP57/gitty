@@ -265,6 +265,10 @@ impl Keymap {
             let mut keys = Vec::new();
             for s in strs {
                 match Key::parse(s) {
+                    // handled before the keymap is asked, so a binding there would never fire
+                    Some(k) if k.ctrl && !k.alt && matches!(k.code, KeyCode::Char('c' | 'z')) => {
+                        warnings.push(format!("keys: `{name}`: {} is fixed (quit / suspend) and cannot be bound", k.label()))
+                    }
                     Some(k) => keys.push(k),
                     None => warnings.push(format!("keys: `{name}`: unknown key `{s}`")),
                 }

@@ -930,6 +930,18 @@ fn a_stale_index_lock_is_offered_for_removal() {
 }
 
 #[test]
+fn the_stale_lock_offer_waits_for_an_open_overlay() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })));
+    t.app.handle_msg(Msg::StaleIndexLock);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })), "help stays open");
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock, .. })), "then the offer");
+}
+
+#[test]
 fn focus_gained_and_backstop_refresh_status() {
     let f = changes_fixture();
     let mut t = H::new(&f);
@@ -1844,6 +1856,23 @@ fn search_chunks_merge_in_any_order_and_a_stale_generation_is_dropped() {
 }
 
 #[test]
+fn the_search_bar_closes_on_a_tab_switch_or_a_click() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('/');
+    typed(&mut t, "fi");
+    t.app.set_tab(gitty::app::Tab::Changes);
+    assert!(t.app.search.bar.is_none(), "the tab switch closes the bar");
+    t.ch('2');
+    assert_eq!(t.app.tab, gitty::app::Tab::History, "keys act again");
+    t.ch('/');
+    let m = |kind| crossterm::event::MouseEvent { kind, column: 5, row: 5, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(m(crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)));
+    assert!(t.app.search.bar.is_none(), "a click closes the bar");
+}
+
+#[test]
 fn search_bar_takes_every_key_and_esc_clears() {
     let f = search_fixture();
     let mut t = H::new(&f);
@@ -2245,6 +2274,28 @@ fn a_history_refresh_during_compare_keeps_both_selections() {
     assert_eq!(t.app.selected, 2);
 }
 
+#[test]
+fn a_list_hidden_under_a_folded_directory_starts_on_that_directory() {
+    let f = Fixture::new();
+    f.write("src/a.rs", "a\n");
+    f.commit("one", 1_700_000_000);
+    f.write("src/b.rs", "b\n");
+    f.commit("two", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('t');
+    t.pump();
+    t.app.focus = Focus::Files;
+    t.app.select_file_row(0);
+    assert!(t.app.toggle_dir(), "src/ folds");
+    t.app.select(1);
+    t.pump();
+    assert_eq!(t.app.file_rows().len(), 1, "only the folded src/ row");
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Files, "Enter on the directory unfolds it instead of opening a hidden file");
+    assert_eq!(t.app.file_rows().len(), 2);
+}
+
 fn tree_fixture() -> Fixture {
     let f = Fixture::new();
     f.write("seed", "s\n");
@@ -2425,6 +2476,10 @@ fn quitting_while_a_job_runs_asks_and_then_cancels_it() {
     }
     t.ch('n');
     assert!(!t.app.quit && t.app.overlay.is_none());
+    let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    t.app.handle_key(ctrl_c);
+    assert!(!t.app.quit && matches!(t.app.overlay, Some(gitty::app::Overlay::Quit { .. })), "Ctrl-C asks too");
+    t.ch('n');
     t.ch('q');
     t.ch('y');
     assert!(t.app.quit);
