@@ -15,6 +15,7 @@ pub mod write;
 pub mod ui;
 pub mod app;
 pub mod input;
+pub mod keymap;
 pub mod term;
 pub mod run;
 pub use run::run;

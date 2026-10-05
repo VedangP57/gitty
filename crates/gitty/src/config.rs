@@ -30,6 +30,8 @@ pub struct Config {
     pub auto_fetch_minutes: u32,
     pub auto_tune: bool,
     pub difftool: Option<String>,
+    /// `[keys]`: action name → key or keys (see `keymap`).
+    pub keys: toml::Table,
 }
 
 impl Default for Config {
@@ -46,6 +48,7 @@ impl Default for Config {
             auto_fetch_minutes: 5,
             auto_tune: true,
             difftool: None,
+            keys: toml::Table::new(),
         }
     }
 }
@@ -126,6 +129,10 @@ impl Config {
                 "auto_fetch_minutes" => c.auto_fetch_minutes = pick(v, k, w, int).map_or(c.auto_fetch_minutes, |n| n.clamp(0, 1440) as u32),
                 "auto_tune" => c.auto_tune = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.auto_tune),
                 "difftool" => c.difftool = pick(v, k, w, |v| v.as_str().map(String::from)).or(c.difftool.take()),
+                "keys" => match v.as_table() {
+                    Some(t) => c.keys = t.clone(),
+                    None => w.push("config: `keys` must be a table: [keys]".into()),
+                },
                 _ => w.push(format!("config: unknown key `{k}`")),
             }
         }

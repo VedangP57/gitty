@@ -173,6 +173,7 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
         Err(e) => problems.push(format!("watching the repository for changes failed; refresh on focus only: {e:#}")),
     }
     problems.extend(app.registry.errors().iter().cloned());
+    problems.extend(app.key_warnings.iter().cloned());
     problems.extend(theme_error);
     if !problems.is_empty() {
         app.toast = Some(Toast { what: problems[0].lines().next().unwrap_or("").to_string(), detail: problems.join("\n"), error: true });

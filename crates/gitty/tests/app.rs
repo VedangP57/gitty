@@ -2028,3 +2028,39 @@ fn tree_view_groups_by_directory_collapses_and_selection_follows_files() {
     assert_eq!(rows_text(&t).len(), 5, "list view: one row per file");
     assert!(rows_text(&t).iter().all(|r| !r.ends_with('/')));
 }
+
+fn keys_config(s: &str) -> Config {
+    Config { keys: toml::from_str(s).unwrap(), ..Config::default() }
+}
+
+#[test]
+fn a_remapped_fetch_runs_on_the_new_key_only() {
+    let (f, _bare) = remote_fixture();
+    let mut t = H::with(&f, keys_config("fetch = \"F5\"\n"), None);
+    t.pump();
+    t.ch('f');
+    assert!(!t.app.take_requests().iter().any(|r| matches!(r, Request::Net { .. })), "f no longer fetches");
+    t.key(KeyCode::F(5));
+    assert!(t.app.take_requests().iter().any(|r| matches!(r, Request::Net { op: gitty::msg::NetOp::Fetch, .. })));
+}
+
+#[test]
+fn text_inputs_ignore_remaps() {
+    let f = staged_fixture();
+    let mut t = H::with(&f, keys_config("quit = \"a\"\nstage = \"x\"\n"), None);
+    t.pump();
+    t.ch('1');
+    t.pump();
+    t.ch('c');
+    typed(&mut t, "a fix");
+    assert!(!t.app.quit, "typing a in the commit box is text");
+    assert_eq!(t.app.changes.commit.summary.text(), "a fix");
+    t.key(KeyCode::Esc);
+    t.ch('2');
+    t.ch('/');
+    typed(&mut t, "a");
+    assert!(!t.app.quit, "nor in the search bar");
+    t.key(KeyCode::Esc);
+    t.ch('a');
+    assert!(t.app.quit, "outside text inputs the remap applies");
+}

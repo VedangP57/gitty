@@ -62,20 +62,37 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
     app.hits.tabs = tab_hits;
 }
 
-fn hints(app: &App) -> &'static [(&'static str, &'static str)] {
-    if app.tab == Tab::Changes {
-        return match app.focus {
-            Focus::Diff => &[("space", "stage line"), ("v", "range"), ("H", "hunk"), ("a", "file"), ("d", "discard"), ("[ ]", "hunk"), ("esc", "back")],
-            Focus::Commit => &[("alt+enter", "commit"), ("tab", "field"), ("esc", "leave")],
-            _ => &[("space", "stage"), ("a", "all"), ("d", "discard"), ("F", "filter"), ("enter", "diff"), ("2", "history"), ("?", "help"), ("q", "quit")],
-        };
-    }
-    match app.focus {
-        Focus::History => &[("j/k", "move"), ("enter", "files"), ("/", "search"), ("tab", "pane"), ("r", "scope"), ("D", "dates"), ("z", "density"), ("T", "theme"), ("?", "help"), ("q", "quit")],
-        Focus::Files => &[("j/k", "file"), ("enter", "diff"), ("esc", "back"), ("{ }", "file"), ("[ ]", "hunk"), ("?", "help"), ("q", "quit")],
-        Focus::Commit => &[],
-        Focus::Diff => &[("j/k", "line"), ("[ ]", "hunk"), ("e/E", "expand"), ("s", "split"), ("w", "whitespace"), ("h/l", "scroll"), ("F", "full"), ("esc", "back")],
-    }
+/// `G` stays `G`; named keys read lowercase (`enter`, `ctrl-d`).
+fn hint_label(k: &crate::keymap::Key) -> String {
+    let l = k.label();
+    if l.chars().count() == 1 { l } else { l.to_lowercase() }
+}
+
+/// Bottom-bar hints for the focused pane, with the keys the keymap really uses (`alt+enter` is
+/// fixed).
+fn hints(app: &App) -> Vec<(String, &'static str)> {
+    use crate::keymap::Action as A;
+    let list: &[(&[A], &str)] = if app.tab == Tab::Changes {
+        match app.focus {
+            Focus::Diff => &[(&[A::Stage], "stage line"), (&[A::LineRange], "range"), (&[A::StageHunk], "hunk"), (&[A::StageAll], "file"), (&[A::Discard], "discard"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Back], "back")],
+            Focus::Commit => return vec![("alt+enter".into(), "commit"), ("tab".into(), "field"), ("esc".into(), "leave")],
+            _ => &[(&[A::Stage], "stage"), (&[A::StageAll], "all"), (&[A::Discard], "discard"), (&[A::Filter], "filter"), (&[A::Open], "diff"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit")],
+        }
+    } else {
+        match app.focus {
+            Focus::History if app.compare.is_some() => &[(&[A::Down, A::Up], "move"), (&[A::CompareBehind, A::CompareAhead], "tab"), (&[A::Open], "files"), (&[A::Compare], "branch"), (&[A::Back], "leave"), (&[A::Help], "help")],
+            Focus::History => &[(&[A::Down, A::Up], "move"), (&[A::Open], "files"), (&[A::Search], "search"), (&[A::Range], "range"), (&[A::Compare], "compare"), (&[A::NextPane], "pane"), (&[A::Scope], "scope"), (&[A::Help], "help"), (&[A::Quit], "quit")],
+            Focus::Files => &[(&[A::Down, A::Up], "file"), (&[A::Open], "diff"), (&[A::Tree], "tree"), (&[A::Back], "back"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Help], "help"), (&[A::Quit], "quit")],
+            Focus::Commit => &[],
+            Focus::Diff => &[(&[A::Down, A::Up], "line"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Expand, A::ExpandFile], "expand"), (&[A::Split], "split"), (&[A::Whitespace], "whitespace"), (&[A::Difftool], "difftool"), (&[A::Fullscreen], "full"), (&[A::Back], "back")],
+        }
+    };
+    list.iter()
+        .filter_map(|(acts, what)| {
+            let keys: Vec<String> = acts.iter().filter_map(|a| app.keymap.keys_of(*a).first().map(hint_label)).collect();
+            (!keys.is_empty()).then(|| (keys.join("/"), *what))
+        })
+        .collect()
 }
 
 pub fn bottom(app: &App, buf: &mut Buffer, r: Rect) {
@@ -111,9 +128,9 @@ pub fn bottom(app: &App, buf: &mut Buffer, r: Rect) {
         x = end + 2;
     }
     for (k, d) in hints(app) {
-        if x + width(k) + width(d) + 3 > max_x {
+        if x + width(&k) + width(d) + 3 > max_x {
             break;
         }
-        x = spans(buf, x, r.y, max_x, &[(k, base.fg(ui.accent)), (" ", base), (d, base), ("  ", base)]);
+        x = spans(buf, x, r.y, max_x, &[(&k, base.fg(ui.accent)), (" ", base), (d, base), ("  ", base)]);
     }
 }

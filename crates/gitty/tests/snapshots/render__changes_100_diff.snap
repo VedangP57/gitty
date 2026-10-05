@@ -31,4 +31,4 @@ expression: s
 
 
 
- space stage line  v range  H hunk  a file  d discard  [ ] hunk  esc back
+ space stage line  v range  H hunk  a file  d discard  [/] hunk  esc back

@@ -51,7 +51,7 @@ pub enum Tab {
 
 pub enum Overlay {
     ThemePicker { sel: usize, original: Theme },
-    Help,
+    Help { scroll: usize },
     ErrorDetail,
     /// A destructive write waiting for Enter (or `y`); Esc cancels.
     Confirm { title: String, body: String, op: crate::msg::WriteOp },
@@ -267,10 +267,14 @@ pub struct App {
     compare_gen: u64,
     /// Rows per search request (lowered in tests).
     pub search_chunk: usize,
+    pub keymap: crate::keymap::Keymap,
+    /// Problems in `[keys]`, for the startup toast.
+    pub key_warnings: Vec<String>,
 }
 
 impl App {
     pub fn new(i: AppInit) -> App {
+        let (keymap, key_warnings) = crate::keymap::Keymap::from_config(&i.config.keys);
         let scope = if i.ui_state.scope_all { HistoryScope::AllRefs } else { HistoryScope::HeadAndUpstream };
         let mut app = App {
             repo_name: i.repo_name,
@@ -362,6 +366,8 @@ impl App {
             last_click: None,
             compare_gen: 0,
             search_chunk: search::SEARCH_CHUNK,
+            keymap,
+            key_warnings,
         };
         app.request_status();
         app

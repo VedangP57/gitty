@@ -7,35 +7,43 @@ use ratatui::style::{Modifier, Style};
 use super::paint::{fill, spans, text};
 use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
+use crate::keymap::Ctx;
 
-const HELP: &[(&str, &str)] = &[
-    ("j/k ↓/↑", "move"),
-    ("g/G", "top / bottom"),
-    ("Ctrl-d/u PgDn/PgUp", "half page / page"),
-    ("Tab S-Tab", "next / previous pane"),
-    ("Enter Esc", "drill in / back"),
-    ("h/l", "scroll the diff sideways"),
-    ("[ ] { }", "previous/next hunk / file"),
-    ("e E", "expand context near the cursor / whole file"),
-    ("s w", "split view / whitespace mode"),
-    ("F", "full-screen diff"),
-    ("o", "expand the commit header"),
-    ("y Y", "copy short / full SHA"),
-    ("D z", "date mode / density"),
-    ("r", "branch + upstream ↔ all refs"),
-    ("< >", "resize the focused pane"),
-    ("T", "theme picker"),
-    ("1 2", "Changes / History"),
-    ("Space a", "Changes: stage line or file / all"),
-    ("v H", "Changes: line range / hunk"),
-    ("d F", "Changes: discard (asks first) / filter files"),
-    ("c A u", "Changes: commit box / amend / undo commit"),
-    ("f p P", "fetch / pull / push"),
-    ("x", "cancel the running fetch or push"),
-    ("Alt+Enter", "commit (Ctrl+Enter in kitty)"),
-    ("!", "error details"),
-    ("q", "quit"),
+/// Help sections, in display order, and the keys that are not rebindable.
+const SECTIONS: &[(Ctx, &str)] = &[
+    (Ctx::Global, "Everywhere"),
+    (Ctx::Nav, "Moving"),
+    (Ctx::History, "History"),
+    (Ctx::Compare, "Compare mode"),
+    (Ctx::Diff, "Diff"),
+    (Ctx::Changes, "Changes"),
+    (Ctx::ChangesList, "Changes file list"),
+    (Ctx::ChangesDiff, "Changes diff"),
 ];
+const FIXED: &[(&str, &str)] = &[
+    ("Ctrl-c", "quit"),
+    ("Ctrl-z", "suspend to the shell"),
+    ("Alt-Enter", "commit (Ctrl-Enter in kitty)"),
+    ("double-click", "open the file in $EDITOR"),
+];
+
+/// (keys, what) rows of the help, with `None` keys for section titles; from the live keymap.
+pub fn help_lines(app: &App) -> Vec<(Option<String>, String)> {
+    let mut out = Vec::new();
+    let bindings = app.keymap.bindings();
+    for (ctx, title) in SECTIONS {
+        out.push((None, title.to_string()));
+        for (a, _, keys, help) in &bindings {
+            if crate::keymap::ACTIONS.iter().any(|x| x.0 == *a && x.2 == *ctx) {
+                let ks = if keys.is_empty() { "(unbound)".to_string() } else { keys.iter().map(|k| k.label()).collect::<Vec<_>>().join(" ") };
+                out.push((Some(ks), help.to_string()));
+            }
+        }
+    }
+    out.push((None, "Fixed".into()));
+    out.extend(FIXED.iter().map(|(k, w)| (Some(k.to_string()), w.to_string())));
+    out
+}
 
 fn boxed(app: &App, buf: &mut Buffer, area: Rect, w: u16, h: u16, title: &str) -> Rect {
     let ui = &app.theme.ui;
@@ -84,12 +92,29 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 text(buf, inner.x, inner.bottom() - 1, inner.right(), "Enter apply · Esc cancel", st.fg(ui.muted));
             }
         }
-        Overlay::Help => {
-            let inner = boxed(app, buf, area, 64, HELP.len() as u16 + 3, "Keys");
-            for (k, (keys, what)) in HELP.iter().enumerate().take(inner.height as usize) {
-                let y = inner.y + k as u16;
-                text(buf, inner.x, y, inner.right(), keys, st.fg(ui.accent));
-                text(buf, inner.x + 22, y, inner.right(), what, st);
+        Overlay::Help { scroll } => {
+            let lines = help_lines(app);
+            // two columns when they fit
+            let cols = if area.width >= 136 { 2 } else { 1 };
+            let per = lines.len().div_ceil(cols);
+            let w = if cols == 2 { 132 } else { 66 };
+            let inner = boxed(app, buf, area, w, per as u16 + 3, "Keys · j/k scroll · Esc close");
+            let rows = inner.height.saturating_sub(1) as usize;
+            let first = (*scroll).min(per.saturating_sub(rows));
+            for c in 0..cols {
+                let x0 = inner.x + (c as u16) * (w / 2);
+                for (k, (keys, what)) in lines.iter().skip(c * per).take(per).skip(first).take(rows).enumerate() {
+                    let y = inner.y + k as u16;
+                    match keys {
+                        None => {
+                            text(buf, x0, y, x0 + w / 2 - 2, what, st.fg(ui.fg).add_modifier(Modifier::BOLD | Modifier::UNDERLINED));
+                        }
+                        Some(keys) => {
+                            text(buf, x0, y, x0 + 20, keys, st.fg(ui.accent));
+                            text(buf, x0 + 21, y, x0 + w / 2 - 2, what, st);
+                        }
+                    }
+                }
             }
         }
         Overlay::Confirm { title, body, .. } => {

@@ -496,7 +496,7 @@ fn theme_picker_and_help_render() {
     t.key(KeyCode::Esc);
     t.key(KeyCode::Char('?'));
     let s = text(&t.render(140, 30));
-    assert!(s.contains("expand context"), "{s}");
+    assert!(s.contains("Everywhere") && s.contains("fetch"), "{s}");
     t.key(KeyCode::Esc);
     t.key(KeyCode::Char('1'));
     let s = text(&t.render(140, 30));
@@ -1069,4 +1069,26 @@ fn split_view_space_stages_only_the_side_under_the_pointer() {
     t.key(KeyCode::Char(' '));
     t.render(220, 30);
     assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 2;\nc", "then the deletion too");
+}
+
+#[test]
+fn help_is_generated_from_the_keymap() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("one", NOW - DAY);
+    let repo = Repo::open(f.path()).unwrap();
+    let registry = Registry::load(None);
+    let theme = registry.resolve("github-dark", ColorDepth::True, None).unwrap();
+    let gens = Arc::new(Gens::default());
+    let config = Config { keys: toml::from_str("fetch = \"F5\"\n").unwrap(), ..Config::default() };
+    let app = App::new(AppInit { repo_name: "repo".into(), config, registry, theme, depth: ColorDepth::True, ui_state: UiState::default(), config_path: None, state_path: None, gens: gens.clone(), now: NOW, clock: Instant::now(), size: (140, 60) });
+    let mut t = H { app, h: repo.handle(), gens, clock: Instant::now() };
+    t.pump();
+    t.key(KeyCode::Char('?'));
+    let b = t.render(140, 60);
+    let s = text(&b);
+    let line = s.lines().find(|l| l.contains("fetch") && !l.contains("fetched")).unwrap_or_else(|| panic!("{s}"));
+    assert!(line.contains("F5"), "help shows the remapped key: {line}");
+    assert!(!s.lines().any(|l| l.contains("  f  ") && l.contains("fetch")));
+    assert!(s.contains("search history"), "M6 actions are listed\n{s}");
 }

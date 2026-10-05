@@ -1,6 +1,5 @@
 ---
 source: crates/gitty/tests/render.rs
-assertion_line: 574
 expression: s
 ---
  gitty repo  ⎇ main                                                                            [1] Changes  [2] History
@@ -32,4 +31,4 @@ expression: s
                                                 │
                                                 │
                                                 │
- j/k line  [ ] hunk  e/E expand  s split  w whitespace  h/l scroll  F full  esc back
+ j/k line  [/] hunk  e/E expand  s split  w whitespace  O difftool  F full  esc back
