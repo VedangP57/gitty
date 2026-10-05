@@ -26,7 +26,7 @@ fn spawn(dir: &std::path::Path, args: &[&str]) -> Pty {
 fn spawn_with(dir: &std::path::Path, args: &[&str], envs: &[(&str, &str)]) -> Pty {
     let (mut m, mut s) = (0, 0);
     let mut ws = libc::winsize { ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0 };
-    assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) }, 0);
+    assert_eq!(unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut ws) }, 0);
     let slave = unsafe { OwnedFd::from_raw_fd(s) };
     let home = tempfile::tempdir().unwrap();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_gitty"));

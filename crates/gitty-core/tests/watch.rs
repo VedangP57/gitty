@@ -16,6 +16,30 @@ fn collect(rx: &mpsc::Receiver<Changed>, wait: Duration) -> Changed {
     m
 }
 
+/// inotify (Linux) also reports opens and reads; gitty's own status run reads the index and
+/// .gitignore, so a read must never count as a change (it would refresh in a loop).
+#[test]
+fn reading_files_is_not_a_change() {
+    let f = Fixture::new();
+    f.write(".gitignore", "*.log\n");
+    f.write("src/a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    let repo = Repo::open(f.path()).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let _w = Watcher::spawn(&repo, move |c| {
+        let _ = tx.send(c);
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    collect(&rx, Duration::from_millis(200));
+    for p in ["src/a.txt", ".gitignore", ".git/index", ".git/HEAD", ".git/config"] {
+        std::fs::read(f.path().join(p)).unwrap();
+    }
+    f.git(&["--no-optional-locks", "status", "--porcelain"]);
+    let m = collect(&rx, Duration::from_millis(800));
+    assert!(m.is_empty(), "reads triggered {m:?}");
+}
+
 #[test]
 fn worktree_index_and_ignored_paths() {
     let f = Fixture::new();

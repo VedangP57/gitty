@@ -55,6 +55,8 @@ fn cancel_makes_the_helper_fail() {
 fn credential_fill(s: &AskServer) -> std::process::Output {
     let mut c = Command::new("git")
         .args(["-c", "credential.helper=", "credential", "fill"])
+        // outside any repository: the source tree may not be one (a tarball, a container)
+        .current_dir(std::env::temp_dir())
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")

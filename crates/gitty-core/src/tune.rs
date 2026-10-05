@@ -52,6 +52,12 @@ fn value(cli: &GitCli, key: &str) -> Option<String> {
     cli.run(cli.cmd(Kind::Read, &["config", "--get", key]), None, &mut |_| {}).ok().map(|v| String::from_utf8_lossy(&v).trim().to_string())
 }
 
+/// git builds without the builtin fsmonitor daemon (most Linux packages) cannot honour
+/// `core.fsmonitor = true`.
+fn has_fsmonitor_daemon(cli: &GitCli) -> bool {
+    cli.run(cli.cmd(Kind::Read, &["version", "--build-options"]), None, &mut |_| {}).is_ok_and(|v| String::from_utf8_lossy(&v).contains("feature: fsmonitor--daemon"))
+}
+
 /// A graph helps only where git and gix will read it: not shallow, not turned off.
 fn graph_usable(h: &Handle, cli: &GitCli) -> bool {
     let off = cli.run(cli.cmd(Kind::Read, &["config", "--type=bool", "--get", "core.commitGraph"]), None, &mut |_| {}).is_ok_and(|v| v.trim_ascii() == b"false");
@@ -89,6 +95,9 @@ pub fn plan(h: &Handle, history_len: usize, th: Thresholds) -> Vec<Action> {
     let entries = h.repo.index_or_empty().map_or(0, |i| i.entries().len());
     if entries >= th.index_entries {
         for a in [Action::Fsmonitor, Action::UntrackedCache] {
+            if a == Action::Fsmonitor && !has_fsmonitor_daemon(&cli) {
+                continue;
+            }
             if a.key().is_some_and(|k| !is_set(&cli, k)) {
                 v.push(a);
             }

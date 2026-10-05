@@ -274,6 +274,10 @@ impl Watcher {
                 };
                 if let Some(ev) = ev {
                     let mask = match ev {
+                        // inotify also reports opens and reads (FSEvents does not); gitty's own
+                        // status run reads the index and .gitignore, so counting them would loop.
+                        // A close after writing is a finished write and still counts.
+                        Ok(ev) if matches!(ev.kind, notify::EventKind::Access(a) if a != notify::event::AccessKind::Close(notify::event::AccessMode::Write)) => Changed::NONE,
                         Ok(ev) if ev.need_rescan() => Changed::ALL,
                         Ok(ev) => ev.paths.iter().fold(Changed::NONE, |m, p| m | classify(p, &git_dir, common.as_deref(), workdir.as_deref(), &mut ignores)),
                         Err(_) => Changed::ALL,

@@ -37,7 +37,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VedangP57/gitty/release
 [Releases page](https://github.com/VedangP57/gitty/releases). On macOS, a binary downloaded with
 a browser is quarantined: run `xattr -d com.apple.quarantine gitty` once.
 
-**From source** (Rust 1.88 or newer):
+**From source** (Rust 1.90 or newer):
 
 ```sh
 cargo install --locked --git https://github.com/VedangP57/gitty gitty
@@ -205,8 +205,9 @@ the background, unless `auto_tune = false`:
 
 - writes a commit-graph (`git commit-graph write --reachable --changed-paths --split`), when
   `core.commitGraph` is not off and the clone is not shallow;
-- sets `core.fsmonitor` and `core.untrackedCache` for faster status, but never a key you have
-  already set.
+- sets `core.untrackedCache`, and `core.fsmonitor` where your git has the builtin fsmonitor
+  daemon (macOS and Windows builds; most Linux packages do not), for faster status, but never a
+  key you have already set.
 
 The keys gitty sets are recorded in `gitty.tuned`. `gitty untune [PATH]` unsets exactly those
 (skipping any you have since changed) and leaves everything else alone.
