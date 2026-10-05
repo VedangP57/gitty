@@ -81,8 +81,19 @@ impl App {
         if self.tab == Tab::Changes && self.changes_key(k) {
             return;
         }
+        if self.tab == Tab::History && !ctrl && self.compare.is_some() && self.focus == Focus::History {
+            match k.code {
+                KeyCode::Char('h') | KeyCode::Left => return self.compare_tab(-1),
+                KeyCode::Char('l') | KeyCode::Right => return self.compare_tab(1),
+                KeyCode::Esc => return self.leave_compare(),
+                // history-only actions
+                KeyCode::Char('/' | 'n' | 'N' | 'V' | 'r') => return,
+                _ => {}
+            }
+        }
         if self.tab == Tab::History && !ctrl {
             match k.code {
+                KeyCode::Char('b') => return self.open_branch_picker(),
                 KeyCode::Char('/') => return self.open_search(),
                 KeyCode::Char('n') => return self.search_step(true),
                 KeyCode::Char('N') => return self.search_step(false),
@@ -215,6 +226,7 @@ impl App {
             Overlay::Confirm { .. } if matches!(k.code, KeyCode::Esc | KeyCode::Char('n' | 'q')) => {}
             Overlay::Confirm { .. } => self.overlay = Some(ov),
             Overlay::Prompt { ask, input } => self.prompt_key(ask, input, k),
+            Overlay::BranchPicker { query, sel } => self.picker_key(query, sel, k),
             Overlay::Diverged => match k.code {
                 KeyCode::Char('m') => self.start_net(crate::msg::NetOp::PullMerge),
                 KeyCode::Char('r') => self.start_net(crate::msg::NetOp::PullRebase),
@@ -321,6 +333,11 @@ impl App {
 
     fn move_focused(&mut self, m: Move) {
         match self.focus {
+            Focus::History if self.compare.is_some() => {
+                let cur = self.compare.as_ref().and_then(|c| c.selected()).unwrap_or(0);
+                let t = target(cur, self.compare_len(), self.list_capacity().saturating_sub(1), m);
+                self.compare_select(t);
+            }
             Focus::History => {
                 let t = target(self.selected, self.history_len, self.list_capacity(), m);
                 self.select(t);
@@ -453,7 +470,9 @@ impl App {
         if let Some(r) = inside(self.hits.history_rows, x, y) {
             self.focus = Focus::History;
             let i = self.hits.history_first + ((y - r.y) / self.hits.history_row_h.max(1)) as usize;
-            if i < self.history_len {
+            if self.compare.is_some() {
+                self.compare_select(i);
+            } else if i < self.history_len {
                 if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::CONTROL) {
                     self.extend_range(i);
                 } else {

@@ -131,6 +131,29 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 spans(buf, inner.x, inner.y + 4, inner.right(), &parts);
             }
         }
+        Overlay::BranchPicker { query, sel } => {
+            let matches = app.picker_matches(query.text());
+            let h = (matches.len() as u16).clamp(1, 12) + 5;
+            let inner = boxed(app, buf, area, 56, h, "Compare with");
+            let x = spans(buf, inner.x, inner.y, inner.right(), &[("> ", st.fg(ui.accent)), (query.text(), st)]);
+            if x < inner.right() {
+                buf[(x, inner.y)].set_style(st.add_modifier(Modifier::REVERSED));
+            }
+            let rows = inner.height.saturating_sub(3) as usize;
+            if matches.is_empty() {
+                text(buf, inner.x, inner.y + 2, inner.right(), "No matching branch", st.fg(ui.muted));
+            }
+            let first = sel.saturating_sub(rows.saturating_sub(1));
+            for (k, (i, (name, _))) in matches.iter().enumerate().skip(first).take(rows).enumerate() {
+                let y = inner.y + 2 + k as u16;
+                let row = if i == *sel { st.bg(ui.selection).add_modifier(Modifier::BOLD) } else { st };
+                fill(buf, Rect::new(inner.x, y, inner.width, 1), row);
+                text(buf, inner.x + 1, y, inner.right(), name, row);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "type to filter · ↑/↓ · Enter compare · Esc cancel", st.fg(ui.muted));
+            }
+        }
         Overlay::Diverged => {
             let inner = boxed(app, buf, area, 60, 6, "Pull");
             text(buf, inner.x, inner.y, inner.right(), "Your branch and its upstream have both moved on", st.fg(ui.warning).add_modifier(Modifier::BOLD));

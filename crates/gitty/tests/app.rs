@@ -1846,3 +1846,126 @@ fn a_stale_range_file_list_is_dropped_after_the_selection_moves() {
     t.pump();
     assert_eq!(t.app.files_for(), Some(id(&ids[2])));
 }
+
+#[test]
+fn fuzzy_branch_ranking() {
+    use gitty::app::compare::fuzzy_rank;
+    let names: Vec<String> = ["feature", "fix-tests", "main", "origin/feature"].map(String::from).to_vec();
+    let rank = |q: &str| fuzzy_rank(q, &names).into_iter().map(|i| names[i].as_str()).collect::<Vec<_>>();
+    assert_eq!(rank("ft"), ["fix-tests", "feature", "origin/feature"], "word starts beat scattered letters; ties by name");
+    assert_eq!(rank("FT"), rank("ft"), "case-insensitive");
+    assert_eq!(rank("feat"), ["feature", "origin/feature"]);
+    assert_eq!(rank("mn"), ["main"]);
+    assert_eq!(rank(""), ["feature", "fix-tests", "main", "origin/feature"]);
+    assert!(rank("zz").is_empty());
+}
+
+/// main: base, m1, m2 · feature (from base): f1, f2, f3 and a merge of m1. main checked out.
+fn compare_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["branch", "feature"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_100);
+    f.write("m.txt", "2\n");
+    f.commit("m2", 1_700_000_200);
+    f.git(&["checkout", "-q", "feature"]);
+    for i in 1..=3 {
+        f.write("f.txt", format!("{i}\n"));
+        f.commit(&format!("f{i}"), 1_700_000_300 + i * 100);
+    }
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge m1", "main~1"], &[("GIT_AUTHOR_DATE", "1700001000 +0000".into()), ("GIT_COMMITTER_DATE", "1700001000 +0000".into())]);
+    f.git(&["checkout", "-q", "main"]);
+    f
+}
+
+#[test]
+fn compare_flow_picks_a_branch_switches_tabs_and_esc_restores() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    let before = (t.app.selected, t.selected_id());
+    t.ch('b');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::BranchPicker { .. })));
+    typed(&mut t, "fea");
+    t.key(KeyCode::Enter);
+    t.pump();
+    let tip = id(&f.git(&["rev-parse", "feature"]));
+    let head = id(&f.git(&["rev-parse", "main"]));
+    let mb = id(&f.git(&["merge-base", "main", "feature"]));
+    {
+        let c = t.app.compare.as_ref().expect("compare mode");
+        assert_eq!(c.other, "feature");
+        let r = c.result.as_ref().unwrap();
+        assert_eq!((r.behind.len(), r.ahead.len()), (4, 1));
+    }
+    assert_eq!(t.selected_id(), tip, "Behind tab selects the branch's newest commit");
+    assert_eq!(t.app.files_for(), Some(tip));
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.files_for(), Some(id(&f.git(&["rev-parse", "feature~1"]))), "j moves in the compare list");
+    t.ch('l');
+    t.pump();
+    assert_eq!(t.selected_id(), head, "Ahead tab");
+    t.ch('l');
+    t.pump();
+    assert_eq!(t.app.files_of(), Some(FilesOf::Between { from: Some(mb), to: tip }));
+    assert_eq!(file_paths(&t), git_names(&f, &mb.to_string(), "feature"));
+    t.ch('l');
+    t.ch('h');
+    t.pump();
+    assert_eq!(t.selected_id(), head, "h goes back to Ahead");
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert!(t.app.compare.is_none());
+    assert_eq!((t.app.selected, t.selected_id()), before, "Esc restores the history selection");
+    assert_eq!(t.app.files_for(), Some(before.1));
+}
+
+#[test]
+fn branch_picker_takes_letters_as_query_and_esc_cancels() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('b');
+    typed(&mut t, "jkq");
+    assert!(!t.app.quit);
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::BranchPicker { query, .. }) => assert_eq!(query.text(), "jkq"),
+        _ => panic!("picker closed"),
+    }
+    t.key(KeyCode::Enter);
+    assert!(t.app.compare.is_none(), "Enter with no match does nothing");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none() && t.app.compare.is_none());
+}
+
+#[test]
+fn a_history_refresh_during_compare_keeps_both_selections() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    let before = t.selected_id();
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    let shown = t.selected_id();
+    f.write("new.txt", "n\n");
+    f.commit("new on main", 1_700_002_000);
+    let msgs = t.exec_all(vec![Request::Refs]);
+    for m in msgs {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(t.selected_id(), shown, "the walk does not steal the compare selection");
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.selected_id(), before, "the same commit is selected again, at its new row");
+    assert_eq!(t.app.selected, 2);
+}

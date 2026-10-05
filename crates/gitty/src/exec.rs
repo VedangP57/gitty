@@ -146,6 +146,15 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let result = gitty_core::search::path_commits(&cli, &tips, &path).map(Arc::new).map_err(|e| format!("{e:#}"));
             sink(Msg::SearchPaths { generation, result });
         }
+        Request::CommitRows { ids } => {
+            let rows = ids.into_iter().filter_map(|id| h.decode_row(id).ok()).collect();
+            sink(Msg::CommitRows { rows });
+        }
+        Request::Compare { generation, head, other } => {
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            let result = gitty_core::compare::compare(&cli, head, other).map_err(|e| format!("{e:#}"));
+            sink(Msg::Compare { generation, result });
+        }
         Request::Detail { generation, id } => {
             if !Gens::is(&gens.commit, generation) {
                 return;
@@ -163,6 +172,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let listed = match of {
                 FilesOf::Commit(id) => h.commit_files(id, true),
                 FilesOf::Range { oldest, newest } => h.range_files(oldest, newest, true),
+                FilesOf::Between { from, to } => h.diff_commits(from, to, true),
             };
             let files = match listed {
                 Ok(f) => Arc::new(f),

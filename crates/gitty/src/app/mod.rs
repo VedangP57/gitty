@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod commit;
+pub mod compare;
 pub mod net;
 pub mod diffstate;
 mod input;
@@ -58,6 +59,8 @@ pub enum Overlay {
     Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
     /// A pull found local and upstream commits: merge, rebase or cancel.
     Diverged,
+    /// `b`: pick the branch to compare with.
+    BranchPicker { query: crate::editor::Editor, sel: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +249,9 @@ pub struct App {
     last_tune: Option<Instant>,
     tune_announced: bool,
     pub search: search::Search,
+    /// Compare mode (`b`); the history pane lists its commits instead.
+    pub compare: Option<compare::CompareMode>,
+    compare_gen: u64,
     /// Rows per search request (lowered in tests).
     pub search_chunk: usize,
 }
@@ -334,6 +340,8 @@ impl App {
             last_tune: None,
             tune_announced: false,
             search: Default::default(),
+            compare: None,
+            compare_gen: 0,
             search_chunk: search::SEARCH_CHUNK,
         };
         app.request_status();
@@ -353,7 +361,7 @@ impl App {
     pub fn files_for(&self) -> Option<CommitId> {
         match self.files_of? {
             FilesOf::Commit(id) => Some(id),
-            FilesOf::Range { .. } => None,
+            FilesOf::Range { .. } | FilesOf::Between { .. } => None,
         }
     }
     pub fn files_of(&self) -> Option<FilesOf> {
@@ -461,6 +469,7 @@ impl App {
         let Some(m) = self.handle_changes_msg(m) else { return };
         let Some(m) = self.handle_net_msg(m) else { return };
         let Some(m) = self.handle_search_msg(m) else { return };
+        let Some(m) = self.handle_compare_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
@@ -472,7 +481,7 @@ impl App {
                 if moved {
                     // a refresh after a commit or fetch keeps the selected commit selected
                     if self.history.is_some() {
-                        self.reselect = self.selected_id.or(self.reselect);
+                        self.reselect = self.history_selection().or(self.reselect);
                     }
                     self.start_walk();
                 }
@@ -597,7 +606,7 @@ impl App {
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
-            Msg::SearchHits { .. } | Msg::SearchPaths { .. } => {}
+            Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
     }
 
@@ -729,6 +738,15 @@ impl App {
         self.selected = idx;
         self.ensure_list_visible();
         self.request_visible_rows();
+        if self.compare.is_some() {
+            // compare mode shows its own commits; the history row waits for Esc
+            return;
+        }
+        self.show_commit(id);
+    }
+
+    /// Makes `id` the commit whose detail, files and diff are shown.
+    fn show_commit(&mut self, id: CommitId) {
         if Some(id) != self.selected_id {
             self.selected_id = Some(id);
             self.commit_gen = Gens::bump(&self.gens.commit);
@@ -740,6 +758,12 @@ impl App {
 
     /// The file list the selection asks for: the range when one is selected, else the commit.
     fn files_target(&self) -> Option<FilesOf> {
+        if let Some(c) = &self.compare {
+            return match c.tab {
+                compare::CompareTab::Files => self.compare_files(),
+                _ => self.selected_id.map(FilesOf::Commit),
+            };
+        }
         let id = self.selected_id?;
         match self.selected_range() {
             Some((oldest, newest)) if oldest != newest => {

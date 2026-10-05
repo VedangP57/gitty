@@ -884,3 +884,32 @@ fn shift_click_extends_a_range_and_the_header_shows_it() {
     t.pump();
     assert_eq!(t.app.selected_range(), None, "a plain click ends the range");
 }
+
+#[test]
+fn compare_mode_shows_title_tabs_and_the_branch_commits() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", NOW - DAY);
+    f.git(&["branch", "topic"]);
+    f.write("m.txt", "1\n");
+    f.commit("on main", NOW - DAY + 60);
+    f.git(&["checkout", "-q", "topic"]);
+    f.write("t.txt", "1\n");
+    f.commit("topic one", NOW - DAY + 120);
+    f.write("t.txt", "2\n");
+    f.commit("topic two", NOW - DAY + 180);
+    f.git(&["checkout", "-q", "main"]);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("Compare with"), "picker title\n{s}");
+    assert!(s.contains("topic"), "{s}");
+    t.key(KeyCode::Enter);
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("Compare with topic"), "{s}");
+    assert!(s.contains("Behind (2)") && s.contains("Ahead (1)") && s.contains("Files"), "{s}");
+    assert!(s.contains("topic two") && s.contains("topic one"), "{s}");
+    assert!(!s.contains("on main"), "the Behind tab lists only the branch's commits\n{s}");
+}

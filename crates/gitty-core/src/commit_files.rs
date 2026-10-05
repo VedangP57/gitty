@@ -85,6 +85,17 @@ impl Handle {
         self.diff_trees(&old_tree, &new_tree, detect_renames)
     }
 
+    /// Files changed from `from` (None: the empty tree) to `to`, e.g. `merge-base..other`.
+    pub fn diff_commits(&self, from: Option<CommitId>, to: CommitId, detect_renames: bool) -> anyhow::Result<Vec<FileChange>> {
+        let repo = self.gix();
+        let old_tree = match from {
+            Some(f) => repo.find_commit(to_oid(f))?.tree()?,
+            None => repo.empty_tree(),
+        };
+        let new_tree = repo.find_commit(to_oid(to))?.tree()?;
+        self.diff_trees(&old_tree, &new_tree, detect_renames)
+    }
+
     fn first_parent_tree<'r>(&'r self, c: &gix::Commit<'r>) -> anyhow::Result<gix::Tree<'r>> {
         Ok(match self.parents_of(c).first() {
             Some(p) => self.gix().find_commit(*p)?.tree()?,

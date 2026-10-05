@@ -29,6 +29,8 @@ pub enum FilesOf {
     Commit(CommitId),
     /// A contiguous run of history: `oldest^..newest` (the empty tree for a root commit).
     Range { oldest: CommitId, newest: CommitId },
+    /// `from..to` trees (from = None: the empty tree), e.g. compare's `merge-base..other`.
+    Between { from: Option<CommitId>, to: CommitId },
 }
 
 /// Current generations: `session` (history walk), `commit` (selected commit), `file` (diff),
@@ -140,6 +142,10 @@ pub enum Request {
     Search { generation: u64, query: Arc<gitty_core::search::Query>, paths: Option<Arc<HashSet<CommitId>>>, history: SharedHistory, range: Range<usize> },
     /// The commits reachable from `tips` that touch `path` (the `path:` filter).
     SearchPath { generation: u64, tips: Vec<CommitId>, path: String },
+    /// Decodes rows by id (compare lists, which are not history indices).
+    CommitRows { ids: Vec<CommitId> },
+    /// Both sides of HEAD vs `other`.
+    Compare { generation: u64, head: CommitId, other: CommitId },
     Detail { generation: u64, id: CommitId },
     /// File list then line stats. Prefetches are never cancelled (they fill the cache).
     Files { generation: u64, of: FilesOf, prefetch: bool },
@@ -200,6 +206,8 @@ pub enum Msg {
     /// History indices in `range` that match, ascending.
     SearchHits { generation: u64, range: Range<usize>, hits: Vec<usize> },
     SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
+    CommitRows { rows: Vec<CommitRow> },
+    Compare { generation: u64, result: Result<gitty_core::compare::Compare, String> },
     AheadBehind { local: CommitId, upstream: CommitId, ab: AheadBehind },
     Detail { generation: u64, detail: CommitDetail },
     Files { generation: u64, of: FilesOf, files: Arc<Vec<FileChange>>, prefetch: bool },
@@ -248,6 +256,8 @@ impl std::fmt::Debug for Msg {
             Msg::Rows { session, rows } => write!(f, "Rows {{ session: {session}, n: {} }}", rows.len()),
             Msg::SearchHits { generation, range, hits } => write!(f, "SearchHits {{ generation: {generation}, {range:?}: {} }}", hits.len()),
             Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
+            Msg::CommitRows { rows } => write!(f, "CommitRows {{ n: {} }}", rows.len()),
+            Msg::Compare { generation, result } => write!(f, "Compare {{ generation: {generation}, {:?} }}", result.as_ref().map(|c| (c.behind.len(), c.ahead.len()))),
             Msg::AheadBehind { ab, .. } => write!(f, "AheadBehind {{ ahead: {}, behind: {} }}", ab.ahead.len(), ab.behind.len()),
             Msg::Detail { generation, detail } => write!(f, "Detail {{ generation: {generation}, id: {:?} }}", detail.row.id),
             Msg::Files { generation, of, files, prefetch } => write!(f, "Files {{ generation: {generation}, {of:?}, n: {}, prefetch: {prefetch} }}", files.len()),

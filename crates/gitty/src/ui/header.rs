@@ -25,6 +25,18 @@ pub fn draw(app: &App, buf: &mut Buffer, r: Rect) {
             buf[(x, y)].set_symbol("─").set_style(base.fg(ui.border));
         }
     }
+    if let Some(c) = app.compare.as_ref().filter(|c| c.tab == crate::app::compare::CompareTab::Files) {
+        let head = app.refs.as_ref().and_then(|r| r.head_branch()).unwrap_or("HEAD");
+        let mb = c.result.as_ref().and_then(|r| r.merge_base).map_or("the empty tree".to_string(), |b| b.short(7));
+        let n = app.files.as_ref().map_or(0, |f| f.len());
+        let line = format!("{} since {mb}", c.other);
+        let x = spans(buf, x0, r.y, right, &[(&line, base.add_modifier(Modifier::BOLD))]);
+        totals(app, buf, x, r.y, right, base);
+        if r.height >= 3 {
+            text(buf, x0, r.y + 1, right, &format!("{n} files · what merging {} into {head} would bring", c.other), base.fg(ui.muted));
+        }
+        return;
+    }
     if let Some((oldest, newest)) = app.selected_range().filter(|(o, n)| o != n) {
         return range(app, buf, r, x0, right, base, (oldest, newest));
     }
