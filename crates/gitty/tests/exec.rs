@@ -270,7 +270,7 @@ fn bad_id_reports_error_not_panic() {
 fn ahead_behind_message() {
     let f = Fixture::new();
     let ids = five(&f);
-    let msgs = run(&f, Request::AheadBehind { local: id(&ids[4]), upstream: id(&ids[2]) });
+    let msgs = run(&f, Request::AheadBehind { local: id(&ids[4]), upstream: Some(id(&ids[2])) });
     let Msg::AheadBehind { ab, .. } = &msgs[0] else { panic!("{msgs:?}") };
     assert_eq!(ab.ahead.len(), 2);
     assert!(ab.behind.is_empty());

@@ -142,7 +142,8 @@ impl WriteOp {
 pub enum Request {
     Refs,
     Walk { session: u64, tips: Vec<CommitId> },
-    AheadBehind { local: CommitId, upstream: CommitId },
+    /// `upstream: None` is a branch never pushed: ahead is what pushing it would publish.
+    AheadBehind { local: CommitId, upstream: Option<CommitId> },
     Rows { session: u64, ids: Vec<(usize, CommitId)> },
     /// Match history rows `range` against `query`, keeping only `paths` when set.
     Search { generation: u64, query: Arc<gitty_core::search::Query>, paths: Option<Arc<HashSet<CommitId>>>, history: SharedHistory, range: Range<usize> },
@@ -220,7 +221,7 @@ pub enum Msg {
     CommitRows { rows: Vec<CommitRow> },
     RangeCount { oldest: CommitId, newest: CommitId, extra: usize },
     Compare { generation: u64, result: Result<gitty_core::compare::Compare, String> },
-    AheadBehind { local: CommitId, upstream: CommitId, ab: AheadBehind },
+    AheadBehind { local: CommitId, upstream: Option<CommitId>, ab: AheadBehind },
     Detail { generation: u64, detail: CommitDetail },
     Files { generation: u64, of: FilesOf, files: Arc<Vec<FileChange>>, prefetch: bool },
     FilesError { generation: u64, of: FilesOf, prefetch: bool, detail: String },

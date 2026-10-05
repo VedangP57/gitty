@@ -538,8 +538,14 @@ impl App {
         let Some(m) = self.handle_compare_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
-                if let (Some(local), Some((_, upstream))) = (refs.head_id(), refs.upstream.clone()) {
-                    self.outbox.push(Request::AheadBehind { local, upstream });
+                match (refs.head_id(), &refs.upstream) {
+                    (Some(local), Some((_, upstream))) => self.outbox.push(Request::AheadBehind { local, upstream: Some(*upstream) }),
+                    (Some(local), None) if refs.unpublished() => self.outbox.push(Request::AheadBehind { local, upstream: None }),
+                    // nothing to compare with: no marks, not the last upstream's
+                    _ => {
+                        self.ahead.clear();
+                        self.behind.clear();
+                    }
                 }
                 let moved = self.refs.as_ref().is_none_or(|old| old.tips(self.scope) != refs.tips(self.scope));
                 self.refs = Some(refs);
@@ -597,7 +603,7 @@ impl App {
             }
             Msg::AheadBehind { local, upstream, ab } => {
                 let current = self.refs.as_ref().map(|r| (r.head_id(), r.upstream.as_ref().map(|u| u.1)));
-                if current == Some((Some(local), Some(upstream))) {
+                if current == Some((Some(local), upstream)) {
                     self.ahead = ab.ahead.into_iter().collect();
                     self.behind = ab.behind.into_iter().collect();
                 }
