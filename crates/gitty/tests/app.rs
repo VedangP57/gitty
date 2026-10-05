@@ -1789,6 +1789,26 @@ fn search_jumps_to_the_first_match_at_or_after_the_selection_and_n_wraps() {
 }
 
 #[test]
+fn the_label_rank_follows_moves_and_late_matches() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    search(&mut t, "fix");
+    t.pump();
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  1/4"));
+    t.ch('n');
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  2/4"));
+    t.ch('j');
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  -/4"));
+    t.ch('k');
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  2/4"));
+    // a match that arrives before the selection moves its rank
+    let generation = t.app.search.generation;
+    t.app.handle_msg(Msg::SearchHits { generation, range: 0..1, hits: vec![0] });
+    assert_eq!(t.app.search_label().as_deref(), Some("/fix  3/5"));
+}
+
+#[test]
 fn search_chunks_merge_in_any_order_and_a_stale_generation_is_dropped() {
     let f = search_fixture();
     let mut t = H::new(&f);

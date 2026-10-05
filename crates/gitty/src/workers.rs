@@ -1,5 +1,5 @@
-//! Thread pools: one walker, `cores - 2` (min 2) readers, two diff workers, two highlighters and
-//! one writer. Each thread owns a
+//! Thread pools: one walker, `cores - 2` (min 2) readers, two search workers, two diff workers,
+//! two highlighters and one writer. Each thread owns a
 //! [`gitty_core::Handle`]; the UI thread never does.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -11,19 +11,48 @@ use gitty_core::Repo;
 use crate::exec::exec;
 use crate::msg::{Gens, Msg, Request};
 
-struct Pool {
+struct Queues {
     high: Sender<Request>,
     low: Sender<Request>,
 }
 
+/// Which pool a request runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pool {
+    Walker,
+    Readers,
+    /// History search: chunks take ~0.3 s each on a 1.5M-commit history, so they never share
+    /// threads with the reads the UI waits on.
+    Search,
+    Differs,
+    Highlighters,
+    Writer,
+    Net,
+    Maintenance,
+}
+
+pub fn route(req: &Request) -> Pool {
+    match req {
+        Request::Walk { .. } => Pool::Walker,
+        Request::Search { .. } | Request::SearchPath { .. } => Pool::Search,
+        Request::Diff { .. } | Request::Intraline { .. } => Pool::Differs,
+        Request::Highlight { .. } => Pool::Highlighters,
+        Request::Write(_) => Pool::Writer,
+        Request::Net { .. } => Pool::Net,
+        Request::Tune { .. } => Pool::Maintenance,
+        _ => Pool::Readers,
+    }
+}
+
 pub struct Workers {
-    walker: Pool,
-    readers: Pool,
-    differs: Pool,
-    highlighters: Pool,
-    writer: Pool,
-    net: Pool,
-    maintenance: Pool,
+    walker: Queues,
+    readers: Queues,
+    search: Queues,
+    differs: Queues,
+    highlighters: Queues,
+    writer: Queues,
+    net: Queues,
+    maintenance: Queues,
 }
 
 fn next(high: &Receiver<Request>, low: &Receiver<Request>) -> Option<Request> {
@@ -36,7 +65,7 @@ fn next(high: &Receiver<Request>, low: &Receiver<Request>) -> Option<Request> {
     }
 }
 
-fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Sender<Msg>) -> Pool {
+fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Sender<Msg>) -> Queues {
     let (high, high_rx) = unbounded::<Request>();
     let (low, low_rx) = unbounded::<Request>();
     for i in 0..n {
@@ -69,7 +98,7 @@ fn pool(name: &str, n: usize, warm: bool, repo: &Repo, gens: &Arc<Gens>, tx: &Se
             let _ = tx.send(Msg::Error { what: "starting worker threads".into(), detail: e.to_string() });
         }
     }
-    Pool { high, low }
+    Queues { high, low }
 }
 
 /// What a worker sends when `req` panics.
@@ -93,6 +122,7 @@ impl Workers {
         Workers {
             walker: pool("walker", 1, false, &repo, &gens, &tx),
             readers: pool("reader", cores.saturating_sub(2).max(2), true, &repo, &gens, &tx),
+            search: pool("search", 2, false, &repo, &gens, &tx),
             differs: pool("diff", 2, false, &repo, &gens, &tx),
             highlighters: pool("highlight", 2, false, &repo, &gens, &tx),
             // one thread: writes run in the order they were asked for
@@ -105,14 +135,15 @@ impl Workers {
     }
 
     pub fn submit(&self, req: Request) {
-        let pool = match req {
-            Request::Walk { .. } => &self.walker,
-            Request::Diff { .. } | Request::Intraline { .. } => &self.differs,
-            Request::Highlight { .. } => &self.highlighters,
-            Request::Write(_) => &self.writer,
-            Request::Net { .. } => &self.net,
-            Request::Tune { .. } => &self.maintenance,
-            _ => &self.readers,
+        let pool = match route(&req) {
+            Pool::Walker => &self.walker,
+            Pool::Readers => &self.readers,
+            Pool::Search => &self.search,
+            Pool::Differs => &self.differs,
+            Pool::Highlighters => &self.highlighters,
+            Pool::Writer => &self.writer,
+            Pool::Net => &self.net,
+            Pool::Maintenance => &self.maintenance,
         };
         let q = if req.is_background() { &pool.low } else { &pool.high };
         let _ = q.send(req);

@@ -561,3 +561,11 @@ fn a_panicking_status_run_still_answers_the_status_request() {
         m => panic!("wanted a failed Status, got {m:?}"),
     }
 }
+
+#[test]
+fn search_work_has_its_own_pool_so_readers_never_wait_behind_it() {
+    use gitty::workers::{Pool, route};
+    assert_eq!(route(&Request::SearchPath { generation: 1, tips: vec![], path: "p".into() }), Pool::Search);
+    assert_eq!(route(&Request::Refs), Pool::Readers);
+    assert_eq!(route(&Request::Status { generation: 1, mark: None }), Pool::Readers);
+}
