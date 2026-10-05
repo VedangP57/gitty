@@ -167,6 +167,8 @@ pub struct App {
 
     pub tab: Tab,
     pub focus: Focus,
+    /// The pane History had focused when Changes took over; restored on the way back.
+    history_focus: Focus,
     pub fullscreen: bool,
 
     pub refs: Option<RefsSnapshot>,
@@ -310,6 +312,7 @@ impl App {
             size: i.size,
             tab: Tab::History,
             focus: Focus::History,
+            history_focus: Focus::History,
             fullscreen: false,
             refs: None,
             fetched_at: None,
