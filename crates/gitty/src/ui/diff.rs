@@ -321,9 +321,16 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     };
     let (x, right) = (body.x, body.right());
     let mid = x + body.width.saturating_sub(1) / 2;
+    // an added or deleted file (always unified) has no line numbers on its other side
+    let solo = fd.old.is_empty() || fd.new.is_empty();
+    let numbers = if solo { 1 } else { 2 };
     if split {
         app.hits.diff_old_gutter = (x, digits + 2);
         app.hits.diff_new_gutter = (mid + 1, digits + 2);
+    } else if solo {
+        // one number column serves the one side; clicks on "either" gutter land in it
+        app.hits.diff_old_gutter = (x, digits + 2);
+        app.hits.diff_new_gutter = (x, digits + 2);
     } else {
         app.hits.diff_old_gutter = (x, digits + 2);
         app.hits.diff_new_gutter = (x + digits + 2, digits + 2);
@@ -346,7 +353,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         match vr {
             VRow::Header(h) => {
                 fill(buf, Rect::new(x, y, body.width, 1), hunk);
-                text(buf, (x + 2 * (digits + 2) + 2).min(right), y, right, &h, hunk);
+                text(buf, (x + numbers * (digits + 2) + 2).min(right), y, right, &h, hunk);
             }
             VRow::Row(row) => match row {
                 Row::Gap { hidden, header, can_up, can_down, .. } => {
@@ -357,14 +364,15 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                     cx.line(buf, x, y, right, &l, cursor);
                 }
                 Row::Del { old, change } => {
-                    let l = Line { numbers: [Some(old), None], n_numbers: 2, kind: Kind::Del, bytes: Some(fd.old.line(old)), emph: emph_of(&fd, change, old, true), syn: syn_line(old_hl, old), no_eol: old + 1 == fd.old.len() && fd.old.no_eol() };
+                    let l = Line { numbers: [Some(old), None], n_numbers: numbers as usize, kind: Kind::Del, bytes: Some(fd.old.line(old)), emph: emph_of(&fd, change, old, true), syn: syn_line(old_hl, old), no_eol: old + 1 == fd.old.len() && fd.old.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
                     if staged(old, true) {
                         check(buf, &theme, x, y, right);
                     }
                 }
                 Row::Add { new, change } => {
-                    let l = Line { numbers: [None, Some(new)], n_numbers: 2, kind: Kind::Add, bytes: Some(fd.new.line(new)), emph: emph_of(&fd, change, new, false), syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
+                    let numbers_of = if solo { [Some(new), None] } else { [None, Some(new)] };
+                    let l = Line { numbers: numbers_of, n_numbers: numbers as usize, kind: Kind::Add, bytes: Some(fd.new.line(new)), emph: emph_of(&fd, change, new, false), syn: syn_line(new_hl, new), no_eol: new + 1 == fd.new.len() && fd.new.no_eol() };
                     cx.line(buf, x, y, right, &l, cursor);
                     if staged(new, false) {
                         check(buf, &theme, x, y, right);

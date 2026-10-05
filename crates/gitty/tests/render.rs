@@ -322,6 +322,36 @@ fn an_added_or_deleted_file_uses_the_full_width_even_in_split_view() {
 }
 
 #[test]
+fn an_added_or_deleted_file_has_one_line_number_column() {
+    let f = Fixture::new();
+    f.write("keep.txt", "a\nold\nc\n");
+    f.write("gone.txt", "bye now\n");
+    f.commit("base", NOW - DAY);
+    f.write("keep.txt", "a\nnew\nc\n");
+    f.write("fresh.txt", "hello there\n");
+    f.git(&["rm", "-q", "gone.txt"]);
+    f.git(&["add", "-A"]);
+    f.commit("change", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.select(0);
+    t.pump();
+    for (path, line) in [("fresh.txt", "hello there"), ("gone.txt", "bye now")] {
+        t.select_file(path);
+        let b = t.render(140, 30);
+        let (og, ng) = (t.app.hits.diff_old_gutter, t.app.hits.diff_new_gutter);
+        assert_eq!(og, ng, "{path}: one number column, which clicks on either side reach");
+        let (x, _) = find(&b, line).unwrap();
+        assert_eq!(x, ng.0 + ng.1 + 2, "{path}: the code follows that one column and the marker");
+        let (hx, _) = find(&b, "@@").unwrap();
+        assert_eq!(hx, x, "{path}: the hunk header lines up with the code");
+    }
+    t.select_file("keep.txt");
+    t.render(140, 30);
+    let (og, ng) = (t.app.hits.diff_old_gutter, t.app.hits.diff_new_gutter);
+    assert_eq!(ng.0, og.0 + og.1, "a two-sided file keeps both columns");
+}
+
+#[test]
 fn split_auto_at_220_unified_at_180() {
     let f = fixture();
     let mut t = H::new(&f, "github-dark", (220, 40));
