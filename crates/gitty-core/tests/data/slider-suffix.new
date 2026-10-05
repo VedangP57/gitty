@@ -1,0 +1,617 @@
+#!/bin/sh
+# synthetic test script: repeated blocks with identical tails
+
+. ./lib.sh
+
+check 'archive entry 1' '
+	run archive HEAD >out1.tar &&
+	list out1.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir1/
+	dir1/file1
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 2' '
+	run archive HEAD >out2.tar &&
+	list out2.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir2/
+	dir2/file2
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 3' '
+	run archive HEAD >out3.tar &&
+	list out3.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir3/
+	dir3/file3
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 4' '
+	run archive HEAD >out4.tar &&
+	list out4.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir4/
+	dir4/file4
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 5' '
+	run archive HEAD >out5.tar &&
+	list out5.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir5/
+	dir5/file5
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 6' '
+	run archive HEAD >out6.tar &&
+	list out6.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir6/
+	dir6/file6
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 7' '
+	run archive HEAD >out7.tar &&
+	list out7.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir7/
+	dir7/file7
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 8' '
+	run archive HEAD >out8.tar &&
+	list out8.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir8/
+	dir8/file8
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 9' '
+	run archive HEAD >out9.tar &&
+	list out9.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir9/
+	dir9/file9
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 10' '
+	run archive HEAD >out10.tar &&
+	list out10.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir10/
+	dir10/file10
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 11' '
+	run archive HEAD >out11.tar &&
+	list out11.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir11/
+	dir11/file11
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 12' '
+	run archive HEAD >out12.tar &&
+	echo "a files_named_a" >.attributes &&
+	add .attributes &&
+	list out12.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir12/
+	dir12/file12
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 13' '
+	run archive HEAD >out13.tar &&
+	list out13.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir13/
+	dir13/file13
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 14' '
+	run archive HEAD >out14.tar &&
+	list out14.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir14/
+	dir14/file14
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 15' '
+	run archive HEAD >out15.tar &&
+	list out15.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir15/
+	dir15/file15
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 16' '
+	run archive HEAD >out16.tar &&
+	list out16.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir16/
+	dir16/file16
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 17' '
+	run archive HEAD >out17.tar &&
+	list out17.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir17/
+	dir17/file17
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 18' '
+	run archive HEAD >out18.tar &&
+	list out18.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir18/
+	dir18/file18
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 19' '
+	run archive HEAD >out19.tar &&
+	list out19.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir19/
+	dir19/file19
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 20' '
+	run archive HEAD >out20.tar &&
+	list out20.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir20/
+	dir20/file20
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 21' '
+	run archive HEAD >out21.tar &&
+	list out21.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir21/
+	dir21/file21
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 22' '
+	run archive HEAD >out22.tar &&
+	list out22.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir22/
+	dir22/file22
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 23' '
+	run archive HEAD >out23.tar &&
+	list out23.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir23/
+	dir23/file23
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 24' '
+	run archive HEAD >out24.tar &&
+	list out24.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir24/
+	dir24/file24
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 25' '
+	run archive HEAD >out25.tar &&
+	list out25.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir25/
+	dir25/file25
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 26' '
+	run archive HEAD >out26.tar &&
+	list out26.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir26/
+	dir26/file26
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 27' '
+	run archive HEAD >out27.tar &&
+	list out27.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir27/
+	dir27/file27
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 28' '
+	run archive HEAD >out28.tar &&
+	list out28.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir28/
+	dir28/file28
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 29' '
+	run archive HEAD >out29.tar &&
+	list out29.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir29/
+	dir29/file29
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 30' '
+	run archive HEAD >out30.tar &&
+	list out30.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir30/
+	dir30/file30
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 31' '
+	run archive HEAD >out31.tar &&
+	list out31.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir31/
+	dir31/file31
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 32' '
+	run archive HEAD >out32.tar &&
+	list out32.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir32/
+	dir32/file32
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 33' '
+	run archive HEAD >out33.tar &&
+	list out33.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir33/
+	dir33/file33
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 34' '
+	run archive HEAD >out34.tar &&
+	list out34.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir34/
+	dir34/file34
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 35' '
+	run archive HEAD >out35.tar &&
+	list out35.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir35/
+	dir35/file35
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 36' '
+	run archive HEAD >out36.tar &&
+	list out36.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir36/
+	dir36/file36
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 37' '
+	run archive HEAD >out37.tar &&
+	list out37.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir37/
+	dir37/file37
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 38' '
+	run archive HEAD >out38.tar &&
+	list out38.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir38/
+	dir38/file38
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 39' '
+	run archive HEAD >out39.tar &&
+	list out39.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir39/
+	dir39/file39
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 40' '
+	run archive HEAD >out40.tar &&
+	list out40.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir40/
+	dir40/file40
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 41' '
+	run archive HEAD >out41.tar &&
+	list out41.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir41/
+	dir41/file41
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 42' '
+	run archive HEAD >out42.tar &&
+	list out42.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir42/
+	dir42/file42
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 43' '
+	run archive HEAD >out43.tar &&
+	list out43.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir43/
+	dir43/file43
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 44' '
+	run archive HEAD >out44.tar &&
+	list out44.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir44/
+	dir44/file44
+	EOF
+	compare expect actual
+'
+
+check 'attr pathspec in bare repo' '
+	expect_code 0 run --git-dir=bare archive -v HEAD \
+		":(attr:files_named_a)" >/dev/null 2>actual &&
+	cat >expect <<-\EOF &&
+	a/
+	a/a
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 45' '
+	run archive HEAD >out45.tar &&
+	list out45.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir45/
+	dir45/file45
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 46' '
+	run archive HEAD >out46.tar &&
+	list out46.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir46/
+	dir46/file46
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 47' '
+	run archive HEAD >out47.tar &&
+	list out47.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir47/
+	dir47/file47
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 48' '
+	run archive HEAD >out48.tar &&
+	list out48.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir48/
+	dir48/file48
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 49' '
+	run archive HEAD >out49.tar &&
+	list out49.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir49/
+	dir49/file49
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 50' '
+	run archive HEAD >out50.tar &&
+	list out50.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir50/
+	dir50/file50
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 51' '
+	run archive HEAD >out51.tar &&
+	list out51.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir51/
+	dir51/file51
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 52' '
+	run archive HEAD >out52.tar &&
+	list out52.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir52/
+	dir52/file52
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 53' '
+	run archive HEAD >out53.tar &&
+	list out53.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir53/
+	dir53/file53
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 54' '
+	run archive HEAD >out54.tar &&
+	list out54.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir54/
+	dir54/file54
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 55' '
+	run archive HEAD >out55.tar &&
+	list out55.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir55/
+	dir55/file55
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 56' '
+	run archive HEAD >out56.tar &&
+	list out56.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir56/
+	dir56/file56
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 57' '
+	run archive HEAD >out57.tar &&
+	list out57.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir57/
+	dir57/file57
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 58' '
+	run archive HEAD >out58.tar &&
+	list out58.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir58/
+	dir58/file58
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 59' '
+	run archive HEAD >out59.tar &&
+	list out59.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir59/
+	dir59/file59
+	EOF
+	compare expect actual
+'
+
+check 'archive entry 60' '
+	run archive HEAD >out60.tar &&
+	list out60.tar >actual &&
+	cat >expect <<-\EOF &&
+	dir60/
+	dir60/file60
+	EOF
+	compare expect actual
+'
+
