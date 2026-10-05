@@ -936,3 +936,55 @@ fn tree_view_renders_directories_indented() {
     let (tx, _) = find(&b, "top.txt").unwrap();
     assert!(tx < vx);
 }
+
+fn editor_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("dir with space/f.txt", "1\n2\n3\n4\n5\n6\n");
+    f.commit("base", NOW - DAY);
+    f.write("dir with space/f.txt", "1\n2\n3\nfour\n5\n6\n");
+    f.commit("change four", NOW - DAY + 60);
+    f
+}
+
+#[test]
+fn double_click_opens_the_file_at_the_line_in_the_editor() {
+    use gitty::external::External;
+    let f = editor_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.workdir = Some(f.path().to_path_buf());
+    let b = t.render(140, 30);
+    let path = f.path().join("dir with space/f.txt");
+    let (x, y) = find(&b, "+ four").expect("diff line drawn");
+    t.click(x, y);
+    assert_eq!(t.app.external, None, "one click only moves the cursor");
+    t.click(x, y);
+    assert_eq!(t.app.external, Some(External::Edit { path: path.clone(), line: Some(4) }), "double-click opens at the new line");
+    t.app.external = None;
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "f.txt").expect("file row drawn");
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, Some(External::Edit { path, line: Some(4) }), "a file row opens at its first change");
+    t.app.external = None;
+    t.clock += Duration::from_secs(1);
+    t.app.tick(t.clock);
+    t.click(x, y);
+    assert_eq!(t.app.external, None, "clicks far apart are not a double-click");
+}
+
+#[test]
+fn o_sends_both_sides_to_the_difftool_or_says_to_set_one() {
+    use gitty::external::External;
+    let f = editor_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.render(140, 30);
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT));
+    assert_eq!(t.app.external, None);
+    assert!(t.app.toast.as_ref().is_some_and(|m| m.what.contains("difftool")), "{:?}", t.app.toast);
+    t.app.config.difftool = Some("delta".into());
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT));
+    assert_eq!(
+        t.app.external,
+        Some(External::Diff { path: "dir with space/f.txt".into(), old: b"1\n2\n3\n4\n5\n6\n".to_vec(), new: b"1\n2\n3\nfour\n5\n6\n".to_vec() })
+    );
+}

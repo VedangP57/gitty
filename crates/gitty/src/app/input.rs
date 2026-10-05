@@ -75,6 +75,7 @@ impl App {
             KeyCode::Char('P') => return self.start_net(crate::msg::NetOp::Push),
             KeyCode::Char('x') if !ctrl => return self.cancel_net(),
             KeyCode::Char('?') => return self.overlay = Some(Overlay::Help),
+            KeyCode::Char('O') => return self.open_difftool(),
             KeyCode::Char('!') if self.toast.is_some() => return self.overlay = Some(Overlay::ErrorDetail),
             _ => {}
         }
@@ -458,6 +459,23 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        let double = self.note_click(x, y);
+        self.click_once(x, y, mods);
+        if !double {
+            return;
+        }
+        // double-click: open the file, except on Changes' checkboxes and gutters (they toggle)
+        let on_diff = inside(self.hits.diff_rows, x, y).is_some();
+        let on_files = inside(self.hits.files_rows, x, y).is_some();
+        let (og, ng) = (self.hits.diff_old_gutter, self.hits.diff_new_gutter);
+        let toggles = self.tab == Tab::Changes
+            && ((on_files && x < self.hits.files_rows.map_or(0, |r| r.x + 4)) || (on_diff && ((og.0..og.0 + og.1).contains(&x) || (ng.0..ng.0 + ng.1).contains(&x))));
+        if (on_diff || on_files) && !toggles {
+            self.open_shown_file(on_diff);
+        }
+    }
+
+    fn click_once(&mut self, x: u16, y: u16, mods: KeyModifiers) {
         if let Some(tab) = self.hits.tabs.iter().find(|(r, _)| r.contains(Position { x, y })).map(|t| t.1) {
             self.set_tab(tab);
             return;

@@ -8,6 +8,7 @@ pub mod net;
 pub mod diffstate;
 mod input;
 pub mod search;
+mod tools;
 pub mod tree;
 
 use std::collections::{HashMap, HashSet};
@@ -258,6 +259,11 @@ pub struct App {
     pub search: search::Search,
     /// Compare mode (`b`); the history pane lists its commits instead.
     pub compare: Option<compare::CompareMode>,
+    /// A tool for the main loop to run with the terminal handed over.
+    pub external: Option<crate::external::External>,
+    /// The working tree, for opening files in the editor (set by the main loop).
+    pub workdir: Option<PathBuf>,
+    last_click: Option<(Instant, u16, u16)>,
     compare_gen: u64,
     /// Rows per search request (lowered in tests).
     pub search_chunk: usize,
@@ -351,6 +357,9 @@ impl App {
             tune_announced: false,
             search: Default::default(),
             compare: None,
+            external: None,
+            workdir: None,
+            last_click: None,
             compare_gen: 0,
             search_chunk: search::SEARCH_CHUNK,
         };

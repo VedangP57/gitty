@@ -134,6 +134,17 @@ impl Guard {
     }
 }
 
+impl Guard {
+    /// Leaves the TUI's terminal modes, runs `f`, and enters them again even if `f` failed.
+    pub fn hand_over<R>(&self, f: impl FnOnce() -> R) -> std::io::Result<R> {
+        restore();
+        let r = f();
+        crossterm::terminal::enable_raw_mode()?;
+        Guard::enter(KITTY.load(Ordering::SeqCst)).map(std::mem::forget)?;
+        Ok(r)
+    }
+}
+
 impl Drop for Guard {
     fn drop(&mut self) {
         restore();
