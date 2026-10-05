@@ -37,7 +37,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/VedangP57/gitty/release
 [Releases page](https://github.com/VedangP57/gitty/releases). On macOS, a binary downloaded with
 a browser is quarantined: run `xattr -d com.apple.quarantine gitty` once.
 
-**From source** (Rust 1.90 or newer):
+**From source** (Rust 1.90 or newer, and a C compiler for the bundled grammars and Oniguruma):
 
 ```sh
 cargo install --locked --git https://github.com/VedangP57/gitty gitty
@@ -51,6 +51,9 @@ syntect fallback.
 
 - macOS (Apple Silicon or Intel) or Linux (x86_64 or arm64).
 - `git` 2.30 or newer on your `PATH`.
+- On Linux, live refresh watches every directory of the worktree with inotify. A repository with
+  more directories than `fs.inotify.max_user_watches` allows (often 8,192 on older kernels) opens
+  with a notice and refreshes when the terminal regains focus instead.
 - A terminal with mouse reporting; truecolor is used where the terminal has it, the nearest
   256-colour palette entry elsewhere.
 

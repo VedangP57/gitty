@@ -1,6 +1,7 @@
 #!/bin/sh
 # Regenerates THIRD-PARTY-LICENSES.md: every license that ships inside the gitty binary.
-# Needs cargo-about (`cargo install --locked cargo-about --features cli`). Run from the repo root.
+# Needs cargo-about (`cargo install --locked cargo-about --features cli`) and python3. Run from
+# the repo root.
 set -eu
 out=THIRD-PARTY-LICENSES.md
 onig=$(cargo metadata --format-version 1 | python3 -c 'import json,sys; m=json.load(sys.stdin); print(next(p["manifest_path"] for p in m["packages"] if p["name"]=="onig_sys").rsplit("/",1)[0])')

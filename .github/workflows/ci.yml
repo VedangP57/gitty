@@ -15,16 +15,16 @@ env:
 jobs:
   test:
     name: test (${{ matrix.os }})
-    # private repos pay for Actions minutes (macOS 10x): only Linux x86_64 runs until the repo is public
-    if: ${{ !github.event.repository.private || matrix.os == 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        # private repos pay for Actions minutes (macOS 10x): only Linux x86_64 until the repo is
+        # public (a job-level `if` cannot read `matrix`, so the list itself is chosen here)
+        os: ${{ fromJSON(github.event.repository.private && '["ubuntu-latest"]' || '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2

@@ -1,6 +1,6 @@
-//! Filesystem watching (spec §5.4): one FSEvents stream over the worktree (and the git dir when
-//! it lives elsewhere), a path classifier, an ignore check and a debouncer. The owner gets a
-//! [`Changed`] mask per burst and decides what to refresh.
+//! Filesystem watching (spec §5.4): one recursive watch (FSEvents on macOS, inotify on Linux)
+//! over the worktree (and the git dir when it lives elsewhere), a path classifier, an ignore
+//! check and a debouncer. The owner gets a [`Changed`] mask per burst and decides what to refresh.
 
 use std::collections::HashMap;
 use std::ops::{BitOr, BitOrAssign};
@@ -219,7 +219,7 @@ impl Ignores {
     }
 }
 
-/// Keeps the FSEvents stream alive; dropping it stops watching.
+/// Keeps the watch (FSEvents on macOS, inotify on Linux) alive; dropping it stops watching.
 pub struct Watcher {
     _inner: notify::RecommendedWatcher,
     mark: IndexMark,
