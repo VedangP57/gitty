@@ -91,8 +91,9 @@ fn any_live_git(commands: &str) -> bool {
 }
 
 /// One particular lock file: removal is refused if the lock was replaced since it was offered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockId {
+    path: PathBuf,
     ino: u64,
     mtime_ns: i128,
 }
@@ -101,7 +102,12 @@ impl LockId {
     pub fn of(path: &Path) -> Option<LockId> {
         use std::os::unix::fs::MetadataExt;
         let m = std::fs::symlink_metadata(path).ok()?;
-        Some(LockId { ino: m.ino(), mtime_ns: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()) })
+        Some(LockId { path: path.to_path_buf(), ino: m.ino(), mtime_ns: i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec()) })
+    }
+
+    /// The same lock file is still there (not removed, not replaced).
+    pub fn still_there(&self) -> bool {
+        LockId::of(&self.path).as_ref() == Some(self)
     }
 }
 

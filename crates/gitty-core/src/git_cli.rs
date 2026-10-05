@@ -5,7 +5,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::collections::HashSet;
+use std::process::{ChildStdout, Command, Stdio};
 
 use anyhow::Context;
 
@@ -103,15 +104,20 @@ impl GitCli {
 
     /// Runs a read and returns its stdout, killing it as soon as `cancelled` says so (checked
     /// every 20 ms) instead of holding the calling thread until it finishes.
-    pub fn read_cancellable(&self, mut cmd: Command, cancelled: &dyn Fn() -> bool) -> anyhow::Result<Vec<u8>> {
-        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = cmd.spawn().context("running git")?;
-        let (mut out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
-        let reader = std::thread::spawn(move || {
+    pub fn read_cancellable(&self, cmd: Command, cancelled: &dyn Fn() -> bool) -> anyhow::Result<Vec<u8>> {
+        self.run_cancellable(cmd, cancelled, |mut out| {
             let mut v = Vec::new();
             let _ = out.read_to_end(&mut v);
             v
-        });
+        })
+    }
+
+    /// [`Self::read_cancellable`] with stdout handed to `read` on its own thread as it arrives.
+    pub fn run_cancellable<T: Send + 'static>(&self, mut cmd: Command, cancelled: &dyn Fn() -> bool, read: impl FnOnce(ChildStdout) -> T + Send + 'static) -> anyhow::Result<T> {
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().context("running git")?;
+        let (out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+        let reader = std::thread::spawn(move || read(out));
         let errs = std::thread::spawn(move || {
             let mut s = String::new();
             let _ = err.read_to_string(&mut s);
@@ -129,11 +135,11 @@ impl GitCli {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
-        let out = reader.join().unwrap_or_default();
+        let got = reader.join().map_err(|_| anyhow::anyhow!("reading git's output panicked"))?;
         if !status.success() {
             anyhow::bail!("{}", errs.join().unwrap_or_default().trim());
         }
-        Ok(out)
+        Ok(got)
     }
 
     fn quiet(&self, kind: Kind, args: &[&str], stdin: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
@@ -192,15 +198,18 @@ impl GitCli {
         }
     }
 
-    /// Commits in `oldest^..newest`, first parent only: what a range's diff covers. A merge as
-    /// `oldest` brings in its merged side; a root `oldest` has no `^1`, which `--ignore-missing`
-    /// drops, counting all of `newest`'s history.
-    /// Across a big merge on a huge history this takes seconds: a newer selection cancels it.
-    pub fn range_count(&self, oldest: CommitId, newest: CommitId, cancelled: &dyn Fn() -> bool) -> anyhow::Result<usize> {
+    /// How many commits a range's `oldest^..newest` diff holds (first parent only) that are not
+    /// in `rows`, the selected history rows: merged side branches, and in the all-refs scope the
+    /// diff skips rows of other branches that sit between the ends. A merge as `oldest` brings in
+    /// its merged side; a root `oldest` has no `^1`, which `--ignore-missing` drops, counting all
+    /// of `newest`'s history. Across a big merge on a huge history this takes seconds: a newer
+    /// selection cancels it. The ids stream; a kernel-sized range is never held in memory.
+    pub fn range_extra(&self, oldest: CommitId, newest: CommitId, rows: HashSet<CommitId>, cancelled: &dyn Fn() -> bool) -> anyhow::Result<usize> {
         let (o, n) = (format!("{oldest}^1"), newest.to_string());
-        let cmd = self.cmd(Kind::Read, &["rev-list", "--ignore-missing", "--count", &n, "--not", &o]);
-        let out = self.read_cancellable(cmd, cancelled)?;
-        Ok(String::from_utf8_lossy(&out).trim().parse()?)
+        let cmd = self.cmd(Kind::Read, &["rev-list", "--ignore-missing", &n, "--not", &o]);
+        self.run_cancellable(cmd, cancelled, move |out| {
+            BufReader::new(out).split(b'\n').map_while(Result::ok).filter_map(|l| CommitId::from_hex(String::from_utf8_lossy(&l).trim())).filter(|id| !rows.contains(id)).count()
+        })
     }
 
     /// `git apply --cached`: the patch goes into the index ([`Handle::apply_cached`] guards it).

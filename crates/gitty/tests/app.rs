@@ -945,6 +945,62 @@ fn the_stale_lock_offer_waits_for_an_open_overlay() {
 }
 
 #[test]
+fn a_lock_gone_before_its_offer_opens_is_never_asked_about() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let seen = gitty::write::LockId::of(&lock).unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen });
+    std::fs::remove_file(&lock).unwrap();
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none(), "{:?}", t.app.overlay.as_ref().map(|_| "an overlay"));
+}
+
+#[test]
+fn a_waiting_prompt_opens_before_a_queued_lock_offer() {
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen: gitty::write::LockId::of(&lock).unwrap() });
+    started(&mut t, gitty::msg::NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(1, "Username for 'https://example.com': ")));
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "git is waiting on the prompt");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none(), "the offer waits for the job to end");
+    done(&mut t, gitty::msg::NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: could not read Username".into() });
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
+}
+
+#[test]
+fn a_lock_offer_waits_out_the_job_between_its_prompts() {
+    use gitty::app::Overlay;
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen: gitty::write::LockId::of(&lock).unwrap() });
+    started(&mut t, gitty::msg::NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(1, "Username for 'https://example.com': ")));
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(Overlay::Prompt { .. })));
+    typed(&mut t, "ann");
+    t.key(KeyCode::Enter);
+    // git has not asked for the password yet: no question slips in while its job runs
+    assert!(t.app.overlay.is_none(), "nothing opens between the prompts");
+    t.app.handle_msg(Msg::Ask(ask(2, "Password for 'https://ann@example.com': ")));
+    assert!(matches!(t.app.overlay, Some(Overlay::Prompt { .. })), "the password prompt");
+    // the job ends with its prompt open: the prompt closes and the offer follows
+    done(&mut t, gitty::msg::NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: Authentication failed".into() });
+    assert!(matches!(t.app.overlay, Some(Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
+}
+
+#[test]
 fn focus_gained_and_backstop_refresh_status() {
     let f = changes_fixture();
     let mut t = H::new(&f);
@@ -2270,6 +2326,45 @@ fn leaving_compare_mid_walk_still_finds_the_saved_commit() {
 }
 
 #[test]
+fn leaving_compare_mid_walk_shows_row_0_when_the_saved_commit_is_gone() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    // the saved commit (m1) leaves the history while compare is open
+    f.git(&["reset", "-q", "--hard", "main~2"]);
+    let base = f.git(&["rev-parse", "HEAD"]);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    let refs: Vec<_> = t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Refs)).collect();
+    for m in t.exec_all(refs) {
+        t.app.handle_msg(m);
+    }
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.selected_id().to_string(), base.trim(), "the walk ended without it: row 0 is shown");
+    assert_eq!(t.app.detail.as_ref().map(|d| d.row.id), Some(t.selected_id()), "and its detail, not the compare commit's");
+}
+
+#[test]
+fn a_click_on_the_open_search_bar_keeps_it() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('/');
+    typed(&mut t, "fi");
+    t.app.hits.panes = t.app.panes();
+    let row = t.app.hits.panes.bottom.y;
+    let m = crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), column: 3, row, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(m);
+    assert_eq!(t.app.search.bar.as_ref().map(|b| b.text()), Some("fi"), "the bar and its text stay");
+}
+
+#[test]
 fn a_range_says_when_it_covers_commits_outside_the_selected_rows() {
     let f = Fixture::new();
     f.write("base.txt", "0\n");
@@ -2324,6 +2419,39 @@ fn a_range_ending_at_a_merge_counts_the_merged_side() {
     assert_eq!((summary(&t, 0), summary(&t, 1)), ("after".into(), "merge side".into()));
     // after + merge: merge^..after diffs against base, so it also holds s1 and s2
     t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(2));
+}
+
+#[test]
+fn a_range_note_counts_commits_not_rows_in_all_refs_scope() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_200);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_300);
+    f.git(&["checkout", "-q", "-b", "other", "main~1"]);
+    f.write("o.txt", "1\n");
+    f.commit("o1", 1_700_000_350);
+    f.git(&["checkout", "-q", "main"]);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.toggle_scope();
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    let top: Vec<String> = (0..3).map(|i| summary(&t, i)).collect();
+    assert_eq!(top, ["merge side", "o1", "m1"]);
+    // merge, o1, m1 selected: the diff m1^..merge holds merge, m1, s1 and s2, not o1
+    t.ch('V');
+    t.ch('j');
     t.ch('j');
     t.pump();
     assert_eq!(t.app.range_extra(), Some(2));

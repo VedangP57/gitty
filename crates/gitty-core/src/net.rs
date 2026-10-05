@@ -293,9 +293,8 @@ impl Collector {
         Collector { rx }
     }
 
-    /// Everything until end of file, or until `grace` passes without it.
-    fn finish(self, grace: Duration) -> Vec<u8> {
-        let end = std::time::Instant::now() + grace;
+    /// Everything until end of file, or until `end` passes without it.
+    fn finish(self, end: std::time::Instant) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
             match self.rx.recv_timeout(end.saturating_duration_since(std::time::Instant::now())) {
@@ -313,7 +312,8 @@ pub struct Job {
 }
 
 const STDERR_CAP: usize = 64 * 1024;
-/// How long stderr may stay open after git itself exited (helpers it left behind).
+/// How long stderr and stdout (together) may stay open after git itself exited (helpers it
+/// left behind).
 const STDERR_GRACE: Duration = Duration::from_secs(1);
 
 /// Whether `pid` (our child) has exited, without reaping it: until it is reaped, its pid and
@@ -368,9 +368,9 @@ impl Job {
         self.cancel.clone()
     }
 
-    /// Streams progress (fractions in 0..=1, increasing) until git exits. stderr is read on its
-    /// own thread: a helper that keeps it open after git exits gets [`STDERR_GRACE`], not the
-    /// rest of its life.
+    /// Streams progress (fractions in 0..=1, increasing) until git exits. stderr and stdout are read
+    /// on their own threads: helpers that keep them open after git exits get one shared
+    /// [`STDERR_GRACE`] for both, not the rest of their life.
     pub fn wait(mut self, on_progress: &mut dyn FnMut(f32)) -> Outcome {
         let reader = Collector::spawn(self.child.stdout.take().expect("piped"));
         let mut err = self.child.stderr.take().expect("piped");
@@ -433,8 +433,9 @@ impl Job {
         }
         let status = self.child.wait();
         self.cancel.exited.store(true, Ordering::SeqCst);
-        // like stderr, stdout may be held by a helper git left behind
-        let stdout = String::from_utf8_lossy(&reader.finish(STDERR_GRACE)).into_owned();
+        // like stderr, stdout may be held by a helper git left behind: both share one grace
+        let deadline = grace.unwrap_or_else(|| std::time::Instant::now() + STDERR_GRACE);
+        let stdout = String::from_utf8_lossy(&reader.finish(deadline)).into_owned();
         let ok = status.as_ref().is_ok_and(|s| s.success());
         // a cancel that arrived after git finished does not undo what git did
         if self.cancel.cancelled.load(Ordering::SeqCst) && !ok {
@@ -478,9 +479,22 @@ mod tests {
         let c = Collector::spawn(r);
         let t = std::time::Instant::now();
         // `w` stays open: a helper that kept git's stdout
-        let got = c.finish(Duration::from_millis(200));
+        let got = c.finish(t + Duration::from_millis(200));
         assert_eq!(got, b"done\n");
         assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        drop(w);
+    }
+
+    #[test]
+    fn stdout_gets_only_what_is_left_of_the_shared_grace() {
+        let (r, w) = std::io::pipe().unwrap();
+        let c = Collector::spawn(r);
+        // stderr's wait already used most of the one grace both pipes share
+        let deadline = std::time::Instant::now() + Duration::from_millis(400);
+        std::thread::sleep(Duration::from_millis(300));
+        let t = std::time::Instant::now();
+        c.finish(deadline);
+        assert!(t.elapsed() < Duration::from_millis(250), "waited {:?} past the shared deadline", t.elapsed());
         drop(w);
     }
 

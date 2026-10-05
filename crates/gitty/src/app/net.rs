@@ -134,6 +134,12 @@ impl App {
     }
 
     fn net_done(&mut self, op: NetOp, background: bool, outcome: Outcome) {
+        self.finish_net(op, background, outcome);
+        // questions held while the job ran (or queued behind its prompt) can open now
+        self.next_ask();
+    }
+
+    fn finish_net(&mut self, op: NetOp, background: bool, outcome: Outcome) {
         let job = self.net.take();
         let remote = job.as_ref().and_then(|j| j.remote.clone());
         let label = job.map_or_else(|| op.verb().to_string(), |j| j.label);
@@ -279,22 +285,29 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        // a running git waits on its prompt; the questions below wait on nothing
+        if let Some(ask) = self.asks.pop_front() {
+            let mut input = Editor::single();
+            input.reserve(256);
+            self.overlay = Some(Overlay::Prompt { ask, input });
+            return;
+        }
+        // between two prompts of one git (username, then password) nothing else may open, and
+        // "no git process is running" is not true until the job ends (net_done asks again)
+        if self.net.is_some() {
+            return;
+        }
         if std::mem::take(&mut self.pending_diverged) {
             self.overlay = Some(Overlay::Diverged);
             return;
         }
-        if let Some(seen) = self.pending_stale_lock.take() {
+        // a lock removed (or replaced) while the offer waited is no longer the question
+        if let Some(seen) = self.pending_stale_lock.take().filter(|s| s.still_there()) {
             self.overlay = Some(Overlay::Confirm {
                 title: "Remove the stale .git/index.lock?".into(),
                 body: "A git command failed because the index is locked, and no git process is running. The lock was probably left by a git that crashed.".into(),
                 op: crate::msg::WriteOp::RemoveIndexLock { seen },
             });
-            return;
-        }
-        if let Some(ask) = self.asks.pop_front() {
-            let mut input = Editor::single();
-            input.reserve(256);
-            self.overlay = Some(Overlay::Prompt { ask, input });
         }
     }
 

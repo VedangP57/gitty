@@ -150,13 +150,17 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 sink(Msg::SearchPaths { generation, result });
             }
         }
-        Request::RangeCount { generation, oldest, newest } => {
+        Request::RangeCount { generation, oldest, newest, history, rows } => {
             let stale = || !Gens::is(&gens.commit, generation);
             // a failed or cancelled count only leaves the note out
             if !stale()
-                && let Ok(count) = gitty_core::git_cli::GitCli::new(h.owner()).range_count(oldest, newest, &stale)
+                && let Ok(extra) = gitty_core::git_cli::GitCli::new(h.owner()).range_extra(oldest, newest, {
+                    // one read guard for the whole range: the walker may be appending
+                    let h = history.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    rows.filter(|&i| i < h.len()).map(|i| h.id(i)).collect()
+                }, &stale)
             {
-                sink(Msg::RangeCount { oldest, newest, count });
+                sink(Msg::RangeCount { oldest, newest, extra });
             }
         }
         Request::CommitRows { ids } => {

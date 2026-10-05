@@ -465,7 +465,11 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
-        // clicking away from the search bar abandons the query being typed
+        // clicking away from the search bar abandons the query being typed; a click on its row
+        // (the bottom bar) does nothing
+        if self.search.bar.is_some() && y == self.hits.panes.bottom.y {
+            return;
+        }
         self.search.bar = None;
         let double = self.note_click(x, y);
         self.click_once(x, y, mods);
