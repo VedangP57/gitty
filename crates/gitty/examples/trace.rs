@@ -43,7 +43,7 @@ fn main() {
     let t = Instant::now();
     exec(&h, Request::Files { generation: 0, of: FilesOf::Commit(ids[0].1), prefetch: true }, &mut |_| {}, &gens);
     println!("files+stats HEAD {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
-    // one search chunk on this thread; the app spreads chunks over the reader pool
+    // one search chunk on this thread; the app spreads chunks over its 2-thread search pool
     let query = std::sync::Arc::new(gitty_core::search::Query::parse("zzz-no-such-text").unwrap());
     let n = len.min(gitty::app::search::SEARCH_CHUNK);
     let t = Instant::now();

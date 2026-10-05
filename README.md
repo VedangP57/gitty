@@ -204,7 +204,7 @@ and the history.
 | file diff, p50 | 0.19 ms | < 10 ms |
 | ahead/behind, 360,606 commits | 88 ms | < 150 ms |
 | status, git/git | 16–17 ms | < 70 ms |
-| search, one 20,000-row chunk, kernel | 337 ms on one reader; the UI never waits | — |
+| search, one 20,000-row chunk, kernel | 337 ms on one search thread (2 of them); the UI never waits | — |
 
 ## License
 

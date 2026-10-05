@@ -93,7 +93,8 @@ gitty/                         cargo workspace
 - **main:** blocks on crossbeam `select!` over input, worker results and watcher events. It drains all queues, applies updates, and draws once. There is no tick.
 - **input:** reads crossterm events and coalesces bursts of wheel and resize events.
 - **walker (1):** owns the history arena for the session.
-- **reader (N = cores − 2, min 2):** row decode, tree diffs, blob loads, line stats, search.
+- **reader (N = cores − 2, min 2):** row decode, tree diffs, blob loads, line stats.
+- **search (2):** search chunks, `path:` lookups and range counts — git walks that can run for seconds, so they never queue ahead of the readers.
 - **diff/highlight (2–4):** a separate pool so highlighting never starves history.
 - **writer (1):** serialises every mutating git CLI call.
 - **watcher:** notify plus the classifier.

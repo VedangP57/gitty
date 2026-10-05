@@ -578,6 +578,14 @@ fn a_panicking_status_run_still_answers_the_status_request() {
 #[test]
 fn search_work_has_its_own_pool_so_readers_never_wait_behind_it() {
     use gitty::workers::{Pool, route};
+    let f = Fixture::new();
+    f.commit("one", 1_700_000_000);
+    let history = run(&f, Request::Walk { session: 0, tips: tips(&f) }).into_iter().find_map(|m| match m {
+        Msg::HistoryStarted { history, .. } => Some(history),
+        _ => None,
+    });
+    let query = Arc::new(gitty_core::search::Query::parse("x").unwrap());
+    assert_eq!(route(&Request::Search { generation: 1, query, paths: None, history: history.unwrap(), range: 0..1 }), Pool::Search, "the per-chunk scan");
     assert_eq!(route(&Request::SearchPath { generation: 1, tips: vec![], path: "p".into() }), Pool::Search);
     assert_eq!(route(&Request::RangeCount { generation: 1, oldest: CommitId::from_hex(&"a".repeat(40)).unwrap(), newest: CommitId::from_hex(&"b".repeat(40)).unwrap(), rows: vec![] }), Pool::Search);
     assert_eq!(route(&Request::Refs), Pool::Readers);
