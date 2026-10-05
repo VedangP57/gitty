@@ -126,3 +126,24 @@ cancel on a hanging remote.
 | prompt request → masked prompt on screen | 0.24 s (includes the transport starting) | — |
 | `x` → "Fetch cancelled" (process group killed, nothing left running) | 7 ms | < 1 s ✅ |
 | `git commit-graph write --reachable --changed-paths`, git/git (85k commits), maintenance thread | 6.3 s | off the UI and writer threads ✅ |
+
+## Budgets enforced (M6) — 2026-10-05, release build, Apple Silicon, load average ~6
+
+`bench/run.sh <repo>...` now passes `--check` to the probe: each spec §8 budget prints
+`budget <what>: <measured> < <budget> ok|MISSED`, and the script exits 1 when any is missed (the
+probe exits 2; `GITTY_BUDGET_SCALE=0.0001` forces a miss to prove it). A warm-up walk runs first,
+because the budgets are for a warm cache. Walk budgets are checked only when the walk uses a
+commit-graph, which gitty writes on large repos.
+
+| Check | git (no graph) | git-cg | linux (blobless) | Budget |
+|---|---|---|---|---|
+| first 500 rows, all refs | 15.8 ms (not checked) | 10.9 ms | 22.9 ms | < 50 ms ✅ |
+| full walk, all refs | 443 ms (not checked) | 18.9 ms | 258 ms | < 400 ms ✅ |
+| commit file list p50 | 0.11 ms | 0.12 ms | blobless | < 5 ms ✅ |
+| file diff p50 | 0.19 ms | 0.19 ms | blobless | < 10 ms ✅ |
+| ahead/behind master...v6.0 (360,606) | — | — | 88 ms | < 150 ms ✅ |
+| status median of 10, after a refresh | 16.4 ms | 17.2 ms | — | < 70 ms ✅ |
+
+`cargo bench -p gitty --bench frame`: a 220×60 frame of a 300-commit fixture (history, file list,
+and a highlighted 3,000-line Rust diff) takes **0.52 ms** (criterion mean 0.515 ms; slowest of 200
+frames 0.63 ms), against the < 16 ms keypress-to-frame budget. The bench exits 2 on a miss.

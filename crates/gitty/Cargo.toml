@@ -26,3 +26,8 @@ signal-hook = "0.3"
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
+criterion = "0.8"
+
+[[bench]]
+name = "frame"
+harness = false
