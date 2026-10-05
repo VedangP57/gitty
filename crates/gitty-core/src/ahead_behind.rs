@@ -26,12 +26,12 @@ impl Handle {
         if local == upstream {
             return Ok(AheadBehind::default());
         }
-        if let Some(g) = self.commit_graph() {
-            if let (Some(pa), Some(pb)) = (g.lookup(&to_oid(local)), g.lookup(&to_oid(upstream))) {
-                let generation_of = |p: gix::commitgraph::Position| g.commit_at(p).generation();
-                if generation_of(pa) > 0 && generation_of(pb) > 0 {
-                    return graph_ahead_behind(&g, pa.0, pb.0);
-                }
+        if let Some(g) = self.commit_graph()
+            && let (Some(pa), Some(pb)) = (g.lookup(to_oid(local)), g.lookup(to_oid(upstream)))
+        {
+            let generation_of = |p: gix::commitgraph::Position| g.commit_at(p).generation();
+            if generation_of(pa) > 0 && generation_of(pb) > 0 {
+                return graph_ahead_behind(&g, pa.0, pb.0);
             }
         }
         self.cli_ahead_behind(local, upstream)
@@ -98,7 +98,7 @@ fn graph_ahead_behind(g: &gix::commitgraph::Graph, pa: u32, pb: u32) -> anyhow::
         }
         pops += 1;
         // Once everything left is reachable from both sides, nothing else can be ahead/behind.
-        if (heap.len() <= 16 || pops % 256 == 0) && heap.iter().all(|&(_, q)| flags[q as usize] & (A | B) == A | B) {
+        if (heap.len() <= 16 || pops.is_multiple_of(256)) && heap.iter().all(|&(_, q)| flags[q as usize] & (A | B) == A | B) {
             break;
         }
     }

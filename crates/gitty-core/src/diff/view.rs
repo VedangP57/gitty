@@ -433,11 +433,11 @@ impl DiffView {
         let mut out: Vec<usize> = Vec::new();
         let mut last = usize::MAX;
         for s in &self.segments {
-            if let Seg::Del { change, .. } | Seg::Add { change, .. } = s.seg {
-                if change != last {
-                    out.push(s.start);
-                    last = change;
-                }
+            if let Seg::Del { change, .. } | Seg::Add { change, .. } = s.seg
+                && change != last
+            {
+                out.push(s.start);
+                last = change;
             }
         }
         out

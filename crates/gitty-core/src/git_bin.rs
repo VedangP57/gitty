@@ -31,12 +31,12 @@ impl GitBin {
         let mut cands: Vec<PathBuf> = std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).map(|d| d.join("git")).collect())
             .unwrap_or_default();
-        if let Ok(out) = Command::new("xcrun").args(["-f", "git"]).output() {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() {
-                    cands.push(PathBuf::from(s));
-                }
+        if let Ok(out) = Command::new("xcrun").args(["-f", "git"]).output()
+            && out.status.success()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                cands.push(PathBuf::from(s));
             }
         }
         cands.push(PathBuf::from(SHIM));

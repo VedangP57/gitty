@@ -131,7 +131,7 @@ impl Walker {
     }
 
     fn push_id(&mut self, h: &Handle, id: gix::ObjectId) -> anyhow::Result<()> {
-        if let Some(pos) = self.graph.as_ref().and_then(|g| g.lookup(&id)) {
+        if let Some(pos) = self.graph.as_ref().and_then(|g| g.lookup(id)) {
             self.push_graph(pos.0);
             return Ok(());
         }
