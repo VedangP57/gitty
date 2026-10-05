@@ -94,6 +94,8 @@ impl App {
         if self.tab == Tab::History && !ctrl {
             match k.code {
                 KeyCode::Char('b') => return self.open_branch_picker(),
+                KeyCode::Char('t') => return self.toggle_tree(),
+                KeyCode::Enter if self.focus == Focus::Files && self.toggle_dir() => return,
                 KeyCode::Char('/') => return self.open_search(),
                 KeyCode::Char('n') => return self.search_step(true),
                 KeyCode::Char('N') => return self.search_step(false),
@@ -121,8 +123,8 @@ impl App {
             (KeyCode::Char('l') | KeyCode::Right, false) => self.hscroll(8),
             (KeyCode::Char('['), _) => self.hunk(-1, split),
             (KeyCode::Char(']'), _) => self.hunk(1, split),
-            (KeyCode::Char('{'), _) => self.select_file(self.file_sel.saturating_sub(1)),
-            (KeyCode::Char('}'), _) => self.select_file(self.file_sel + 1),
+            (KeyCode::Char('{'), _) => self.step_file(false),
+            (KeyCode::Char('}'), _) => self.step_file(true),
             (KeyCode::Char('e'), _) => {
                 if let Some(d) = self.diff.as_mut() {
                     d.expand_near_cursor(split);
@@ -343,9 +345,9 @@ impl App {
                 self.select(t);
             }
             Focus::Files => {
-                let n = self.files.as_ref().map_or(0, |f| f.len());
-                let t = target(self.file_sel, n, self.files_capacity(), m);
-                self.select_file(t);
+                let n = self.file_rows().len();
+                let t = target(self.file_cursor(), n, self.files_capacity(), m);
+                self.select_file_row(t);
             }
             Focus::Commit => {}
             Focus::Diff => {
@@ -483,8 +485,10 @@ impl App {
         } else if let Some(r) = inside(self.hits.files_rows, x, y) {
             self.focus = Focus::Files;
             let i = self.hits.files_first + (y - r.y) as usize;
-            if self.files.as_ref().is_some_and(|f| i < f.len()) {
-                self.select_file(i);
+            if i < self.file_rows().len() {
+                self.select_file_row(i);
+                // a click on a directory row opens or closes it
+                self.toggle_dir();
             }
         } else if let Some(r) = inside(self.hits.diff_rows, x, y) {
             self.focus = Focus::Diff;
@@ -605,7 +609,7 @@ impl App {
             self.list_scroll = scroll(self.list_scroll, max);
             self.request_visible_rows();
         } else if inside(self.hits.panes.files, x, y).is_some() {
-            let n = self.files.as_ref().map_or(0, |f| f.len());
+            let n = self.file_rows().len();
             self.file_scroll = scroll(self.file_scroll, n.saturating_sub(self.files_capacity()));
         } else if inside(self.hits.panes.diff, x, y).is_some() {
             let split = self.split_active();

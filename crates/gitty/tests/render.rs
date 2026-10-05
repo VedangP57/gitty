@@ -913,3 +913,26 @@ fn compare_mode_shows_title_tabs_and_the_branch_commits() {
     assert!(s.contains("topic two") && s.contains("topic one"), "{s}");
     assert!(!s.contains("on main"), "the Behind tab lists only the branch's commits\n{s}");
 }
+
+#[test]
+fn tree_view_renders_directories_indented() {
+    let f = Fixture::new();
+    f.write("seed", "s\n");
+    f.commit("seed", NOW - DAY);
+    for p in ["docs/guide.md", "src/ui/view.rs", "src/lib.rs", "top.txt"] {
+        f.write(p, "x\n");
+    }
+    f.commit("tree", NOW - DAY + 60);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let b = t.render(140, 30);
+    let s = text(&b);
+    let (dx, dy) = find(&b, "▾ docs/").expect(&s);
+    let (vx, vy) = find(&b, "view.rs").expect(&s);
+    let (ux, uy) = find(&b, "▾ ui/").expect(&s);
+    assert!(ux > dx && vx > ux, "deeper rows are indented further");
+    assert!(dy < uy && uy < vy);
+    assert!(find(&b, "src/ui/view.rs").is_none(), "file rows show only the name");
+    let (tx, _) = find(&b, "top.txt").unwrap();
+    assert!(tx < vx);
+}

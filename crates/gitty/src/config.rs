@@ -191,6 +191,8 @@ pub struct UiState {
     pub scope_all: bool,
     /// Width of the Changes tab's left column (file list and commit box).
     pub changes_width: Option<u16>,
+    /// History file list as a directory tree (`t`).
+    pub tree_view: bool,
 }
 
 impl UiState {
@@ -369,7 +371,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("repos/x.toml");
         assert_eq!(UiState::load(&p), UiState::default());
-        let s = UiState { history_width: Some(70), files_width: None, files_height: Some(9), changes_width: Some(50), scope_all: true };
+        let s = UiState { history_width: Some(70), files_width: None, files_height: Some(9), changes_width: Some(50), scope_all: true, tree_view: true };
         s.save(&p).unwrap();
         assert_eq!(UiState::load(&p), s);
         std::fs::write(&p, "garbage = [").unwrap();

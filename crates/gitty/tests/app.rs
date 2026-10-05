@@ -1969,3 +1969,62 @@ fn a_history_refresh_during_compare_keeps_both_selections() {
     assert_eq!(t.selected_id(), before, "the same commit is selected again, at its new row");
     assert_eq!(t.app.selected, 2);
 }
+
+fn tree_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("seed", "s\n");
+    f.commit("seed", 1_700_000_000);
+    for p in ["a.txt", "src/ui/x.rs", "src/ui/y.rs", "src/main.rs", "z.txt"] {
+        f.write(p, "x\n");
+    }
+    f.commit("tree", 1_700_000_100);
+    f
+}
+
+fn rows_text(t: &H) -> Vec<String> {
+    use gitty::app::tree::FileRow;
+    let files = t.app.files.clone().unwrap();
+    t.app.file_rows().iter().cloned().map(|r| match r {
+        FileRow::Dir { name, depth, collapsed, .. } => format!("{}{}{name}/", "  ".repeat(depth), if collapsed { "+" } else { "-" }),
+        FileRow::File { idx, depth } => format!("{}{}", "  ".repeat(depth), files[idx].path.rsplit('/').next().unwrap()),
+    }).collect()
+}
+
+#[test]
+fn tree_view_groups_by_directory_collapses_and_selection_follows_files() {
+    let f = tree_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('t');
+    assert!(t.app.ui_state.tree_view, "the setting is kept in UI state");
+    assert_eq!(rows_text(&t), ["-src/", "  -ui/", "    x.rs", "    y.rs", "  main.rs", "a.txt", "z.txt"]);
+    assert_eq!(t.app.current_file().unwrap().path, "a.txt", "toggling keeps the selected file");
+    assert_eq!(t.app.file_cursor(), 5);
+    t.app.select(1);
+    t.pump();
+    t.app.select(0);
+    t.pump();
+    assert_eq!(t.app.current_file().unwrap().path, "src/ui/x.rs", "a new list starts on the first file row");
+    t.key(KeyCode::Enter); // history → files
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('k');
+    t.ch('k');
+    assert_eq!(t.app.file_cursor(), 0, "the cursor can rest on a directory");
+    t.ch('j');
+    t.key(KeyCode::Enter);
+    assert_eq!(rows_text(&t), ["-src/", "  +ui/", "  main.rs", "a.txt", "z.txt"], "Enter on a directory collapses it");
+    assert_eq!(t.app.focus, Focus::Files);
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.current_file().unwrap().path, "src/main.rs");
+    assert_eq!(t.app.diff.as_ref().map(|d| d.key.path.as_str()), Some("src/main.rs"), "the diff follows file rows");
+    t.ch('}');
+    assert_eq!(t.app.current_file().unwrap().path, "a.txt", "}} goes to the next file row");
+    t.ch('{');
+    t.ch('{');
+    assert_eq!(t.app.current_file().unwrap().path, "src/main.rs", "{{ skips directories and hidden files");
+    t.key(KeyCode::Esc);
+    t.ch('t');
+    assert_eq!(rows_text(&t).len(), 5, "list view: one row per file");
+    assert!(rows_text(&t).iter().all(|r| !r.ends_with('/')));
+}

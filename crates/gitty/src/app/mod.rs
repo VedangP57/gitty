@@ -8,6 +8,7 @@ pub mod net;
 pub mod diffstate;
 mod input;
 pub mod search;
+pub mod tree;
 
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
@@ -197,6 +198,12 @@ pub struct App {
     pub files_error: Option<String>,
     pub file_sel: usize,
     pub file_scroll: usize,
+    /// Tree view: the directory row the cursor rests on (None: on the selected file).
+    tree_dir: Option<String>,
+    /// Collapsed directories of the tree view, by path.
+    collapsed: HashSet<String>,
+    /// Rows of the files pane (see `tree.rs`), rebuilt when the list or view changes.
+    file_rows: Vec<tree::FileRow>,
     file_cache: Lru<FilesOf, CachedFiles>,
     prefetching: HashSet<CommitId>,
 
@@ -305,6 +312,9 @@ impl App {
             files_error: None,
             file_sel: 0,
             file_scroll: 0,
+            tree_dir: None,
+            collapsed: HashSet::new(),
+            file_rows: Vec::new(),
             file_cache: Lru::new(1024),
             prefetching: HashSet::new(),
             diff: None,
@@ -408,7 +418,7 @@ impl App {
             focus: self.focus,
             fullscreen: self.fullscreen,
             header_height: self.header_height(),
-            file_count: self.files.as_ref().map_or(0, |f| f.len()),
+            file_count: self.file_rows.len(),
             ui: &self.ui_state,
         };
         match self.tab {
@@ -681,6 +691,7 @@ impl App {
         self.selected = 0;
         self.detail = None;
         self.files = None;
+        self.file_rows.clear();
         self.files_of = None;
         self.files_wanted = None;
         self.range_anchor = None;
@@ -781,6 +792,7 @@ impl App {
         }
         self.files_wanted = Some(of);
         self.files = None;
+        self.file_rows.clear();
         self.files_of = None;
         self.stats.clear();
         self.stats_done = false;
@@ -812,7 +824,9 @@ impl App {
         self.stats_done = c.done;
         let empty = c.files.is_empty();
         self.files = Some(c.files);
-        self.file_sel = 0;
+        self.refresh_file_rows();
+        self.tree_dir = None;
+        self.file_sel = self.first_file_row();
         self.file_scroll = 0;
         if empty {
             self.diff = None;
@@ -857,10 +871,11 @@ impl App {
 
     pub fn ensure_files_visible(&mut self) {
         let cap = self.files_capacity();
-        if self.file_sel < self.file_scroll {
-            self.file_scroll = self.file_sel;
-        } else if self.file_sel >= self.file_scroll + cap {
-            self.file_scroll = self.file_sel + 1 - cap;
+        let cur = self.file_cursor();
+        if cur < self.file_scroll {
+            self.file_scroll = cur;
+        } else if cur >= self.file_scroll + cap {
+            self.file_scroll = cur + 1 - cap;
         }
     }
 
@@ -917,6 +932,7 @@ impl App {
             return;
         }
         let i = i.min(n - 1);
+        self.tree_dir = None;
         self.ensure_files_visible();
         if i == self.file_sel && self.diff_wanted.is_some() {
             return;

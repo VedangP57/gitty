@@ -7,6 +7,7 @@ use ratatui::style::{Modifier, Style};
 
 use super::commit_list::title;
 use super::paint::{centered, fill, spans, text, text_right};
+use crate::app::tree::FileRow;
 use crate::app::{App, Focus};
 use crate::text::truncate_middle;
 
@@ -45,12 +46,23 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         }
         return;
     }
-    for (k, i) in (app.file_scroll..n).take(rows.height as usize).enumerate() {
-        let f = &files[i];
+    let tree = app.file_rows().to_vec();
+    let cursor = app.file_cursor();
+    for (k, (ri, frow)) in tree.iter().enumerate().skip(app.file_scroll).take(rows.height as usize).enumerate() {
         let y = rows.y + k as u16;
-        let bg = if i == app.file_sel { if focused { ui.selection } else { ui.selection_inactive } } else { ui.bg };
+        let bg = if ri == cursor { if focused { ui.selection } else { ui.selection_inactive } } else { ui.bg };
         let row = Style::new().bg(bg).fg(ui.fg);
         fill(buf, Rect::new(rows.x, y, rows.width, 1), row);
+        let (i, depth) = match frow {
+            FileRow::Dir { name, depth, collapsed, .. } => {
+                let mark = if *collapsed { "▸ " } else { "▾ " };
+                let x = rows.x + 1 + 2 * *depth as u16;
+                spans(buf, x, y, rows.right().saturating_sub(1), &[(mark, row.fg(ui.muted)), (name, row.add_modifier(Modifier::BOLD)), ("/", row.fg(ui.muted))]);
+                continue;
+            }
+            FileRow::File { idx, depth } => (*idx, *depth),
+        };
+        let f = &files[i];
         let (letter, color) = match f.status {
             FileStatus::Added => ("A", ui.status_added),
             FileStatus::Deleted => ("D", ui.status_deleted),
@@ -60,7 +72,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             FileStatus::TypeChange => ("T", ui.status_modified),
         };
         let right = rows.right().saturating_sub(1);
-        let x = text(buf, rows.x + 1, y, right, letter, row.fg(color).add_modifier(Modifier::BOLD)) + 1;
+        let x = text(buf, rows.x + 1 + 2 * depth as u16, y, right, letter, row.fg(color).add_modifier(Modifier::BOLD)) + 1;
         let mut rx = right;
         if let Some(Some(s)) = app.stats.get(i) {
             let (a, d) = (format!("+{}", s.added), format!("−{}", s.removed));
@@ -73,7 +85,9 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             rx = rx.saturating_sub(1);
         }
         let room = rx.saturating_sub(x) as usize;
-        let shown = truncate_middle(&f.path, room);
+        // tree rows show the name; the directories are the rows above
+        let path = if app.ui_state.tree_view { f.path.rsplit('/').next().unwrap_or(&f.path) } else { f.path.as_str() };
+        let shown = truncate_middle(path, room);
         let (dir, name) = match shown.rfind('/') {
             Some(p) => shown.split_at(p + 1),
             None => ("", shown.as_str()),
