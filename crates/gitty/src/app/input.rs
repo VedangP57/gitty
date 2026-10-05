@@ -6,6 +6,7 @@ use gitty_core::diff::view::{Expand, Row, SplitRow};
 use ratatui::layout::{Position, Rect};
 
 use super::diffstate::VRow;
+use super::changes::Side;
 use super::{App, Focus, Overlay, Tab, Toast};
 use crate::config::{Config, Density};
 use crate::ui::layout::{self, MAX_FILES, MIN_FILES, Mode, Sep};
@@ -567,8 +568,16 @@ impl App {
             let (og, ng) = (self.hits.diff_old_gutter, self.hits.diff_new_gutter);
             let in_gutter = (og.0..og.0 + og.1).contains(&x) || (ng.0..ng.0 + ng.1).contains(&x);
             let split = self.split_active();
+            // split view: deletions on the left half, additions on the right
+            self.changes.side = split.then(|| if x < r.x + r.width.saturating_sub(1) / 2 { Side::Old } else { Side::New });
             let Some(d) = self.diff.as_mut() else { return };
             d.cursor = i;
+            let is_edge = |j: usize| matches!(d.vrow(j, split), None | Some(VRow::Header(_) | VRow::Row(Row::Gap { .. }) | VRow::Split(SplitRow::Gap { .. })));
+            if x == r.x && is_edge(i) && !is_edge(i + 1) {
+                // the handle: stage (or unstage) the hunk below the header
+                d.cursor = (i + 1).min(d.rows(split).saturating_sub(1));
+                return self.toggle_hunk();
+            }
             let gap = match d.vrow(i, split) {
                 Some(VRow::Row(Row::Gap { gap, .. }) | VRow::Split(SplitRow::Gap { gap, .. })) => Some(gap),
                 _ => None,
@@ -593,12 +602,26 @@ impl App {
         }
     }
 
+    /// Extends a gutter selection; at the first or last row the cursor steps on past the
+    /// screen, so the diff scrolls a row per drag event.
     fn gutter_drag(&mut self, y: u16) {
         let Some(r) = self.hits.diff_rows else { return };
+        let split = self.split_active();
         let row = (y.clamp(r.y, r.bottom().saturating_sub(1)) - r.y) as usize;
-        if let (Some(&i), Some(d)) = (self.hits.diff_lines.get(row), self.diff.as_mut()) {
-            d.cursor = i;
-        }
+        let hit = self.hits.diff_lines.get(row).copied();
+        let Some(d) = self.diff.as_mut() else { return };
+        let last = d.rows(split).saturating_sub(1);
+        // the hit regions are from the last frame, which may be scrolled since: never step back
+        d.cursor = if y + 1 >= r.bottom() {
+            (hit.map_or(d.cursor, |i| i.max(d.cursor)) + 1).min(last)
+        } else if y <= r.y {
+            hit.map_or(d.cursor, |i| i.min(d.cursor)).saturating_sub(1)
+        } else if let Some(i) = hit {
+            i
+        } else {
+            return;
+        };
+        self.ensure_diff_visible();
     }
 
     fn drag(&mut self, x: u16, y: u16) {

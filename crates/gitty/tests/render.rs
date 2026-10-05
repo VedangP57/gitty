@@ -988,3 +988,85 @@ fn o_sends_both_sides_to_the_difftool_or_says_to_set_one() {
         Some(External::Diff { path: "dir with space/f.txt".into(), old: b"1\n2\n3\n4\n5\n6\n".to_vec(), new: b"1\n2\n3\nfour\n5\n6\n".to_vec() })
     );
 }
+
+fn find_all(b: &Buffer, needle: &str) -> Vec<(u16, u16)> {
+    (0..b.area.height).filter_map(|y| {
+        let line: String = (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect();
+        line.find(needle).map(|i| (line[..i].chars().count() as u16, y))
+    }).collect()
+}
+
+#[test]
+fn clicking_a_hunk_header_handle_stages_that_hunk() {
+    let f = Fixture::new();
+    let base: String = (1..=40).map(|i| format!("line {i}\n")).collect();
+    f.write("big.txt", &base);
+    f.commit("base", NOW - DAY);
+    f.write("big.txt", base.replace("line 3\n", "line three\n").replace("line 35\n", "line thirty-five\n"));
+    let mut t = H::new(&f, "github-dark", (140, 40));
+    t.key(KeyCode::Char('1'));
+    t.select_change("big.txt");
+    let b = t.render(140, 40);
+    let headers = find_all(&b, "@@");
+    assert!(headers.len() >= 2, "two hunks\n{}", text(&b));
+    let r = t.app.hits.diff_rows.unwrap();
+    t.click(r.x, headers[1].1);
+    t.render(140, 40);
+    let cached = f.git(&["diff", "--cached", "-U0", "--", "big.txt"]);
+    assert!(cached.contains("+line thirty-five") && !cached.contains("+line three"), "only the clicked hunk:\n{cached}");
+    assert!(text(&b).lines().nth(headers[1].1 as usize).unwrap().contains('±'), "the handle is drawn");
+}
+
+#[test]
+fn a_gutter_drag_at_the_bottom_edge_scrolls_and_keeps_selecting() {
+    let f = Fixture::new();
+    f.write("long.txt", "start\n");
+    f.commit("base", NOW - DAY);
+    let added: String = (1..=80).map(|i| format!("added {i}\n")).collect();
+    f.write("long.txt", format!("start\n{added}"));
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("long.txt");
+    let b = t.render(140, 30);
+    let (_, y0) = find(&b, "added 1").unwrap();
+    let gx = t.app.hits.diff_new_gutter.0;
+    let r = t.app.hits.diff_rows.unwrap();
+    let ev = |kind, y| MouseEvent { kind, column: gx, row: y, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), y0));
+    for _ in 0..10 {
+        t.app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), r.bottom() - 1));
+    }
+    assert!(t.app.diff.as_ref().unwrap().scroll >= 10, "each drag event at the edge scrolls a row");
+    t.app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), r.bottom() - 1));
+    t.pump();
+    let staged = f.git(&["diff", "--cached", "--", "long.txt"]).lines().filter(|l| l.starts_with("+added")).count();
+    let visible = r.height as usize;
+    assert!(staged > visible, "the selection grew past the first screen: {staged} staged, {visible} visible");
+}
+
+#[test]
+fn split_view_space_stages_only_the_side_under_the_pointer() {
+    let f = Fixture::new();
+    f.write("n.txt", "a\nlet value = 1;\nc\n");
+    f.commit("base", NOW - DAY);
+    f.write("n.txt", "a\nlet value = 2;\nc\n");
+    let mut t = H::new(&f, "github-dark", (220, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("n.txt");
+    let b = t.render(220, 30);
+    assert!(t.app.split_active(), "220 columns: split view");
+    let (lx, ly) = find(&b, "let value = 1;").expect("deletion on the left");
+    let (rx, ry) = find(&b, "let value = 2;").expect("addition on the right");
+    assert_eq!(ly, ry, "one paired row");
+    assert!(rx > lx);
+    t.click(rx + 4, ry);
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 1;\nlet value = 2;\nc", "only the addition is staged");
+    let b = t.render(220, 30);
+    let (lx, ly) = find(&b, "let value = 1;").unwrap();
+    t.click(lx + 4, ly);
+    t.key(KeyCode::Char(' '));
+    t.render(220, 30);
+    assert_eq!(f.git(&["show", ":n.txt"]), "a\nlet value = 2;\nc", "then the deletion too");
+}

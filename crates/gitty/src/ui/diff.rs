@@ -418,5 +418,19 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             }
         }
     }
+    // Changes: a hunk header's first column is a handle that stages the hunk
+    if app.tab == crate::app::Tab::Changes && app.changes.current.as_ref().is_some_and(|v| v.staged.is_some()) {
+        let split = app.split_active();
+        if let Some(d) = &app.diff {
+            for (k, &i) in screen_rows.iter().enumerate() {
+                let first = k == 0 || screen_rows[k - 1] != i;
+                let is_edge = |j: usize| matches!(d.vrow(j, split), None | Some(VRow::Header(_) | VRow::Row(Row::Gap { .. }) | VRow::Split(SplitRow::Gap { .. })));
+                // only headers with a hunk below (not the trailing gap)
+                if first && is_edge(i) && !is_edge(i + 1) {
+                    buf[(body.x, body.y + k as u16)].set_symbol("±").set_style(Style::new().fg(ui.accent).add_modifier(Modifier::BOLD));
+                }
+            }
+        }
+    }
     app.hits.diff_lines = screen_rows;
 }

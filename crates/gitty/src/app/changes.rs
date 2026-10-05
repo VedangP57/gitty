@@ -98,12 +98,16 @@ impl ChangeView {
         ChangeView { entry, texts, diff, staged, divergent, old_flag, new_flag }
     }
 
-    /// Flag indices of the changed lines a diff row shows.
-    pub fn flags_of(&self, row: &VRow) -> Vec<usize> {
+    /// Flag indices of the changed lines a diff row shows; in split view `side` keeps one half.
+    pub fn flags_of(&self, row: &VRow, side: Option<Side>) -> Vec<usize> {
         let (o, n) = match row {
             VRow::Row(Row::Del { old, .. }) => (Some(*old), None),
             VRow::Row(Row::Add { new, .. }) => (None, Some(*new)),
-            VRow::Split(SplitRow::Change { old, new, .. }) => (*old, *new),
+            VRow::Split(SplitRow::Change { old, new, .. }) => match side {
+                Some(Side::Old) => (*old, None),
+                Some(Side::New) => (None, *new),
+                None => (*old, *new),
+            },
             _ => (None, None),
         };
         let o = o.and_then(|o| self.old_flag.get(o as usize).copied().flatten());
@@ -117,6 +121,13 @@ impl ChangeView {
         let k = map.get(line as usize).copied().flatten();
         k.zip(self.staged.as_ref()).is_some_and(|(k, s)| s.get(k as usize).copied().unwrap_or(false))
     }
+}
+
+/// A half of the split view: deletions on the left, additions on the right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Old,
+    New,
 }
 
 #[derive(Default)]
@@ -143,6 +154,8 @@ pub struct Changes {
     pub visual: Option<usize>,
     /// A gutter drag (mouse) is selecting lines.
     pub(super) gutter_drag: bool,
+    /// Split view: the half the last click landed on; Space and gutter clicks stage only it.
+    pub side: Option<Side>,
     pub commit: super::commit::CommitBox,
     last_refresh: Option<Instant>,
 }
@@ -220,6 +233,7 @@ impl App {
         let i = i.min(n - 1);
         if i != self.changes.sel {
             self.changes.force_text = false;
+            self.changes.side = None;
         }
         self.changes.sel = i;
         let cap = self.files_capacity();
@@ -433,10 +447,11 @@ impl App {
         lo..=hi
     }
 
-    fn flags_in(&self, rows: std::ops::RangeInclusive<usize>) -> Vec<usize> {
+    fn flags_in(&self, rows: std::ops::RangeInclusive<usize>, side: Option<Side>) -> Vec<usize> {
         let (Some(d), Some(v)) = (&self.diff, &self.changes.current) else { return Vec::new() };
         let split = self.split_active();
-        rows.filter_map(|i| d.vrow(i, split)).flat_map(|r| v.flags_of(&r)).collect()
+        let side = side.filter(|_| split);
+        rows.filter_map(|i| d.vrow(i, split)).flat_map(|r| v.flags_of(&r, side)).collect()
     }
 
     /// Stages the lines, or unstages them when all are staged already.
@@ -474,13 +489,13 @@ impl App {
 
     /// Space in the diff.
     pub fn toggle_lines(&mut self) {
-        let ks = self.flags_in(self.target_rows());
+        let ks = self.flags_in(self.target_rows(), self.changes.side);
         self.toggle_flags(ks);
     }
 
     /// `H`.
     pub fn toggle_hunk(&mut self) {
-        let ks = self.flags_in(self.hunk_rows());
+        let ks = self.flags_in(self.hunk_rows(), None);
         self.toggle_flags(ks);
     }
 
@@ -510,7 +525,7 @@ impl App {
 
     /// `d` in the diff: discard the target lines from the working tree, after confirmation.
     pub fn confirm_discard_lines(&mut self) {
-        let ks = self.flags_in(self.target_rows());
+        let ks = self.flags_in(self.target_rows(), self.changes.side);
         let Some(v) = &self.changes.current else { return };
         if ks.is_empty() {
             return;

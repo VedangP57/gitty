@@ -4,7 +4,7 @@ expression: s
 ---
  gitty repo  ⎇ main                                                    [1] Changes (3)  [2] History
  src/main.rs  +2 −2
- ↑        ⋯ 5 lines   @@ -6,7 +6,7 @@ fn main() {
+±↑        ⋯ 5 lines   @@ -6,7 +6,7 @@ fn main() {
   6   6       step(2);
   7   7       step(3);
   8   8       step(4);
@@ -13,7 +13,7 @@ expression: s
  10  10       step(6);
  11  11       step(7);
  12  12       step(8);
- ↑   ↓    ⋯ 10 lines   @@ -23,7 +23,7 @@ fn main() {
+±↑   ↓    ⋯ 10 lines   @@ -23,7 +23,7 @@ fn main() {
  23  23       step(19);
  24  24       step(20);
  25  25       step(21);
