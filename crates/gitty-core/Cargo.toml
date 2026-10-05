@@ -3,6 +3,11 @@ name = "gitty-core"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Git engine behind gitty: history walk, diffs, status, staging and network jobs"
 
 [dependencies]
 gix.workspace = true
