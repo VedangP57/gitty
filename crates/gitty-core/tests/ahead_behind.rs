@@ -79,3 +79,26 @@ fn equal_tips_is_empty() {
     let ab = Repo::open(f.path()).unwrap().handle().ahead_behind(c, c).unwrap();
     assert!(ab.ahead.is_empty() && ab.behind.is_empty());
 }
+
+#[test]
+fn an_unpublished_branch_lists_the_commits_no_remote_branch_has() {
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    f.add_bare_upstream();
+    f.write("p.txt", "pushed\n");
+    f.commit("pushed", 1_700_000_050);
+    f.git(&["push", "-q", "origin", "main"]);
+    f.git(&["checkout", "-q", "-b", "feature"]);
+    f.write("a.txt", "a\n");
+    let a1 = f.commit("local 1", 1_700_000_100);
+    f.write("b.txt", "b\n");
+    let a2 = f.commit("local 2", 1_700_000_200);
+    let id = |s: &str| CommitId::from_hex(s).unwrap();
+    let h = Repo::open(f.path()).unwrap().handle();
+    let got = h.unpublished(id(&a2)).unwrap();
+    assert_eq!(got.iter().copied().collect::<HashSet<_>>(), [id(&a1), id(&a2)].into());
+    assert_eq!(got.len(), 2, "no duplicates");
+    // pushed under another name, nothing is left to publish
+    f.git(&["push", "-q", "origin", "feature:elsewhere"]);
+    assert!(h.unpublished(id(&a2)).unwrap().is_empty());
+}

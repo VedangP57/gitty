@@ -6,7 +6,7 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
 ![gitty: browsing History with a split diff, then staging and committing in Changes](assets/demo.gif)
 
 - **History:** local and remote commits with their refs, and marks for what is ahead of or
-  behind the upstream. Select a commit (or a `V` range of them) for its files and a syntax-highlighted diff, unified
+  behind the upstream (on a branch never pushed, ↑ marks what pushing it would publish). Select a commit (or a `V` range of them) for its files and a syntax-highlighted diff, unified
   or split (added and deleted files always use the full width).
 - **Changes:** status that follows the file system, staging by file, hunk or line (Space, or a
   click in the gutter), discard with a copy kept in the Trash, and a commit box with amend and

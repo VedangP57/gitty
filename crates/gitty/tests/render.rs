@@ -1283,3 +1283,23 @@ fn help_is_generated_from_the_keymap() {
     assert!(!s.lines().any(|l| l.contains("  f  ") && l.contains("fetch")));
     assert!(s.contains("search history"), "M6 actions are listed\n{s}");
 }
+
+#[test]
+fn an_unpublished_branch_says_so_and_marks_its_commits() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - 2 * DAY);
+    f.add_bare_upstream();
+    f.git(&["checkout", "-q", "-b", "feature"]);
+    f.write("b.txt", "b\n");
+    f.commit("Only on this machine", NOW - DAY);
+    let mut t = H::new(&f, "github-dark", (140, 20));
+    t.pump();
+    let s = text(&t.render(140, 20));
+    let top = s.lines().next().unwrap();
+    assert!(top.contains("⎇ feature  ↑1 not published"), "{top}");
+    let row = s.lines().find(|l| l.contains("Only on this machine") && l.contains(" feature ")).expect("the commit row");
+    assert!(row.trim_start().starts_with('↑'), "{row}");
+    let base = s.lines().find(|l| l.contains("base") && l.contains("main")).expect("the base row");
+    assert!(!base.contains('↑'), "already on the remote: {base}");
+}

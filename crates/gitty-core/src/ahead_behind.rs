@@ -37,6 +37,26 @@ impl Handle {
         self.cli_ahead_behind(local, upstream)
     }
 
+    /// For a branch with no upstream: the commits reachable from `local` that no remote-tracking
+    /// branch has, i.e. what pushing it would publish.
+    pub fn unpublished(&self, local: CommitId) -> anyhow::Result<Vec<CommitId>> {
+        let args = vec!["rev-list".to_string(), local.to_string(), "--not".into(), "--remotes".into()];
+        let out = self
+            .owner()
+            .git()
+            .command()
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .current_dir(self.owner().git_dir())
+            .args(&args)
+            .output()
+            .context("spawn git rev-list")?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            return Err(GitError { args, code: out.status.code(), stderr }.into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| CommitId::from_hex(l.trim())).collect())
+    }
+
     fn cli_ahead_behind(&self, local: CommitId, upstream: CommitId) -> anyhow::Result<AheadBehind> {
         let args = vec!["rev-list".to_string(), "--left-right".into(), format!("{local}...{upstream}")];
         let out = self

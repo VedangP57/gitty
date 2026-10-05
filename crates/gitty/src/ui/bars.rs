@@ -48,6 +48,10 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
             let ahead = format!("  ↑{}", app.ahead.len());
             let behind = format!(" ↓{}", app.behind.len());
             x = spans(buf, x, y, max_x, &[(&ahead, base.fg(ui.ahead)), (&behind, base.fg(ui.behind))]);
+        } else if refs.unpublished() {
+            let n = app.ahead.len();
+            let s = if n > 0 { format!("  ↑{n} not published") } else { "  not published".to_string() };
+            x = text(buf, x, y, max_x, &s, base.fg(ui.ahead));
         }
     }
     if let Some(r) = app.needs_auth.as_deref().filter(|_| app.net.is_none()) {

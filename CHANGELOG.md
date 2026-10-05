@@ -6,7 +6,16 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A branch that was never pushed marks with ↑ the commits no remote branch has (what pushing it
+  would publish), and the top bar says `↑N not published`, as GitHub Desktop does.
+
 ### Fixed
+
+- An upstream set or removed outside gitty (`git push -u` in a terminal) shows up on the next
+  refresh; it used to need a restart.
+- When the branch has nothing to compare with, the last upstream's ↑/↓ marks no longer stay.
 
 - Switching from Changes back to History returns to the pane History had focused, not the
   Changes file list (or the commit editor, after a click on the tab).

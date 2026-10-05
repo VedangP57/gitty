@@ -44,6 +44,11 @@ impl RefsSnapshot {
             Head::Detached { id } => Some(*id),
         }
     }
+    /// HEAD is a branch with no upstream in a repository with remote branches: pushing it
+    /// would publish it.
+    pub fn unpublished(&self) -> bool {
+        self.upstream.is_none() && self.head_branch().is_some() && self.labels.values().flatten().any(|l| l.kind == RefKind::RemoteBranch)
+    }
     pub fn head_branch(&self) -> Option<&str> {
         match &self.head {
             Head::Branch { name, .. } => Some(name),
@@ -78,11 +83,25 @@ impl Handle {
                 id: head_commit.ok_or_else(|| anyhow::anyhow!("HEAD is detached but does not resolve"))?,
             },
         };
-        let upstream = head_name.as_ref().and_then(|n| {
-            let tracking = repo.branch_remote_tracking_ref_name(n.as_ref(), gix::remote::Direction::Fetch)?.ok()?;
-            let mut r = repo.find_reference(tracking.as_ref()).ok()?;
+        // git, not gix: the repository's config was read when it was opened, and an upstream set
+        // or unset since (`git push -u` in a terminal) must show up on the next refresh
+        let upstream = head_name.as_ref().and_then(|_| {
+            let out = self
+                .owner()
+                .git()
+                .command()
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .current_dir(self.owner().git_dir())
+                .args(["rev-parse", "--symbolic-full-name", "@{upstream}"])
+                .output()
+                .ok()?;
+            let tracking = String::from_utf8(out.stdout).ok()?.trim().to_string();
+            if !out.status.success() || !tracking.starts_with("refs/") {
+                return None;
+            }
+            let mut r = repo.find_reference(tracking.as_str()).ok()?;
             let id = r.peel_to_id().ok()?;
-            Some((tracking.as_ref().shorten().to_string(), from_oid(&id)))
+            Some((r.name().shorten().to_string(), from_oid(&id)))
         });
         let head_branch = head_name.as_ref().map(|n| n.shorten().to_string());
 

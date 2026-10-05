@@ -1560,6 +1560,56 @@ fn toast_text(t: &H) -> String {
 }
 
 #[test]
+fn an_unpublished_branch_marks_what_a_push_would_publish() {
+    let (f, _bare) = remote_fixture();
+    f.git(&["checkout", "-q", "-b", "feature"]);
+    f.write("x.txt", "x\n");
+    let a1 = CommitId::from_hex(&f.commit("local 1", 1_700_000_100)).unwrap();
+    f.write("y.txt", "y\n");
+    let a2 = CommitId::from_hex(&f.commit("local 2", 1_700_000_200)).unwrap();
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.refs.as_ref().unwrap().upstream.is_none(), "never pushed");
+    assert_eq!(t.app.ahead, [a1, a2].into(), "the commits no remote branch has");
+    assert!(t.app.behind.is_empty());
+    t.ch('P');
+    t.pump();
+    assert!(t.app.refs.as_ref().unwrap().upstream.is_some(), "P published it");
+    assert!(t.app.ahead.is_empty() && t.app.behind.is_empty(), "nothing left to push");
+}
+
+#[test]
+fn a_repository_without_remote_branches_marks_nothing() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["remote", "add", "origin", "https://example.invalid/never-fetched.git"]);
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.ahead.is_empty(), "nothing to compare with yet");
+}
+
+#[test]
+fn losing_the_upstream_drops_its_marks() {
+    let (f, _bare) = remote_fixture();
+    f.write("x.txt", "x\n");
+    f.commit("local", 1_700_000_100);
+    f.git(&["branch", "-q", "--set-upstream-to", "origin/main"]);
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.ahead.len(), 1);
+    // the upstream goes, and the remote branch with it: nothing to compare with
+    f.git(&["branch", "-q", "--unset-upstream"]);
+    f.git(&["branch", "-q", "-r", "-d", "origin/main"]);
+    for m in t.exec_all(vec![Request::Refs]) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert!(t.app.refs.as_ref().unwrap().upstream.is_none());
+    assert!(t.app.ahead.is_empty(), "no stale ↑ marks");
+}
+
+#[test]
 fn f_fetches_and_p_fast_forwards() {
     let (f, bare) = remote_fixture();
     common::push_as_someone_else(&bare, "b.txt");

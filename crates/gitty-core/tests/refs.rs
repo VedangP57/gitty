@@ -64,3 +64,17 @@ fn tag_pointing_at_tree_is_ignored() {
     assert_eq!(refs.tips(HistoryScope::AllRefs).len(), 1);
     assert!(refs.labels.values().flatten().all(|l| l.name != "treetag"));
 }
+
+#[test]
+fn upstream_changes_made_after_opening_are_seen() {
+    let f = Fixture::new();
+    f.commit("base", 1_700_000_000);
+    f.add_bare_upstream();
+    let h = Repo::open(f.path()).unwrap().handle();
+    assert!(h.refs().unwrap().upstream.is_some());
+    f.git(&["branch", "-q", "--unset-upstream"]);
+    assert!(h.refs().unwrap().upstream.is_none(), "unset in a terminal");
+    f.git(&["checkout", "-q", "-b", "feature"]);
+    f.git(&["push", "-q", "-u", "origin", "feature"]);
+    assert_eq!(h.refs().unwrap().upstream.map(|u| u.0), Some("origin/feature".to_string()), "git push -u in a terminal");
+}

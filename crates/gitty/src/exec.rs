@@ -110,7 +110,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 }
             }
         }
-        Request::AheadBehind { local, upstream } => match h.ahead_behind(local, upstream) {
+        Request::AheadBehind { local, upstream } => match upstream.map_or_else(|| h.unpublished(local).map(|ahead| gitty_core::ahead_behind::AheadBehind { ahead, behind: Vec::new() }), |u| h.ahead_behind(local, u)) {
             Ok(ab) => sink(Msg::AheadBehind { local, upstream, ab }),
             Err(e) => sink(error("computing ahead/behind", &e)),
         },
