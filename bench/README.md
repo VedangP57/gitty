@@ -147,3 +147,16 @@ commit-graph, which gitty writes on large repos.
 `cargo bench -p gitty --bench frame`: a 220×60 frame of a 300-commit fixture (history, file list,
 and a highlighted 3,000-line Rust diff) takes **0.52 ms** (criterion mean 0.515 ms; slowest of 200
 frames 0.63 ms), against the < 16 ms keypress-to-frame budget. The bench exits 2 on a miss.
+
+## Line staging after the M6 guards (M7) — 2026-10-05, release build, load average ~6
+
+The M6 write guards (intent-to-add check, HEAD check, index check after `apply --cached`) added
+git processes to every line toggle. `--example changes` on git/git, staging one line:
+
+| Build | stage a line (median) | Budget |
+|---|---|---|
+| M6 (HEAD checked with `git ls-tree`) | 29.5 ms | < 50 ms ✅ |
+| M7 (HEAD read in process with gix) | **24.1–24.3 ms** | < 50 ms ✅ |
+
+The rest is two `git ls-files` (the index before and after) and `git apply --cached`. The M4
+figure (11.7–12.0 ms) predates the guards.

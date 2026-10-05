@@ -181,16 +181,6 @@ impl GitCli {
         Ok(String::from_utf8_lossy(&out).trim().parse()?)
     }
 
-    /// The blob `path` has in HEAD; None when HEAD lacks it or is unborn.
-    pub fn head_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
-        let Ok(out) = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-tree", "-z", "--full-tree", "HEAD", "--", path], None) else {
-            return Ok(None);
-        };
-        let rec = String::from_utf8_lossy(out.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();
-        // "<mode> <type> <hex>\t<path>"
-        Ok(rec.split('\t').next().and_then(|m| m.split(' ').nth(2)).and_then(BlobId::from_hex))
-    }
-
     fn intent_to_add(&self, path: &str) -> anyhow::Result<bool> {
         let out = self.quiet(Kind::Read, &["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=no", "--", path], None)?;
         let rec = String::from_utf8_lossy(out.split(|&b| b == 0).next().unwrap_or(&[])).into_owned();

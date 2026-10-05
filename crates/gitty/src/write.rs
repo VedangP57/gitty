@@ -139,7 +139,7 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 bail!("{} changed in the index since its diff was loaded; refreshing", entry.path);
             }
             // a rename's HEAD side is the original path
-            if cli.head_blob(entry.orig_path.as_deref().unwrap_or(&entry.path))? != entry.head_blob {
+            if h.head_blob(entry.orig_path.as_deref().unwrap_or(&entry.path))? != entry.head_blob {
                 bail!("{} changed in HEAD since its diff was loaded; refreshing", entry.path);
             }
             match plan(entry, texts, &diff.ops, flags) {
@@ -155,7 +155,7 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             if BlobId::hash_of(&now) != *expect {
                 bail!("{path} changed on disk since its diff was loaded; nothing was discarded");
             }
-            if cli.head_blob(head_path)? != *head {
+            if h.head_blob(head_path)? != *head {
                 bail!("{path} changed in HEAD since its diff was loaded; nothing was discarded");
             }
             let note = fallback_note(to_trash(&full)?);

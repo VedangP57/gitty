@@ -306,6 +306,14 @@ impl Handle {
         Ok(Arc::new(Text::new(self.blob_bytes(b)?)))
     }
 
+    /// The blob (or a submodule's commit) `path` has in HEAD; None when HEAD lacks it or is
+    /// unborn. In process: a git call here costs as much as the rest of a line toggle.
+    pub fn head_blob(&self, path: &str) -> anyhow::Result<Option<BlobId>> {
+        let Ok(commit) = self.repo.head_commit() else { return Ok(None) };
+        let entry = commit.tree()?.lookup_entry_by_path(path)?;
+        Ok(entry.filter(|e| !e.mode().is_tree()).map(|e| BlobId::from_oid(e.oid())))
+    }
+
     /// HEAD, index and worktree (git form) versions of a status entry's file.
     pub fn stage_texts(&self, e: &StatusEntry) -> anyhow::Result<Texts> {
         if [e.head_mode, e.index_mode, e.wt_mode].contains(&crate::commit_files::MODE_SUBMODULE) {
