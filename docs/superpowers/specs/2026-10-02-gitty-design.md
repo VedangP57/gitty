@@ -94,7 +94,7 @@ gitty/                         cargo workspace
 - **input:** reads crossterm events and coalesces bursts of wheel and resize events.
 - **walker (1):** owns the history arena for the session.
 - **reader (N = cores − 2, min 2):** row decode, tree diffs, blob loads, line stats.
-- **search (2):** search chunks, `path:` lookups and range counts — git walks that can run for seconds, so they never queue ahead of the readers.
+- **search (2):** search chunks (in-process scans of decoded rows), `path:` lookups and range counts (git walks) — work that can run for seconds, so the readers never queue behind it.
 - **diff/highlight (2–4):** a separate pool so highlighting never starves history.
 - **writer (1):** serialises every mutating git CLI call.
 - **watcher:** notify plus the classifier.

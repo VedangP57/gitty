@@ -134,6 +134,12 @@ impl App {
     }
 
     fn net_done(&mut self, op: NetOp, background: bool, outcome: Outcome) {
+        self.finish_net(op, background, outcome);
+        // questions held while the job ran (or queued behind its prompt) can open now
+        self.next_ask();
+    }
+
+    fn finish_net(&mut self, op: NetOp, background: bool, outcome: Outcome) {
         let job = self.net.take();
         let remote = job.as_ref().and_then(|j| j.remote.clone());
         let label = job.map_or_else(|| op.verb().to_string(), |j| j.label);
@@ -284,6 +290,11 @@ impl App {
             let mut input = Editor::single();
             input.reserve(256);
             self.overlay = Some(Overlay::Prompt { ask, input });
+            return;
+        }
+        // between two prompts of one git (username, then password) nothing else may open, and
+        // "no git process is running" is not true until the job ends (net_done asks again)
+        if self.net.is_some() {
             return;
         }
         if std::mem::take(&mut self.pending_diverged) {

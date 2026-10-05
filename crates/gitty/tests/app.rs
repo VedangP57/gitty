@@ -971,7 +971,33 @@ fn a_waiting_prompt_opens_before_a_queued_lock_offer() {
     t.key(KeyCode::Esc);
     assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Prompt { .. })), "git is waiting on the prompt");
     t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none(), "the offer waits for the job to end");
+    done(&mut t, gitty::msg::NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: could not read Username".into() });
     assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
+}
+
+#[test]
+fn a_lock_offer_waits_out_the_job_between_its_prompts() {
+    use gitty::app::Overlay;
+    let f = changes_fixture();
+    let mut t = changes_tab(&f);
+    t.ch('?');
+    let lock = f.path().join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    t.app.handle_msg(Msg::StaleIndexLock { seen: gitty::write::LockId::of(&lock).unwrap() });
+    started(&mut t, gitty::msg::NetOp::Fetch, "Fetching origin", false);
+    t.app.handle_msg(Msg::Ask(ask(1, "Username for 'https://example.com': ")));
+    t.key(KeyCode::Esc);
+    assert!(matches!(t.app.overlay, Some(Overlay::Prompt { .. })));
+    typed(&mut t, "ann");
+    t.key(KeyCode::Enter);
+    // git has not asked for the password yet: no question slips in while its job runs
+    assert!(t.app.overlay.is_none(), "nothing opens between the prompts");
+    t.app.handle_msg(Msg::Ask(ask(2, "Password for 'https://ann@example.com': ")));
+    assert!(matches!(t.app.overlay, Some(Overlay::Prompt { .. })), "the password prompt");
+    // the job ends with its prompt open: the prompt closes and the offer follows
+    done(&mut t, gitty::msg::NetOp::Fetch, false, gitty_core::net::Outcome::NeedsAuth { detail: "fatal: Authentication failed".into() });
+    assert!(matches!(t.app.overlay, Some(Overlay::Confirm { op: gitty::msg::WriteOp::RemoveIndexLock { .. }, .. })), "then the offer");
 }
 
 #[test]

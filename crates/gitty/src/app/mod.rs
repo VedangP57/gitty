@@ -874,9 +874,9 @@ impl App {
         self.files_wanted = Some(of);
         if let FilesOf::Range { oldest, newest } = of
             && self.range_count.is_none_or(|(ends, _)| ends != (oldest, newest))
+            && let (Some((o, n)), Some(history)) = (self.selected_range(), self.history.clone())
         {
-            let rows = self.selected_range().map_or_else(Vec::new, |(o, n)| (n..=o).filter_map(|i| self.history_id(i)).collect());
-            self.outbox.push(Request::RangeCount { generation: self.commit_gen, oldest, newest, rows });
+            self.outbox.push(Request::RangeCount { generation: self.commit_gen, oldest, newest, history, rows: n..o + 1 });
         }
         self.files = None;
         self.file_rows.clear();

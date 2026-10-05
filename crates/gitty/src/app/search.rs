@@ -1,6 +1,6 @@
-//! History search (spec §11.2): `/` opens a bar at the bottom; matches stream in from the search
-//! pool (2 threads of its own, so history, files and status never wait behind it) chunk by chunk and the list stays unfiltered. `n`/`N` move between the matches found
-//! so far.
+//! History search (spec §11.2): `/` opens a bar at the bottom; matches stream in chunk by
+//! chunk from the search pool (2 threads of its own, so history, files and status never wait
+//! behind it), and the list stays unfiltered. `n`/`N` move between the matches found so far.
 
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;

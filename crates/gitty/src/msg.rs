@@ -151,8 +151,9 @@ pub enum Request {
     /// Decodes rows by id (compare lists, which are not history indices).
     CommitRows { ids: Vec<CommitId> },
     /// How many commits a range's diff covers.
-    /// `rows`: the selected history rows, which the note does not count.
-    RangeCount { generation: u64, oldest: CommitId, newest: CommitId, rows: Vec<CommitId> },
+    /// `rows`: the selected history rows (indices into `history`), which the note does not count;
+    /// their ids are collected on the worker, not the main thread.
+    RangeCount { generation: u64, oldest: CommitId, newest: CommitId, history: SharedHistory, rows: Range<usize> },
     /// Both sides of HEAD vs `other`.
     Compare { generation: u64, head: CommitId, other: CommitId },
     Detail { generation: u64, id: CommitId },
