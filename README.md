@@ -3,6 +3,8 @@
 A fast terminal git client with the GitHub Desktop experience: History, Changes, line staging,
 fetch / pull / push, search and compare, in Rust with Ratatui.
 
+![gitty: browsing History with a split diff, then staging and committing in Changes](assets/demo.gif)
+
 - **History:** local and remote commits with their refs, and marks for what is ahead of or
   behind the upstream. Select a commit (or a `V` range of them) for its files and a syntax-highlighted diff, unified
   or split (added and deleted files always use the full width).

@@ -26,3 +26,6 @@ One-time setup: the `HOMEBREW_TAP_TOKEN` repository secret holds a token that ca
 
 After upgrading dist, run `dist init` again so the workflow matches the new version: the release
 workflow's `plan` job fails when `release.yml` is out of date.
+
+The README demo (`assets/demo.gif`) is re-recorded with `assets/demo/record.sh <linux gitty binary>`
+(Docker; a made-up repository, so no real data) when the UI changes visibly.
