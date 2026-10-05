@@ -185,6 +185,10 @@ pub struct App {
     pub list_scroll: usize,
     selected_id: Option<CommitId>,
     reselect: Option<CommitId>,
+    /// A file to select by path when the next file list is installed (leaving compare).
+    files_restore: Option<String>,
+    /// Commits covered by a range's diff, by its ends.
+    range_count: Option<((CommitId, CommitId), usize)>,
     commit_gen: u64,
 
     pub detail: Option<CommitDetail>,
@@ -318,6 +322,8 @@ impl App {
             list_scroll: 0,
             selected_id: None,
             reselect: None,
+            files_restore: None,
+            range_count: None,
             commit_gen: 0,
             detail: None,
             header_expanded: false,
@@ -410,6 +416,14 @@ impl App {
     }
     pub fn selected_row(&self) -> Option<&CommitRow> {
         self.rows.get(&self.selected).filter(|r| Some(r.id) == self.selected_id)
+    }
+    /// How many commits outside the selected rows the range's diff includes (merged side
+    /// branches, or unrelated history in the all-refs scope); None when none or unknown.
+    pub fn range_extra(&self) -> Option<usize> {
+        let (oldest, newest) = self.selected_range()?;
+        let ends = (self.history_id(oldest)?, self.history_id(newest)?);
+        let ((e, count), rows) = (self.range_count?, oldest - newest + 1);
+        (e == ends && count > rows).then(|| count - rows)
     }
     pub fn current_file(&self) -> Option<&FileChange> {
         self.files.as_ref()?.get(self.file_sel)
@@ -639,6 +653,7 @@ impl App {
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
+            Msg::RangeCount { oldest, newest, count } => self.range_count = Some(((oldest, newest), count)),
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
@@ -763,6 +778,7 @@ impl App {
     /// Selects history row `idx` on the user's behalf (cancels a pending re-selection).
     pub fn select(&mut self, idx: usize) {
         self.reselect = None;
+        self.files_restore = None;
         self.select_at(idx);
     }
 
@@ -817,6 +833,11 @@ impl App {
             return;
         }
         self.files_wanted = Some(of);
+        if let FilesOf::Range { oldest, newest } = of
+            && self.range_count.is_none_or(|(ends, _)| ends != (oldest, newest))
+        {
+            self.outbox.push(Request::RangeCount { oldest, newest });
+        }
         self.files = None;
         self.file_rows.clear();
         self.files_of = None;
@@ -861,6 +882,11 @@ impl App {
             Gens::bump(&self.gens.file);
         } else {
             self.schedule_diff();
+        }
+        if let Some(path) = self.files_restore.take() {
+            if let Some(i) = self.files.as_ref().and_then(|f| f.iter().position(|f| f.path == path)) {
+                self.select_file(i);
+            }
         }
         self.prefetch_neighbours();
     }

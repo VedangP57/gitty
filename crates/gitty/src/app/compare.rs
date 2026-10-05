@@ -33,9 +33,20 @@ pub struct CompareMode {
     pub rows: HashMap<CommitId, CommitRow>,
     requested: HashSet<CommitId>,
     generation: u64,
-    /// What the history pane showed before: (scroll, selected file, selected commit). The
-    /// history row itself stays in `App::selected`, which a refresh keeps on that commit.
-    saved: (usize, usize, Option<CommitId>),
+    saved: Saved,
+}
+
+/// What the history pane showed before compare. The history row itself stays in
+/// `App::selected`, which a refresh keeps on that commit.
+#[derive(Clone)]
+struct Saved {
+    scroll: usize,
+    commit: Option<CommitId>,
+    /// The selected file, restored by path when its list is installed.
+    file: Option<String>,
+    range_anchor: Option<usize>,
+    /// The active search's query as typed.
+    search: Option<String>,
 }
 
 impl CompareMode {
@@ -166,8 +177,14 @@ impl App {
     fn start_compare(&mut self, other: String, other_id: CommitId) {
         let Some(head) = self.refs.as_ref().and_then(|r| r.head_id()) else { return };
         let saved = match &self.compare {
-            Some(c) => c.saved,
-            None => (self.list_scroll, self.file_sel, self.selected_id),
+            Some(c) => c.saved.clone(),
+            None => Saved {
+                scroll: self.list_scroll,
+                commit: self.selected_id,
+                file: self.current_file().map(|f| f.path.clone()),
+                range_anchor: self.range_anchor,
+                search: self.search_active().then(|| self.search.input.clone()),
+            },
         };
         self.compare_gen += 1;
         self.end_range();
@@ -190,11 +207,16 @@ impl App {
     /// Back to the history as it was before `b`.
     pub fn leave_compare(&mut self) {
         let Some(c) = self.compare.take() else { return };
-        let (scroll, file, _) = c.saved;
-        self.list_scroll = scroll;
-        self.select(self.selected);
-        if self.files.is_some() {
-            self.select_file(file);
+        let s = c.saved;
+        self.list_scroll = s.scroll;
+        self.files_restore = s.file;
+        if self.reselect.is_none() {
+            // row indices are only valid while no new walk is still looking for the commit
+            self.range_anchor = s.range_anchor;
+            self.select_at(self.selected);
+        }
+        if let Some(input) = s.search {
+            self.resume_search(input);
         }
     }
 
@@ -253,7 +275,7 @@ impl App {
     /// The history commit a refresh keeps selected: compare's own selection is not it.
     pub(super) fn history_selection(&self) -> Option<CommitId> {
         match &self.compare {
-            Some(c) => c.saved.2,
+            Some(c) => c.saved.commit,
             None => self.selected_id,
         }
     }

@@ -2088,6 +2088,117 @@ fn branch_picker_takes_letters_as_query_and_esc_cancels() {
 }
 
 #[test]
+fn leaving_compare_restores_the_range_the_search_and_the_file() {
+    let f = compare_fixture();
+    f.write("a.txt", "a\n");
+    f.write("b.txt", "b\n");
+    f.commit("two files", 1_700_002_000);
+    let mut t = H::new(&f);
+    t.pump();
+    // the file: second file of the newest commit
+    t.app.select_file(1);
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("b.txt"));
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.current_file().map(|f| f.path.as_str()), Some("b.txt"), "file restored");
+    // the range
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    let range = t.app.selected_range();
+    assert!(range.is_some());
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.app.selected_range(), range, "range restored");
+    t.key(KeyCode::Esc);
+    t.pump();
+    // the search
+    t.ch('/');
+    typed(&mut t, "m");
+    t.key(KeyCode::Enter);
+    t.pump();
+    let (label, sel) = (t.app.search_label(), t.app.selected);
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert!(t.app.search_active(), "search restored");
+    assert_eq!((t.app.search_label(), t.app.selected), (label, sel));
+}
+
+#[test]
+fn leaving_compare_mid_walk_still_finds_the_saved_commit() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    let before = t.selected_id();
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    f.write("new.txt", "n\n");
+    f.commit("new on main", 1_700_002_000);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    // the refs arrive and a new walk starts, but no rows yet
+    let refs: Vec<_> = t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Refs)).collect();
+    for m in t.exec_all(refs) {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Walk { .. })), "a new walk is queued");
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.selected_id(), before, "the saved commit, found by the new walk");
+}
+
+#[test]
+fn a_range_says_when_it_covers_commits_outside_the_selected_rows() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_200);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_300);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    assert_eq!((summary(&t, 0), summary(&t, 1)), ("merge side".into(), "m1".into()));
+    // merge + m1: m1^..merge also holds s1 and s2
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(2));
+    t.key(KeyCode::Esc);
+    t.pump();
+    // s2 + s1: linear, nothing extra
+    t.app.select(2);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!((summary(&t, 2), summary(&t, 3)), ("s2".into(), "s1".into()));
+    assert_eq!(t.app.range_extra(), None);
+}
+
+#[test]
 fn a_history_refresh_during_compare_keeps_both_selections() {
     let f = compare_fixture();
     let mut t = H::new(&f);

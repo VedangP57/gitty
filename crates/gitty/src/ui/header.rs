@@ -124,7 +124,9 @@ fn range(app: &App, buf: &mut Buffer, r: Rect, x0: u16, right: u16, base: Style,
         _ => String::new(),
     };
     let n = format!("{} commits", oldest - newest + 1);
-    let x = spans(buf, x0, r.y, right, &[(&n, base.add_modifier(Modifier::BOLD)), (&ends, base.fg(ui.accent))]);
+    // the diff is oldest^..newest, which can hold merged side branches the rows do not show
+    let extra = app.range_extra().map_or(String::new(), |k| format!(" · includes {k} more"));
+    let x = spans(buf, x0, r.y, right, &[(&n, base.add_modifier(Modifier::BOLD)), (&ends, base.fg(ui.accent)), (&extra, base.fg(ui.warning))]);
     totals(app, buf, x, r.y, right, base);
     if r.height < 3 {
         return;

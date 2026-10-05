@@ -150,6 +150,8 @@ pub enum Request {
     SearchPath { generation: u64, tips: Vec<CommitId>, path: String },
     /// Decodes rows by id (compare lists, which are not history indices).
     CommitRows { ids: Vec<CommitId> },
+    /// How many commits a range's diff covers.
+    RangeCount { oldest: CommitId, newest: CommitId },
     /// Both sides of HEAD vs `other`.
     Compare { generation: u64, head: CommitId, other: CommitId },
     Detail { generation: u64, id: CommitId },
@@ -214,6 +216,7 @@ pub enum Msg {
     SearchHits { generation: u64, range: Range<usize>, hits: Vec<usize> },
     SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
     CommitRows { rows: Vec<CommitRow> },
+    RangeCount { oldest: CommitId, newest: CommitId, count: usize },
     Compare { generation: u64, result: Result<gitty_core::compare::Compare, String> },
     AheadBehind { local: CommitId, upstream: CommitId, ab: AheadBehind },
     Detail { generation: u64, detail: CommitDetail },
@@ -266,6 +269,7 @@ impl std::fmt::Debug for Msg {
             Msg::SearchHits { generation, range, hits } => write!(f, "SearchHits {{ generation: {generation}, {range:?}: {} }}", hits.len()),
             Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
             Msg::CommitRows { rows } => write!(f, "CommitRows {{ n: {} }}", rows.len()),
+            Msg::RangeCount { count, .. } => write!(f, "RangeCount {{ count: {count} }}"),
             Msg::Compare { generation, result } => write!(f, "Compare {{ generation: {generation}, {:?} }}", result.as_ref().map(|c| (c.behind.len(), c.ahead.len()))),
             Msg::AheadBehind { ab, .. } => write!(f, "AheadBehind {{ ahead: {}, behind: {} }}", ab.ahead.len(), ab.behind.len()),
             Msg::Detail { generation, detail } => write!(f, "Detail {{ generation: {generation}, id: {:?} }}", detail.row.id),

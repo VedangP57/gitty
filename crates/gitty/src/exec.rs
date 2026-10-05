@@ -150,6 +150,12 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 sink(Msg::SearchPaths { generation, result });
             }
         }
+        Request::RangeCount { oldest, newest } => {
+            // a failed count only leaves the note out
+            if let Ok(count) = gitty_core::git_cli::GitCli::new(h.owner()).range_count(oldest, newest) {
+                sink(Msg::RangeCount { oldest, newest, count });
+            }
+        }
         Request::CommitRows { ids } => {
             let rows = ids.into_iter().filter_map(|id| h.decode_row(id).ok()).collect();
             sink(Msg::CommitRows { rows });

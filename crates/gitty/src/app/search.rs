@@ -97,6 +97,14 @@ impl App {
         self.start_search(Arc::new(query));
     }
 
+    /// Runs `input` again without moving the selection (leaving compare).
+    pub(super) fn resume_search(&mut self, input: String) {
+        self.clear_search();
+        let Some(query) = Query::parse(&input) else { return };
+        self.search.input = input;
+        self.start_search(Arc::new(query));
+    }
+
     /// Starts matching `query` from the first row (also after the history restarts).
     fn start_search(&mut self, query: Arc<Query>) {
         if let Some(path) = &query.path {

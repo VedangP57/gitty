@@ -13,6 +13,7 @@ use crate::GitError;
 use crate::commit_files::BlobId;
 use crate::repo::Repo;
 use crate::status::{self, Status};
+use crate::types::CommitId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -170,6 +171,14 @@ impl GitCli {
             return Ok(None);
         }
         Ok(blob)
+    }
+
+    /// Commits in `oldest^@..newest`: what a range's `oldest^..newest` diff covers (all of
+    /// `newest`'s history when `oldest` is a root).
+    pub fn range_count(&self, oldest: CommitId, newest: CommitId) -> anyhow::Result<usize> {
+        let (o, n) = (format!("{oldest}^@"), newest.to_string());
+        let out = self.quiet(Kind::Read, &["rev-list", "--count", &n, "--not", &o], None)?;
+        Ok(String::from_utf8_lossy(&out).trim().parse()?)
     }
 
     /// The blob `path` has in HEAD; None when HEAD lacks it or is unborn.
