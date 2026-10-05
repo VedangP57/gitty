@@ -26,3 +26,10 @@ debug = 1
 lto = "thin"
 codegen-units = 1
 debug = 1
+
+# The profile that 'dist' builds release archives with: no debug info, so
+# the shipped binary stays small.
+[profile.dist]
+inherits = "release"
+debug = false
+strip = true
