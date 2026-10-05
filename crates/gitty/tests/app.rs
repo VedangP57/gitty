@@ -2270,6 +2270,45 @@ fn leaving_compare_mid_walk_still_finds_the_saved_commit() {
 }
 
 #[test]
+fn leaving_compare_mid_walk_shows_row_0_when_the_saved_commit_is_gone() {
+    let f = compare_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(1);
+    t.pump();
+    t.ch('b');
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    // the saved commit (m1) leaves the history while compare is open
+    f.git(&["reset", "-q", "--hard", "main~2"]);
+    let base = f.git(&["rev-parse", "HEAD"]);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::REFS));
+    let refs: Vec<_> = t.app.take_requests().into_iter().filter(|r| matches!(r, Request::Refs)).collect();
+    for m in t.exec_all(refs) {
+        t.app.handle_msg(m);
+    }
+    t.key(KeyCode::Esc);
+    t.pump();
+    assert_eq!(t.selected_id().to_string(), base.trim(), "the walk ended without it: row 0 is shown");
+    assert_eq!(t.app.detail.as_ref().map(|d| d.row.id), Some(t.selected_id()), "and its detail, not the compare commit's");
+}
+
+#[test]
+fn a_click_on_the_open_search_bar_keeps_it() {
+    let f = search_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('/');
+    typed(&mut t, "fi");
+    t.app.hits.panes = t.app.panes();
+    let row = t.app.hits.panes.bottom.y;
+    let m = crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left), column: 3, row, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(m);
+    assert_eq!(t.app.search.bar.as_ref().map(|b| b.text()), Some("fi"), "the bar and its text stay");
+}
+
+#[test]
 fn a_range_says_when_it_covers_commits_outside_the_selected_rows() {
     let f = Fixture::new();
     f.write("base.txt", "0\n");

@@ -568,8 +568,10 @@ impl App {
                         self.restore_anchor();
                         self.select_at(i);
                     } else if done {
+                        // gone (amended, reset): show row 0 rather than whatever was on screen
                         self.reselect = None;
                         self.anchor_restore = None;
+                        self.select_at(0);
                     }
                 }
                 if self.reselect.is_none() && self.selected_id.is_none() && len > 0 {
