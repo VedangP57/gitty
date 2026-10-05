@@ -2969,9 +2969,9 @@ SOFTWARE.
 ### MIT License
 
 Used by:
-- [gitty 0.1.1](https://github.com/VedangP57/gitty)
-- [gitty-core 0.1.1](https://github.com/VedangP57/gitty)
-- [gitty-highlight 0.1.1](https://github.com/VedangP57/gitty)
+- [gitty-cli 0.1.2](https://github.com/VedangP57/gitty)
+- [gitty-core 0.1.2](https://github.com/VedangP57/gitty)
+- [gitty-highlight 0.1.2](https://github.com/VedangP57/gitty)
 - [tree-sitter-cpp 0.23.4](https://github.com/tree-sitter/tree-sitter-cpp)
 - [tree-sitter-html 0.23.2](https://github.com/tree-sitter/tree-sitter-html)
 - [tree-sitter-json 0.24.8](https://github.com/tree-sitter/tree-sitter-json)

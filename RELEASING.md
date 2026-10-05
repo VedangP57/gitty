@@ -21,6 +21,8 @@ One-time setup: the `HOMEBREW_TAP_TOKEN` repository secret holds a token that ca
 4. `dist plan` lists the artifacts; `dist build --artifacts=all --target aarch64-apple-darwin` builds
    one archive, the installer and the formula into `target/distrib/` for a look.
 5. Commit, push `main`, wait for CI, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+   Then publish to crates.io (`cargo login` once): `cargo publish --workspace` uploads gitty-core,
+   gitty-highlight and gitty-cli in dependency order. A published version cannot be replaced.
 6. When the workflow finishes: `brew update && brew install vedangp57/tap/gitty` (or
    `brew upgrade gitty`) and run `gitty --version`.
 

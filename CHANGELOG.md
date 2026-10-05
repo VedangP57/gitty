@@ -6,6 +6,14 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-05
+
+### Changed
+
+- Published on crates.io as `gitty-cli` (`cargo install --locked gitty-cli`); the command is still
+  `gitty`. Release archives and the shell installer are now named `gitty-cli-…`
+  (`gitty-cli-installer.sh`); the Homebrew formula is still `gitty`.
+
 ## [0.1.1] - 2026-10-05
 
 ### Added
@@ -46,6 +54,7 @@ The first public release.
 - Automatic tuning of large repositories (commit-graph, untracked cache, fsmonitor where git
   supports it), reverted exactly by `gitty untune`.
 
-[Unreleased]: https://github.com/VedangP57/gitty/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/VedangP57/gitty/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/VedangP57/gitty/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/VedangP57/gitty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VedangP57/gitty/releases/tag/v0.1.0
