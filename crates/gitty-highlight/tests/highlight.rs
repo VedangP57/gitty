@@ -197,9 +197,9 @@ fn invalid_utf8_and_binaryish_input_do_not_panic() {
 fn cancel_interrupts_a_long_tree_sitter_parse() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
-    // ~325 KB of minified JS on one line: a full debug-build run stays well inside the 2 s
-    // budget even while the rest of the workspace's tests load the machine
-    let src = "var a=[1,{b:2,c:function(d){return d*3}}];".repeat(7_500);
+    // ~110 KB of minified JS on one line: a full debug-build run (~0.35 s on an M-series Mac)
+    // stays well inside the 2 s budget even on a slow, busy CI runner
+    let src = "var a=[1,{b:2,c:function(d){return d*3}}];".repeat(2_500);
     let mut h = Highlighter::new();
     let t = Instant::now();
     assert!(h.highlight("min.js", src.as_bytes(), &|| false).is_some());
