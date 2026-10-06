@@ -1,0 +1,19 @@
+id = "vedangp57.gitty"
+name = "gitty"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Open gitty, a terminal Git client in the style of GitHub Desktop, on the focused pane's repository."
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "Open gitty"
+command = ["sh", "open.sh"]
+
+[[panes]]
+id = "gitty"
+title = "gitty"
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["sh", "run.sh"]
