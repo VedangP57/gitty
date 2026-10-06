@@ -15,9 +15,9 @@ repo=$(field focused_pane_cwd)
 [ -n "$repo" ] || repo=$(field workspace_cwd)
 [ -n "$repo" ] || repo="$HOME"
 
+# the popup starts in the plugin's folder, where run.sh is; the repo travels in GITTY_REPO
 exec "$herdr" plugin pane open \
   --plugin vedangp57.gitty \
   --entrypoint gitty \
-  --cwd "$repo" \
   --env "GITTY_REPO=$repo" \
   --focus
