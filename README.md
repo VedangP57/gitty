@@ -75,6 +75,29 @@ shows every key. The mouse works throughout: click to select, scroll any pane, d
 gutter to pick lines, Shift-click for a commit range, and double-click a file or diff line to
 open it in `$EDITOR` at that line.
 
+### In herdr
+
+gitty ships a [herdr](https://herdr.dev) plugin that opens it in a popup on the repository of the
+pane you are in:
+
+```sh
+herdr plugin install VedangP57/gitty/herdr-plugin
+```
+
+Bind it to a key in your herdr config:
+
+```toml
+[[keys.command]]
+key = "prefix+g"
+type = "plugin_action"
+command = "vedangp57.gitty.open"
+description = "gitty"
+```
+
+The plugin uses the gitty on your `PATH` (or in Homebrew's or cargo's usual folders). Without one, it
+downloads the latest release for your machine into the plugin's own state folder, checks it against
+the published SHA-256, and uses that copy; nothing else on the system changes. `q` closes the popup.
+
 ## Keys
 
 Every key below can be rebound in `~/.config/gitty/config.toml` under `[keys]`, using the
