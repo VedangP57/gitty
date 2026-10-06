@@ -1,5 +1,12 @@
 # gitty
 
+[![Release](https://img.shields.io/github/v/release/VedangP57/gitty)](https://github.com/VedangP57/gitty/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/gitty-cli)](https://crates.io/crates/gitty-cli)
+[![CI](https://github.com/VedangP57/gitty/actions/workflows/ci.yml/badge.svg)](https://github.com/VedangP57/gitty/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+**Website:** [gitty.runs-on.dev](https://gitty.runs-on.dev)
+
 A fast terminal git client with the GitHub Desktop experience: History, Changes, line staging,
 fetch / pull / push, search and compare, in Rust with Ratatui.
 
