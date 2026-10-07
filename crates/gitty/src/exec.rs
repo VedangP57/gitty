@@ -284,6 +284,13 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let result = gitty_core::git_cli::GitCli::new(h.owner()).stash_list().map_err(|e| format!("{e:#}"));
             sink(Msg::StashList { result });
         }
+        Request::PrUrl { branch } => {
+            let result = gitty_core::git_cli::GitCli::new(h.owner()).pr_url(&branch).map_err(|e| match e.downcast_ref::<gitty_core::forge::ForgeError>() {
+                Some(f) if f.is_guidance() => crate::msg::PrUrlError::Notice(f.to_string()),
+                _ => crate::msg::PrUrlError::Failed(format!("{e:#}")),
+            });
+            sink(Msg::PrUrl { result });
+        }
         Request::HeadMessage => {
             let result = gitty_core::git_cli::GitCli::new(h.owner()).head_message().map_err(|e| format!("{e:#}"));
             sink(Msg::HeadMessage { result });

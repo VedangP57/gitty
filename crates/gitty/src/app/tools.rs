@@ -8,6 +8,7 @@ use gitty_core::diff::view::{Row, SplitRow};
 use super::diffstate::VRow;
 use super::{App, Tab, Toast};
 use crate::external::External;
+use crate::msg::Request;
 
 /// Two clicks on the same cell within this are a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -84,6 +85,14 @@ impl App {
         }
         let (old, new) = (d.diff.old.bytes().to_vec(), d.diff.new.bytes().to_vec());
         self.external = Some(External::Diff { path: d.key.path.clone(), old, new });
+    }
+
+    /// `R`: asks for the current branch's pull-request page; the main loop opens it.
+    pub fn open_pr(&mut self) {
+        match self.refs.as_ref().and_then(|r| r.head_branch()) {
+            Some(branch) => self.outbox.push(Request::PrUrl { branch: branch.to_string() }),
+            None => self.toast = Some(Toast { what: "No branch checked out".into(), detail: String::new(), error: false }),
+        }
     }
 
     /// After the main loop ran the tool: `Err` could not start it, `Ok(code)` its exit status.

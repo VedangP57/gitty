@@ -217,6 +217,12 @@ pub fn run(args: Vec<String>) -> anyhow::Result<i32> {
             app.external_done(result);
             continue;
         }
+        if let Some(url) = app.open_url.take()
+            && let Err(e) = crate::external::open_detached(&url)
+        {
+            app.toast = Some(Toast { what: format!("Could not open the browser, go to {url}"), detail: e.to_string(), error: true });
+            app.dirty = true;
+        }
         if app.suspend {
             app.suspend = false;
             guard.suspend()?;

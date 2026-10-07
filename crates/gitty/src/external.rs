@@ -158,6 +158,25 @@ pub fn prepare(ask: &External, editor: Option<&str>, difftool: Option<&str>) -> 
     }
 }
 
+/// The command that opens `url` in the user's browser: `open` on macOS, `xdg-open` elsewhere.
+/// `url` always starts with `https://`, so it can never read as an option.
+pub fn open_command(url: &str) -> (&'static str, Vec<String>) {
+    let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    (program, vec![url.to_string()])
+}
+
+/// Starts the browser for `url` without touching the terminal: no stdio, and a thread that waits
+/// for it so it does not linger as a zombie.
+pub fn open_detached(url: &str) -> io::Result<()> {
+    use std::process::Stdio;
+    let (prog, args) = open_command(url);
+    let mut child = Command::new(prog).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Runs `argv` in the foreground with inherited stdio and waits. Meanwhile gitty ignores the
 /// terminal's SIGINT and SIGQUIT (a Ctrl-C belongs to the tool); the child gets the defaults.
 pub fn run_foreground(argv: &[String], cwd: &Path) -> io::Result<ExitStatus> {

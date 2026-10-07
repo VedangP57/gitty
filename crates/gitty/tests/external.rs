@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use gitty::external::{difftool_argv, editor_argv, split_command, temp_pair};
+use gitty::external::{difftool_argv, editor_argv, open_command, split_command, temp_pair};
 
 fn v(xs: &[&str]) -> Vec<String> {
     xs.iter().map(|s| s.to_string()).collect()
@@ -47,4 +47,12 @@ fn difftool_gets_two_temp_files_that_are_removed_afterwards() {
     let dir = pair.old.parent().unwrap().parent().unwrap().to_path_buf();
     drop(pair);
     assert!(!dir.exists(), "temp files are removed");
+}
+
+#[test]
+fn open_command_passes_the_url_as_the_only_argument() {
+    let url = "https://github.com/o/r/pull/new/feat/x?y=1&z=$(id)";
+    let (prog, args) = open_command(url);
+    assert_eq!(prog, if cfg!(target_os = "macos") { "open" } else { "xdg-open" });
+    assert_eq!(args, v(&[url]));
 }

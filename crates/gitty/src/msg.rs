@@ -22,6 +22,13 @@ use gitty_core::CommitId;
 
 pub type SharedHistory = Arc<RwLock<History>>;
 
+/// Why there is no pull-request page: guidance for a toast, or a real failure.
+#[derive(Debug)]
+pub enum PrUrlError {
+    Notice(String),
+    Failed(String),
+}
+
 /// Where a file list comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilesOf {
@@ -203,6 +210,8 @@ pub enum Request {
     HeadMessage,
     /// The stash entries, newest first.
     StashList,
+    /// The GitHub "open a pull request" page of `branch`.
+    PrUrl { branch: String },
     /// A network job, on the single network thread. `background` jobs (auto-fetch) report quietly.
     Net { op: NetOp, mode: gitty_core::net::Mode, background: bool },
     /// Auto-tuning check (and apply) on the maintenance thread.
@@ -289,6 +298,8 @@ pub enum Msg {
     /// A write failed on an `index.lock` while no git process runs: offer to remove it.
     StaleIndexLock { seen: crate::write::LockId },
     HeadMessage { result: Result<String, String> },
+    /// The page to open, or the reason there is none (ready to show).
+    PrUrl { result: Result<String, PrUrlError> },
     StashList { result: Result<Vec<gitty_core::stash::StashEntry>, String> },
     Error { what: String, detail: String },
 }
@@ -333,6 +344,7 @@ impl std::fmt::Debug for Msg {
             Msg::Tuned { applied, error } => write!(f, "Tuned {{ {applied:?}, error: {} }}", error.is_some()),
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
+            Msg::PrUrl { result } => write!(f, "PrUrl {{ {result:?} }}"),
             Msg::StashList { result } => write!(f, "StashList {{ {:?} }}", result.as_ref().map(Vec::len)),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
