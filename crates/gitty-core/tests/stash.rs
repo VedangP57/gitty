@@ -92,3 +92,11 @@ fn messages_starting_with_a_dash_are_taken_literally() {
     assert!(c.stash_push("-weird --message").unwrap());
     assert_eq!(c.stash_list().unwrap()[0].message, "-weird --message");
 }
+
+#[test]
+fn an_invalid_index_fails_without_claiming_the_stash_was_kept() {
+    let f = base();
+    let c = cli(&f);
+    let e = c.stash_pop(7).unwrap_err();
+    assert!(!format!("{e:#}").contains("kept"), "{e:#}");
+}

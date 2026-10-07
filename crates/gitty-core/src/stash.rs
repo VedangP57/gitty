@@ -20,8 +20,11 @@ pub fn parse_list(out: &str) -> Vec<StashEntry> {
         .filter_map(|l| {
             let (gd, gs) = l.split_once('\x1f')?;
             let index = gd.strip_prefix("stash@{")?.strip_suffix('}')?.parse().ok()?;
-            let rest = gs.strip_prefix("WIP on ").or_else(|| gs.strip_prefix("On ")).unwrap_or(gs);
-            let (branch, message) = rest.split_once(": ").map_or((String::new(), gs.to_string()), |(b, m)| (b.to_string(), m.to_string()));
+            let (branch, message) = gs
+                .strip_prefix("WIP on ")
+                .or_else(|| gs.strip_prefix("On "))
+                .and_then(|rest| rest.split_once(": "))
+                .map_or((String::new(), gs.to_string()), |(b, m)| (b.to_string(), m.to_string()));
             Some(StashEntry { index, branch, message })
         })
         .collect()
@@ -55,9 +58,10 @@ impl GitCli {
     }
 
     fn stash_verb(&self, verb: &str, index: usize) -> anyhow::Result<()> {
-        self.quiet(Kind::Write, &["stash", verb, "-q", &format!("stash@{{{index}}}")], None)
-            .map(|_| ())
-            .map_err(|e| anyhow!("`git stash {verb}` stopped (conflicts, or local changes in the way); the stash was kept. {e:#}"))
+        self.quiet(Kind::Write, &["stash", verb, "-q", &format!("stash@{{{index}}}")], None).map(|_| ()).map_err(|e| {
+            let kept = self.stash_list().is_ok_and(|l| l.iter().any(|s| s.index == index));
+            anyhow!("`git stash {verb}` failed: {e:#}{}", if kept { "; the stash was kept" } else { "" })
+        })
     }
 }
 
@@ -67,12 +71,13 @@ mod tests {
 
     #[test]
     fn parses_both_subject_shapes() {
-        let out = "stash@{0}\x1fOn main: wip parser\nstash@{1}\x1fWIP on topic: 1a2b3c4 some subject\nnoise\n";
+        let out = "stash@{0}\x1fOn main: wip parser\nstash@{1}\x1fWIP on topic: 1a2b3c4 some subject\nstash@{2}\x1ffix: thing\nnoise\n";
         assert_eq!(
             parse_list(out),
             [
                 StashEntry { index: 0, branch: "main".into(), message: "wip parser".into() },
                 StashEntry { index: 1, branch: "topic".into(), message: "1a2b3c4 some subject".into() },
+                StashEntry { index: 2, branch: String::new(), message: "fix: thing".into() },
             ]
         );
     }

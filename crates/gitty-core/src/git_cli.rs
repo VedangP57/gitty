@@ -35,7 +35,7 @@ impl GitCli {
 
     pub fn cmd(&self, kind: Kind, args: &[&str]) -> Command {
         let mut c = Command::new(&self.git);
-        c.current_dir(&self.dir).env("GIT_TERMINAL_PROMPT", "0").args(["-c", "core.quotepath=false"]).args(args);
+        c.current_dir(&self.dir).env("GIT_TERMINAL_PROMPT", "0").env("LC_MESSAGES", "C").args(["-c", "core.quotepath=false"]).args(args);
         if kind == Kind::Read {
             c.env("GIT_OPTIONAL_LOCKS", "0");
         }
