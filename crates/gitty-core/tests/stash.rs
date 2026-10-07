@@ -100,3 +100,16 @@ fn an_invalid_index_fails_without_claiming_the_stash_was_kept() {
     let e = c.stash_pop(7).unwrap_err();
     assert!(!format!("{e:#}").contains("kept"), "{e:#}");
 }
+
+#[test]
+fn push_reports_true_only_when_the_stash_ref_moved() {
+    let f = base();
+    let c = cli(&f);
+    assert!(!c.stash_push("clean").unwrap());
+    f.write("a.txt", "one\n");
+    assert!(c.stash_push("first").unwrap());
+    f.write("a.txt", "two\n");
+    assert!(c.stash_push("second").unwrap(), "true even though a stash already existed");
+    assert!(!c.stash_push("clean again").unwrap());
+    assert_eq!(c.stash_list().unwrap().len(), 2);
+}

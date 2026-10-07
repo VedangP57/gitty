@@ -37,10 +37,17 @@ impl GitCli {
     }
 
     /// Stashes tracked and untracked changes under `message`. False when there was nothing to
-    /// stash (git says so and exits 0).
+    /// stash (git says so and exits 0); detected by `refs/stash` moving, not by git's wording.
     pub fn stash_push(&self, message: &str) -> anyhow::Result<bool> {
-        let out = self.quiet(Kind::Write, &["stash", "push", "-u", "-m", message], None)?;
-        Ok(!String::from_utf8_lossy(&out).contains("No local changes to save"))
+        let before = self.stash_ref();
+        self.quiet(Kind::Write, &["stash", "push", "-u", "-m", message], None)?;
+        Ok(self.stash_ref() != before)
+    }
+
+    /// The commit `refs/stash` points at, or None when there is no stash.
+    fn stash_ref(&self) -> Option<String> {
+        let out = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", "refs/stash"], None).ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string())
     }
 
     /// Applies `stash@{index}`, keeping the entry. Conflicts leave their markers and the entry.
