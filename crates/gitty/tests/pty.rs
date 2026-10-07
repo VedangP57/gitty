@@ -254,3 +254,21 @@ fn ctrl_c_in_the_tool_does_not_kill_gitty() {
     p.master.write_all(b"q").unwrap();
     assert_eq!(p.exit_code(), 0);
 }
+
+#[test]
+fn b_opens_the_branch_picker_and_enter_switches_in_a_real_terminal() {
+    let f = repo();
+    f.git(&["branch", "topic"]);
+    let mut p = spawn(&f.path(), &[]);
+    p.wait_for("second commit");
+    p.master.write_all(b"B").unwrap();
+    p.wait_for("Branches");
+    p.master.write_all(b"topic\r").unwrap();
+    let t = Instant::now();
+    while f.git(&["branch", "--show-current"]) != "topic" && t.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(f.git(&["branch", "--show-current"]), "topic", "{}", p.output());
+    p.master.write_all(b"q").unwrap();
+    assert_eq!(p.exit_code(), 0);
+}

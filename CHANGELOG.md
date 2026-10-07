@@ -6,6 +6,12 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `B` opens a branch picker: Enter switches (a remote-only branch gets a local tracking branch),
+  `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
+  branch with unmerged commits asks twice. With uncommitted changes, switching asks first.
+
 ## [0.1.2] - 2026-10-05
 
 ### Changed
