@@ -22,6 +22,7 @@ use gitty_core::CommitId;
 use gitty_core::commit_files::{FileChange, LineStats};
 use gitty_core::diff::DiffOptions;
 use gitty_core::diff::ops::WsMode;
+use gitty_core::forge::PrInfo;
 use gitty_core::history::{CommitDetail, CommitRow};
 use gitty_highlight::Highlights;
 use gitty_core::refs::{HistoryScope, RefsSnapshot};
@@ -100,6 +101,8 @@ pub struct Hits {
     pub diff_old_gutter: (u16, u16),
     pub diff_new_gutter: (u16, u16),
     pub tabs: Vec<(Rect, Tab)>,
+    /// The `PR #n` badge in the top bar.
+    pub pr_badge: Option<Rect>,
     pub commit_fields: Vec<(Rect, commit::Field)>,
     pub commit_button: Option<Rect>,
     pub dragging: Option<Sep>,
@@ -292,6 +295,10 @@ pub struct App {
     pub external: Option<crate::external::External>,
     /// A page for the main loop to open in the browser.
     pub open_url: Option<String>,
+    /// The current branch's pull request, for the top bar.
+    pub pr_badge: Option<(String, PrInfo)>,
+    /// The branch the badge was last asked for, and when.
+    pr_asked: Option<(String, Instant)>,
     /// The working tree, for opening files in the editor (set by the main loop).
     pub workdir: Option<PathBuf>,
     last_click: Option<(Instant, u16, u16)>,
@@ -403,6 +410,8 @@ impl App {
             compare: None,
             external: None,
             open_url: None,
+            pr_badge: None,
+            pr_asked: None,
             workdir: None,
             last_click: None,
             compare_gen: 0,
@@ -566,6 +575,7 @@ impl App {
                 let moved = self.refs.as_ref().is_none_or(|old| old.tips(self.scope) != refs.tips(self.scope));
                 self.refs = Some(refs);
                 self.fetched_at = fetched_at;
+                self.request_pr_badge();
                 if moved {
                     // a refresh after a commit or fetch keeps the selected commit selected
                     if self.history.is_some() {
@@ -699,6 +709,12 @@ impl App {
                 Err(PrUrlError::Notice(what)) => self.toast = Some(Toast { what, detail: String::new(), error: false }),
                 Err(PrUrlError::Failed(detail)) => self.toast = Some(Toast { what: "Could not open the pull request page".into(), detail, error: true }),
             },
+            Msg::PrBadge { branch, result } => {
+                // a reply for a branch no longer checked out is stale
+                if self.refs.as_ref().and_then(|r| r.head_branch()) == Some(branch.as_str()) {
+                    self.pr_badge = result.map(|info| (branch, info));
+                }
+            }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
@@ -732,10 +748,11 @@ impl App {
         }
         self.tick_changes(at);
         self.tick_net(at);
+        self.tick_pr_badge(at);
     }
 
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.diff_deadline, self.status_deadline(), self.auto_fetch_deadline()].into_iter().flatten().min()
+        [self.diff_deadline, self.status_deadline(), self.auto_fetch_deadline(), self.pr_badge_deadline()].into_iter().flatten().min()
     }
 
     /// Earliest epoch second at which a visible relative date changes.

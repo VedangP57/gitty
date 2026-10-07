@@ -1,7 +1,7 @@
 //! External tools from the UI: double-click opens `$EDITOR` at the line, `O` the difftool.
 //! The app only describes the command ([`External`]); the main loop runs it.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gitty_core::diff::view::{Row, SplitRow};
 
@@ -12,6 +12,11 @@ use crate::msg::Request;
 
 /// Two clicks on the same cell within this are a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// The pull-request badge is asked for at most this often per branch ...
+const PR_BADGE_MIN: Duration = Duration::from_secs(30);
+/// ... and by itself this often.
+const PR_BADGE_EVERY: Duration = Duration::from_secs(300);
 
 fn new_line(v: &VRow) -> Option<u32> {
     match v {
@@ -92,6 +97,37 @@ impl App {
         match self.refs.as_ref().and_then(|r| r.head_branch()) {
             Some(branch) => self.outbox.push(Request::PrUrl { branch: branch.to_string() }),
             None => self.toast = Some(Toast { what: "No branch checked out".into(), detail: String::new(), error: false }),
+        }
+    }
+
+    /// Asks for the current branch's pull request, for the top bar: at most once per
+    /// [`PR_BADGE_MIN`] per branch, and never for a detached HEAD. The badge of another branch is
+    /// dropped at once.
+    pub(super) fn request_pr_badge(&mut self) {
+        let branch = self.refs.as_ref().and_then(|r| r.head_branch()).map(str::to_string);
+        if self.pr_badge.as_ref().is_some_and(|(b, _)| Some(b) != branch.as_ref()) {
+            self.pr_badge = None;
+        }
+        let Some(branch) = branch else {
+            self.pr_asked = None;
+            return;
+        };
+        if self.pr_asked.as_ref().is_some_and(|(b, t)| *b == branch && self.clock.saturating_duration_since(*t) < PR_BADGE_MIN) {
+            return;
+        }
+        self.pr_asked = Some((branch.clone(), self.clock));
+        self.outbox.push(Request::PrBadge { branch });
+    }
+
+    /// When the badge is asked for again by itself: a few minutes after the last time, while
+    /// the terminal has focus (regaining focus refreshes the refs, which asks too).
+    pub(super) fn pr_badge_deadline(&self) -> Option<Instant> {
+        self.pr_asked.as_ref().filter(|_| self.focused).map(|(_, t)| *t + PR_BADGE_EVERY)
+    }
+
+    pub(super) fn tick_pr_badge(&mut self, at: Instant) {
+        if self.pr_badge_deadline().is_some_and(|d| d <= at) {
+            self.request_pr_badge();
         }
     }
 

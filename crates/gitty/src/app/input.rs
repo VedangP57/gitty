@@ -497,6 +497,10 @@ impl App {
     }
 
     fn click_once(&mut self, x: u16, y: u16, mods: KeyModifiers) {
+        if inside(self.hits.pr_badge, x, y).is_some() {
+            self.open_url = self.pr_badge.as_ref().map(|(_, info)| info.url.clone());
+            return;
+        }
         if let Some(tab) = self.hits.tabs.iter().find(|(r, _)| r.contains(Position { x, y })).map(|t| t.1) {
             self.set_tab(tab);
             return;

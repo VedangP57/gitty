@@ -219,6 +219,8 @@ pub enum Request {
     StashList,
     /// The GitHub "open a pull request" page of `branch`.
     PrUrl { branch: String },
+    /// The state of `branch`'s newest pull request, for the top bar.
+    PrBadge { branch: String },
     /// A network job, on the single network thread. `background` jobs (auto-fetch) report quietly.
     Net { op: NetOp, mode: gitty_core::net::Mode, background: bool },
     /// Auto-tuning check (and apply) on the maintenance thread.
@@ -307,6 +309,8 @@ pub enum Msg {
     HeadMessage { result: Result<String, String> },
     /// The page to open, or the reason there is none (ready to show).
     PrUrl { result: Result<String, PrUrlError> },
+    /// `None`: no pull request, or no way to know.
+    PrBadge { branch: String, result: Option<gitty_core::forge::PrInfo> },
     StashList { result: Result<Vec<gitty_core::stash::StashEntry>, String> },
     Error { what: String, detail: String },
 }
@@ -352,6 +356,7 @@ impl std::fmt::Debug for Msg {
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
             Msg::PrUrl { result } => write!(f, "PrUrl {{ {result:?} }}"),
+            Msg::PrBadge { branch, result } => write!(f, "PrBadge {{ {branch}: {result:?} }}"),
             Msg::StashList { result } => write!(f, "StashList {{ {:?} }}", result.as_ref().map(Vec::len)),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
