@@ -331,6 +331,9 @@ impl App {
                 if op.moves_head() {
                     self.outbox.push(Request::Refs);
                 }
+                if op.touches_stash() {
+                    self.outbox.push(Request::StashList);
+                }
             }
             Msg::HeadMessage { result } => self.install_head_message(result),
             Msg::StaleIndexLock { seen } => {

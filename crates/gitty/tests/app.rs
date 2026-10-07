@@ -1093,6 +1093,11 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::CreateBranch { name } => format!("create branch {name}"),
                 gitty::msg::WriteOp::RenameBranch { old, new } => format!("rename branch {old} {new}"),
                 gitty::msg::WriteOp::DeleteBranch { name, force } => format!("delete branch {name} {force}"),
+                gitty::msg::WriteOp::StashPush { message } => format!("stash push {message}"),
+                gitty::msg::WriteOp::StashApply { index } => format!("stash apply {index}"),
+                gitty::msg::WriteOp::StashPop { index } => format!("stash pop {index}"),
+                gitty::msg::WriteOp::StashDrop { index } => format!("stash drop {index}"),
+                gitty::msg::WriteOp::StashAndSwitch { name, .. } => format!("stash and switch {name}"),
             }),
             _ => None,
         })
@@ -3083,4 +3088,71 @@ fn the_picker_opens_in_a_repository_without_commits() {
     t.key(KeyCode::Enter);
     t.key(KeyCode::Esc);
     assert!(t.app.overlay.is_none());
+}
+
+#[test]
+fn stash_ops_push_list_apply_pop_and_drop() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.write(WriteOp::StashPush { message: "wip".into() });
+    t.pump();
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+    assert_eq!(t.app.stashes.iter().map(|s| s.message.as_str()).collect::<Vec<_>>(), ["wip"], "the list refreshed after the push");
+    t.app.write(WriteOp::StashApply { index: 0 });
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n");
+    assert_eq!(t.app.stashes.len(), 1);
+    f.git(&["checkout", "--", "a.txt"]);
+    t.app.write(WriteOp::StashPop { index: 0 });
+    t.pump();
+    assert!(t.app.stashes.is_empty());
+    t.app.write(WriteOp::StashPush { message: "again".into() });
+    t.pump();
+    t.app.write(WriteOp::StashDrop { index: 0 });
+    t.pump();
+    assert!(t.app.stashes.is_empty());
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "dropping does not restore");
+}
+
+#[test]
+fn stashing_nothing_says_so_without_an_error() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(WriteOp::StashPush { message: "x".into() });
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("a note");
+    assert!(!toast.error && toast.what.contains("Nothing to stash"), "{toast:?}");
+}
+
+#[test]
+fn stash_and_switch_parks_the_work_then_switches() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    f.write("new.txt", "fresh\n");
+    t.app.write(WriteOp::StashAndSwitch { name: "topic".into(), remote: false, message: "gitty: auto-stash from main".into() });
+    t.pump();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the work is parked");
+    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from main");
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("topic"));
+}
+
+#[test]
+fn a_failed_stash_and_switch_puts_the_work_back() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.write(WriteOp::StashAndSwitch { name: "no-such-branch".into(), remote: false, message: "m".into() });
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("put back"), "{toast:?}");
+    assert_eq!(current_branch(&f), "main");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "nothing lost");
+    assert!(t.app.stashes.is_empty());
 }

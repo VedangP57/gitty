@@ -167,3 +167,21 @@ impl App {
         true
     }
 }
+
+impl App {
+    pub(super) fn handle_stash_msg(&mut self, m: crate::msg::Msg) -> Option<crate::msg::Msg> {
+        match m {
+            crate::msg::Msg::StashList { result } => {
+                match result {
+                    Ok(list) => self.stashes = list,
+                    Err(detail) => self.toast = Some(Toast { what: "listing stashes".into(), detail, error: true }),
+                }
+                if let Some(Overlay::Stashes { sel }) = &mut self.overlay {
+                    *sel = (*sel).min(self.stashes.len().saturating_sub(1));
+                }
+                None
+            }
+            m => Some(m),
+        }
+    }
+}

@@ -121,6 +121,13 @@ pub enum WriteOp {
     RenameBranch { old: String, new: String },
     /// `-d`, or `-D` with `force` (after the user confirmed losing unmerged commits).
     DeleteBranch { name: String, force: bool },
+    /// `git stash push -u`. Nothing to stash is a note, not an error.
+    StashPush { message: String },
+    StashApply { index: usize },
+    StashPop { index: usize },
+    StashDrop { index: usize },
+    /// Stash the changes, then switch; if the switch fails the stash is popped back.
+    StashAndSwitch { name: String, remote: bool, message: String },
     /// Runs in order and stops at the first failure (a line discard that unstages first).
     Seq(Vec<WriteOp>),
 }
@@ -141,12 +148,21 @@ impl WriteOp {
             WriteOp::CreateBranch { .. } => "creating the branch",
             WriteOp::RenameBranch { .. } => "renaming the branch",
             WriteOp::DeleteBranch { .. } => "deleting the branch",
+            WriteOp::StashPush { .. } => "stashing",
+            WriteOp::StashApply { .. } | WriteOp::StashPop { .. } => "applying the stash",
+            WriteOp::StashDrop { .. } => "dropping the stash",
+            WriteOp::StashAndSwitch { .. } => "stashing and switching branch",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
     /// Commits, undo and branch changes move HEAD or refs; refs and history refresh after them.
     pub fn moves_head(&self) -> bool {
-        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. })
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. })
+    }
+
+    /// The stash list changes after these.
+    pub fn touches_stash(&self) -> bool {
+        matches!(self, WriteOp::StashPush { .. } | WriteOp::StashApply { .. } | WriteOp::StashPop { .. } | WriteOp::StashDrop { .. } | WriteOp::StashAndSwitch { .. })
     }
 }
 
@@ -184,6 +200,8 @@ pub enum Request {
     Write(WriteOp),
     /// HEAD's full message, for amend.
     HeadMessage,
+    /// The stash entries, newest first.
+    StashList,
     /// A network job, on the single network thread. `background` jobs (auto-fetch) report quietly.
     Net { op: NetOp, mode: gitty_core::net::Mode, background: bool },
     /// Auto-tuning check (and apply) on the maintenance thread.
@@ -270,6 +288,7 @@ pub enum Msg {
     /// A write failed on an `index.lock` while no git process runs: offer to remove it.
     StaleIndexLock { seen: crate::write::LockId },
     HeadMessage { result: Result<String, String> },
+    StashList { result: Result<Vec<gitty_core::stash::StashEntry>, String> },
     Error { what: String, detail: String },
 }
 
@@ -313,6 +332,7 @@ impl std::fmt::Debug for Msg {
             Msg::Tuned { applied, error } => write!(f, "Tuned {{ {applied:?}, error: {} }}", error.is_some()),
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),
+            Msg::StashList { result } => write!(f, "StashList {{ {:?} }}", result.as_ref().map(Vec::len)),
             Msg::Error { what, detail } => write!(f, "Error {{ {what}: {detail} }}"),
         }
     }

@@ -307,6 +307,7 @@ impl App {
             Overlay::Switcher { query, sel } => self.switcher_key(query, sel, k),
             Overlay::NameInput { kind, input } => self.name_key(kind, input, k),
             Overlay::DirtySwitch { name, remote } => self.dirty_key(name, remote, k),
+            Overlay::Stashes { .. } => {}
             Overlay::Quit { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
                 KeyCode::Char('n') | KeyCode::Esc => {}

@@ -229,6 +229,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 spans(buf, inner.x, inner.y + 3, inner.right(), &[("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
+        Overlay::Stashes { .. } => {}
         Overlay::Quit { label } => {
             let inner = boxed(app, buf, area, 56, 6, "Quit");
             text(buf, inner.x, inner.y, inner.right(), &format!("{label} is still running"), st.fg(ui.warning).add_modifier(Modifier::BOLD));

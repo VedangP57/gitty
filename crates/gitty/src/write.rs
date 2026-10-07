@@ -310,6 +310,25 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         WriteOp::CreateBranch { name } => cli.create_branch(name, None)?,
         WriteOp::RenameBranch { old, new } => cli.rename_branch(old, new)?,
         WriteOp::DeleteBranch { name, force } => cli.delete_branch(name, *force)?,
+        WriteOp::StashPush { message } => {
+            if !cli.stash_push(message)? {
+                return Ok(Some("Nothing to stash".into()));
+            }
+        }
+        WriteOp::StashApply { index } => cli.stash_apply(*index)?,
+        WriteOp::StashPop { index } => cli.stash_pop(*index)?,
+        WriteOp::StashDrop { index } => cli.stash_drop(*index)?,
+        WriteOp::StashAndSwitch { name, remote, message } => {
+            let stashed = cli.stash_push(message)?;
+            let switched = if *remote { cli.switch_tracking(name) } else { cli.switch_branch(name) };
+            if let Err(e) = switched {
+                if stashed {
+                    let back = if cli.stash_pop(0).is_ok() { "your changes were put back" } else { "your changes are still in the stash (stash@{0})" };
+                    bail!("{e:#}; {back}");
+                }
+                return Err(e);
+            }
+        }
         WriteOp::Seq(ops) => {
             let mut note = None;
             for op in ops {
