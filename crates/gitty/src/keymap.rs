@@ -80,7 +80,7 @@ actions! {
     Difftool "difftool" Global ["O"] "open the diff in the difftool",
     OpenPr "open_pr" Global ["R"] "open the branch's open pull request in the browser (needs the `gh` CLI; otherwise the new-PR page)",
     Theme "theme" Global ["T"] "theme picker",
-    Branches "branches" Global ["B"] "branches: switch, create, rename, delete",
+    Branches "branches" Global ["B"] "branches: switch, create, rename, delete, merge",
     Stashes "stashes" Global ["S"] "stashes: apply, pop, drop",
     Help "help" Global ["?"] "this help",
     ErrorDetails "error_details" Global ["!"] "details of the last error",

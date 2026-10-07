@@ -48,7 +48,7 @@ impl GitCli {
     }
 
     /// The commit `refs/stash` points at, or None when there is no stash.
-    fn stash_ref(&self) -> Option<String> {
+    pub fn stash_ref(&self) -> Option<String> {
         let out = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", "refs/stash"], None).ok()?;
         Some(String::from_utf8_lossy(&out).trim().to_string())
     }

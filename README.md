@@ -20,7 +20,7 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
   undo.
 - **Network:** fetch, pull (fast-forward, merge or rebase) and push with progress, cancel, and
   password or passphrase prompts inside the app. A background fetch runs every few minutes.
-- **Branches:** switch, create, rename and delete branches from a picker (`B`), and stash and
+- **Branches:** switch, create, rename, delete and merge branches from a picker (`B`), and stash and
   restore work (`S`, `Z`).
 - **Search and compare:** `/` searches the whole history (text, author, `path:`) while you keep
   working; `b` compares HEAD with any branch (behind, ahead, and the files that differ).
@@ -131,7 +131,7 @@ reported at startup:
 | `O` | open the diff in the difftool | `difftool` |
 | `R` | open the branch's open pull request in the browser (needs the `gh` CLI; otherwise the new-PR page) | `open_pr` |
 | `T` | theme picker | `theme` |
-| `B` | branches: switch, create, rename, delete | `branches` |
+| `B` | branches: switch, create, rename, delete, merge | `branches` |
 | `S` | stashes: apply, pop, drop | `stashes` |
 | `?` | this help | `help` |
 | `!` | details of the last error | `error_details` |

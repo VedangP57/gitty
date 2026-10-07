@@ -7,6 +7,7 @@ use anyhow::{Context, bail};
 use gitty_core::Handle;
 use gitty_core::commit_files::BlobId;
 use gitty_core::git_cli::GitCli;
+use gitty_core::merge::{MergeOutcome, MidMerge};
 use gitty_core::stage::{Plan, plan};
 
 use crate::msg::WriteOp;
@@ -227,6 +228,39 @@ fn workdir(h: &Handle) -> anyhow::Result<PathBuf> {
     h.owner().workdir().map(Path::to_path_buf).context("bare repository")
 }
 
+/// Pops the auto-stash (`pushed`, the `refs/stash` the push made) back, saying what became of
+/// the changes. A stash list that moved since is left alone.
+fn pop_back(cli: &GitCli, pushed: &Option<String>) -> String {
+    if cli.stash_ref() != *pushed {
+        return "the stash list changed, so your changes were left in the stash".to_string();
+    }
+    match cli.stash_pop_index(0).or_else(|_| cli.stash_pop(0)) {
+        Ok(()) => "your changes were put back".to_string(),
+        Err(p) => format!("putting your changes back failed ({p:#}); they are still in the stash (stash@{{0}})"),
+    }
+}
+
+/// [`pop_back`] after an action that failed or changed nothing. None when HEAD or the branch
+/// moved anyway: the changes stay in the stash.
+fn put_back(cli: &GitCli, head: &Option<String>, branch: &Option<String>, pushed: &Option<String>) -> Option<String> {
+    (cli.head_id() == *head && cli.current_branch() == *branch).then(|| pop_back(cli, pushed))
+}
+
+/// The notice for a merge of `name` into `into`.
+fn merge_note(name: &str, into: &str, outcome: &MergeOutcome) -> String {
+    match outcome {
+        MergeOutcome::UpToDate => "Already up to date".into(),
+        MergeOutcome::FastForward | MergeOutcome::Merged => format!("Merged {name} into {into}"),
+        MergeOutcome::Conflicts(files) => {
+            let shown = files.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
+            let more = files.len().saturating_sub(3);
+            let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+            let n = files.len();
+            format!("Merge of {name} has conflicts in {n} file{}: {shown}{more}. Nothing was changed - resolve in a terminal: git merge {name}", if n == 1 { "" } else { "s" })
+        }
+    }
+}
+
 /// Runs one write. `log` receives git and hook output as it arrives. Returns the new HEAD for
 /// [`WriteOp::Commit`], the undone commit's message for [`WriteOp::UndoCommit`], and for
 /// discards a note saying where the copies went when that was not the Trash.
@@ -328,21 +362,48 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         WriteOp::StashAndSwitch { name, remote, message } => {
             let (head, branch) = (cli.head_id(), cli.current_branch());
             let stashed = cli.stash_push(message)?;
+            let pushed = cli.stash_ref();
             let switched = if *remote { cli.switch_tracking(name) } else { cli.switch_branch(name) };
             if let Err(e) = switched {
                 if stashed {
-                    // git can fail after switching (a failing post-checkout hook); popping then would put the work on the wrong branch
-                    if cli.head_id() != head || cli.current_branch() != branch {
-                        bail!("the branch was switched but git reported a failure: {e:#}; your changes are in the stash (stash@{{0}})");
+                    match put_back(&cli, &head, &branch, &pushed) {
+                        // git can fail after switching (a failing post-checkout hook); popping then would put the work on the wrong branch
+                        None => bail!("the branch was switched but git reported a failure: {e:#}; your changes are in the stash (stash@{{0}})"),
+                        Some(back) => bail!("{e:#}; {back}"),
                     }
-                    let back = match cli.stash_pop_index(0).or_else(|_| cli.stash_pop(0)) {
-                        Ok(()) => "your changes were put back".to_string(),
-                        Err(p) => format!("putting your changes back failed ({p:#}); they are still in the stash (stash@{{0}})"),
-                    };
-                    bail!("{e:#}; {back}");
                 }
                 return Err(e);
             }
+        }
+        WriteOp::Merge { name, remote } => {
+            let into = cli.current_branch().unwrap_or_default();
+            return Ok(Some(merge_note(name, &into, &cli.merge_branch_logged(name, *remote, log)?)));
+        }
+        WriteOp::StashAndMerge { name, remote, message } => {
+            let (head, branch) = (cli.head_id(), cli.current_branch());
+            let stashed = cli.stash_push(message)?;
+            let pushed = cli.stash_ref();
+            let merged = match cli.merge_branch_logged(name, *remote, log) {
+                Ok(m) => m,
+                Err(e) if stashed => {
+                    // a merge that left the repository or the tree altered: nothing goes on top of it
+                    if e.downcast_ref::<MidMerge>().is_some() {
+                        bail!("{e:#}; your changes are in the stash (stash@{{0}})");
+                    }
+                    match put_back(&cli, &head, &branch, &pushed) {
+                        None => bail!("the branch changed but git reported a failure: {e:#}; your changes are in the stash (stash@{{0}})"),
+                        Some(back) => bail!("{e:#}; {back}"),
+                    }
+                }
+                Err(e) => return Err(e),
+            };
+            let note = merge_note(name, branch.as_deref().unwrap_or_default(), &merged);
+            if !stashed {
+                return Ok(Some(note));
+            }
+            // the changes go back whether or not the merge moved HEAD: it is the same branch
+            let tail = if cli.current_branch() == branch { pop_back(&cli, &pushed) } else { "your changes are in the stash (stash@{0})".to_string() };
+            return Ok(Some(format!("{note}; {tail}")));
         }
         WriteOp::Seq(ops) => {
             let mut note = None;

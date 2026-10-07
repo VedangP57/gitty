@@ -1,4 +1,4 @@
-//! Branches (spec: branches and stash): `B` opens a picker to switch, create, rename or delete.
+//! Branches (spec: branches and stash): `B` opens a picker to switch, create, rename, delete or merge.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gitty_core::stash::StashEntry;
@@ -66,10 +66,25 @@ impl App {
         }
         let remote = t.kind == TargetKind::Remote;
         if self.tree_has_tracked_changes() {
-            self.overlay = Some(Overlay::DirtySwitch { name: t.name, remote });
+            self.overlay = Some(Overlay::DirtySwitch { name: t.name, remote, merge: false });
         } else {
             self.write(WriteOp::SwitchBranch { name: t.name, remote });
         }
+    }
+
+    /// Entry for merging `t` into the checked-out branch: a prompt first, which with
+    /// uncommitted changes is the stash question instead.
+    fn merge_from(&mut self, t: Target) {
+        let Some(current) = self.refs.as_ref().and_then(|r| r.head_branch()).map(str::to_string) else {
+            self.toast = say("No branch checked out: switch to a branch first");
+            return;
+        };
+        let remote = t.kind == TargetKind::Remote;
+        self.overlay = Some(if self.tree_has_tracked_changes() {
+            Overlay::DirtySwitch { name: t.name, remote, merge: true }
+        } else {
+            Overlay::Confirm { title: "Merge branch".into(), body: format!("Merge `{}` into `{current}`?", t.name), op: WriteOp::Merge { name: t.name, remote } }
+        });
     }
 
     /// Keys while the picker is open.
@@ -102,6 +117,14 @@ impl App {
                     return;
                 }
                 Some(_) => self.toast = say("Only local branches can be renamed"),
+                None => {}
+            },
+            KeyCode::Char('g') if ctrl => match picked {
+                Some(Target { kind: TargetKind::Current, name }) => self.toast = say(&format!("`{name}` is checked out: it cannot be merged into itself")),
+                Some(t) => {
+                    self.merge_from(t);
+                    return;
+                }
                 None => {}
             },
             KeyCode::Char('d') if ctrl => match picked {
@@ -156,16 +179,16 @@ impl App {
         self.overlay = Some(Overlay::NameInput { kind, input });
     }
 
-    /// Keys at the "uncommitted changes" prompt.
-    pub(super) fn dirty_key(&mut self, name: String, remote: bool, k: KeyEvent) {
+    /// Keys at the "uncommitted changes" prompt of a switch or a merge.
+    pub(super) fn dirty_key(&mut self, name: String, remote: bool, merge: bool, k: KeyEvent) {
         match k.code {
             KeyCode::Char('s') => {
                 let message = format!("gitty: auto-stash from {}", self.head_name());
-                self.write(WriteOp::StashAndSwitch { name, remote, message });
+                self.write(if merge { WriteOp::StashAndMerge { name, remote, message } } else { WriteOp::StashAndSwitch { name, remote, message } });
             }
-            KeyCode::Char('w') => self.write(WriteOp::SwitchBranch { name, remote }),
+            KeyCode::Char('w') => self.write(if merge { WriteOp::Merge { name, remote } } else { WriteOp::SwitchBranch { name, remote } }),
             KeyCode::Esc | KeyCode::Char('n' | 'q') => {}
-            _ => self.overlay = Some(Overlay::DirtySwitch { name, remote }),
+            _ => self.overlay = Some(Overlay::DirtySwitch { name, remote, merge }),
         }
     }
 

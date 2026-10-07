@@ -4,7 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use std::process::{ChildStdout, Command, Stdio};
 
@@ -31,6 +31,11 @@ pub struct GitCli {
 impl GitCli {
     pub fn new(repo: &Repo) -> GitCli {
         GitCli { git: repo.git().path.clone(), dir: repo.workdir().unwrap_or(repo.git_dir()).to_path_buf() }
+    }
+
+    /// Where every command runs: the worktree (the git dir of a bare repository).
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn cmd(&self, kind: Kind, args: &[&str]) -> Command {

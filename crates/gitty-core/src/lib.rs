@@ -11,6 +11,7 @@ pub mod forge;
 pub mod git_bin;
 pub mod git_cli;
 pub mod history;
+pub mod merge;
 pub mod net;
 pub mod refs;
 pub mod repo;
