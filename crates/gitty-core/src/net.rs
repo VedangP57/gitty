@@ -193,7 +193,7 @@ pub fn is_auth_failure(stderr: &str) -> bool {
 }
 
 /// `git config <key>` or None.
-fn config(cli: &GitCli, key: &str) -> Option<String> {
+pub(crate) fn config(cli: &GitCli, key: &str) -> Option<String> {
     let out = cli.run(cli.cmd(Kind::Read, &["config", "--get", key]), None, &mut |_| {}).ok()?;
     let s = String::from_utf8_lossy(&out).trim().to_string();
     (!s.is_empty()).then_some(s)
