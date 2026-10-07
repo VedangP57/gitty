@@ -1409,3 +1409,25 @@ fn stash_list_and_the_stash_choice_render() {
     let s = text(&t.render(140, 30));
     assert!(s.contains("stash and switch"), "{s}");
 }
+
+#[test]
+fn dirty_switch_prompt_is_not_cut_off_with_a_long_branch_name() {
+    for (w, h) in [(80u16, 24u16), (140, 30)] {
+        let f = Fixture::new();
+        f.write("a.txt", "a\n");
+        f.commit("base", NOW - DAY);
+        f.git(&["branch", "feat/branches-and-stash"]);
+        f.write("a.txt", "edited\n");
+        let mut t = H::new(&f, "github-dark", (w, h));
+        t.app.handle_focus(true);
+        t.drain();
+        t.app.handle_focus(false);
+        for c in "Bfeat/branches-and-stash".chars() {
+            t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = text(&t.render(w, h));
+        assert!(s.contains("git carries the changes over, or refuses."), "{w}x{h}\n{s}");
+        assert!(s.contains("stash and switch"), "{w}x{h}\n{s}");
+    }
+}
