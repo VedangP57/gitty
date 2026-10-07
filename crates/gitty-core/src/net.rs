@@ -87,6 +87,14 @@ pub struct PushTarget {
     pub set_upstream: bool,
 }
 
+/// A force push guarded by a lease: the remote branch is replaced only while it is still at
+/// `expected`, the commit the user last saw there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForcePush {
+    pub target: PushTarget,
+    pub expected: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetCmd {
     Fetch { remote: String },
@@ -95,6 +103,7 @@ pub enum NetCmd {
     Merge,
     Rebase,
     Push(PushTarget),
+    ForcePush(ForcePush),
 }
 
 impl NetCmd {
@@ -105,24 +114,38 @@ impl NetCmd {
             NetCmd::FfMerge => v(&["merge", "--ff-only", "@{u}"]),
             NetCmd::Merge => v(&["merge", "--no-edit", "@{u}"]),
             NetCmd::Rebase => v(&["rebase", "@{u}"]),
-            NetCmd::Push(t) => {
-                let mut a = v(&["push", "--progress", "--porcelain"]);
-                if t.set_upstream {
-                    a.push("-u".into());
-                }
-                a.push(t.remote.clone());
-                a.push(t.refspec.clone());
-                a
-            }
+            NetCmd::Push(t) => push_args(t, None),
+            NetCmd::ForcePush(f) => push_args(&f.target, Some(&f.expected)),
         }
+    }
+
+    fn is_push(&self) -> bool {
+        matches!(self, NetCmd::Push(_) | NetCmd::ForcePush(_))
     }
 
     fn weights(&self) -> Weights {
         match self {
-            NetCmd::Push(_) => Weights::PUSH,
+            NetCmd::Push(_) | NetCmd::ForcePush(_) => Weights::PUSH,
             _ => Weights::FETCH,
         }
     }
+}
+
+/// `git push`; with a lease, `--force-with-lease=<remote ref>:<expected>`. The expected value is
+/// always explicit: a bare lease compares against the remote-tracking ref, which a fetch
+/// (auto-fetch included) moves, and so would let the push overwrite commits nobody looked at.
+fn push_args(t: &PushTarget, expected: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = ["push", "--progress", "--porcelain"].map(String::from).into();
+    if let Some(e) = expected {
+        let to = t.refspec.rsplit_once(':').map_or(t.refspec.as_str(), |(_, to)| to);
+        a.push(format!("--force-with-lease={to}:{e}"));
+    }
+    if t.set_upstream {
+        a.push("-u".into());
+    }
+    a.push(t.remote.clone());
+    a.push(t.refspec.clone());
+    a
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +171,13 @@ impl PushRef {
     /// lease): pulling fixes it. Other rejections (hooks, protected branches) do not.
     pub fn needs_pull(&self) -> bool {
         self.flag == '!' && !self.summary.contains("remote rejected") && ["fetch first", "non-fast-forward", "stale info"].iter().any(|s| self.summary.contains(s))
+    }
+}
+
+impl PushRef {
+    /// A lease that did not hold: the remote moved after the user's last look.
+    pub fn is_stale(&self) -> bool {
+        self.flag == '!' && self.summary.contains("stale info")
     }
 }
 
@@ -240,6 +270,36 @@ pub fn push_target(cli: &GitCli, branch: &str) -> anyhow::Result<PushTarget> {
         _ => own.clone(),
     };
     Ok(PushTarget { remote, refspec: format!("{own}:{to}"), set_upstream: !tracked })
+}
+
+/// The remote's default branch (`refs/remotes/<remote>/HEAD`), when the clone recorded it.
+fn default_branch(cli: &GitCli, remote: &str) -> Option<String> {
+    let out = cli.run(cli.cmd(Kind::Read, &["symbolic-ref", "--short", "-q", &format!("refs/remotes/{remote}/HEAD")]), None, &mut |_| {}).ok()?;
+    let s = String::from_utf8_lossy(&out).trim().to_string();
+    s.strip_prefix(&format!("{remote}/")).map(str::to_string)
+}
+
+/// What a force push of `branch` would do, or why gitty refuses: never `main`, `master` or the
+/// remote's default branch, and only with a remote-tracking ref to lease against. `expected` is
+/// that ref's commit right now; the caller keeps it, so a later fetch makes the push stale
+/// instead of moving the goalposts.
+pub fn force_push_plan(cli: &GitCli, branch: &str) -> anyhow::Result<ForcePush> {
+    let target = push_target(cli, branch)?;
+    let to = target.refspec.rsplit_once(':').map_or(target.refspec.as_str(), |(_, to)| to);
+    let remote_branch = to.strip_prefix("refs/heads/").unwrap_or(to);
+    let default = default_branch(cli, &target.remote);
+    for b in [branch, remote_branch] {
+        if b == "main" || b == "master" || default.as_deref() == Some(b) {
+            bail!("Force pushing {b} is blocked in gitty")
+        }
+    }
+    let tracking = format!("refs/remotes/{}/{remote_branch}", target.remote);
+    let out = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("{tracking}^{{commit}}")]), None, &mut |_| {});
+    let expected = out.map(|o| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    if expected.is_empty() {
+        bail!("{branch} has no remote-tracking branch to check against: fetch (f) or push normally first")
+    }
+    Ok(ForcePush { target, expected })
 }
 
 /// Cancels a running job by killing its process group: SIGTERM, then SIGKILL after 2 s.
@@ -441,15 +501,15 @@ impl Job {
         if self.cancel.cancelled.load(Ordering::SeqCst) && !ok {
             return Outcome::Cancelled;
         }
-        let refs = matches!(self.cmd, NetCmd::Push(_)).then(|| parse_push_porcelain(&stdout)).unwrap_or_default();
+        let refs = if self.cmd.is_push() { parse_push_porcelain(&stdout) } else { Vec::new() };
         // merge and rebase explain conflicts on stdout
         let detail = match &self.cmd {
-            NetCmd::Push(_) => stderr.trim_end().to_string(),
+            c if c.is_push() => stderr.trim_end().to_string(),
             _ => format!("{}\n{}", stdout.trim_end(), stderr.trim_end()).trim().to_string(),
         };
         if ok {
             let summary = match &self.cmd {
-                NetCmd::Push(_) => refs.iter().map(|r| format!("{} {}", r.remote, r.summary)).collect::<Vec<_>>().join(", "),
+                c if c.is_push() => refs.iter().map(|r| format!("{} {}", r.remote, r.summary)).collect::<Vec<_>>().join(", "),
                 _ => detail.lines().last().unwrap_or("").to_string(),
             };
             return Outcome::Ok { summary };
