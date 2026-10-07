@@ -3712,6 +3712,28 @@ fn s_at_the_dirty_merge_prompt_stashes_merges_and_puts_the_changes_back() {
 }
 
 #[test]
+fn a_stale_squash_msg_does_not_strand_the_stash() {
+    let f = branch_fixture();
+    f.git(&["merge", "--squash", "topic"]);
+    f.git(&["restore", "--staged", "--worktree", "."]);
+    f.git(&["clean", "-fdq"]);
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('s');
+    t.drain();
+    assert_eq!(parent_count(&f), 2);
+    assert!(t.app.stashes.is_empty(), "the stash was popped");
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what == "Merged topic into main; your changes were put back", "{toast:?}");
+}
+
+#[test]
 fn a_stash_that_will_not_pop_after_the_merge_is_kept_and_reported() {
     let f = branch_fixture();
     f.git(&["switch", "-q", "topic"]);

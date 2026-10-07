@@ -238,3 +238,16 @@ fn configured_merge_options_cannot_leave_a_merge_uncommitted() {
         assert_eq!(f.git(&["status", "--porcelain"]), "", "{opt}");
     }
 }
+
+#[test]
+fn a_stale_squash_msg_does_not_make_a_good_merge_look_squashed() {
+    let f = diverged(None);
+    f.git(&["merge", "--squash", "topic"]);
+    f.git(&["restore", "--staged", "--worktree", "."]);
+    f.git(&["clean", "-fdq"]);
+    assert!(f.path().join(".git/SQUASH_MSG").exists(), "the stale file is there");
+    assert_eq!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::Merged);
+    assert_eq!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::UpToDate);
+    f.git(&["switch", "-q", "-c", "behind", "HEAD~1"]);
+    assert_eq!(cli(&f).merge_branch("main", false).unwrap(), MergeOutcome::FastForward);
+}

@@ -50,6 +50,8 @@ impl GitCli {
         let message = format!("Merge {} '{name}'", if remote { "remote-tracking branch" } else { "branch" });
         let Some(before) = self.head_id() else { bail!("`{current}` has no commits yet") };
         let tree = self.quiet(Kind::Read, &["status", "--porcelain=v1", "-z"], None)?;
+        // an old SQUASH_MSG may be lying around: only a new or rewritten one is this merge's doing
+        let squash = self.squash_stamp();
         // `--commit --no-squash` beat a configured `branch.<name>.mergeOptions` of --no-commit or --squash
         let merge = self.cmd(Kind::Write, &["merge", "--no-edit", "--commit", "--no-squash", "-m", &message, &tip]);
         if let Err(e) = self.run(merge, None, log) {
@@ -67,7 +69,7 @@ impl GitCli {
             self.abort_merge(&before, &tree)?;
             bail!("git stopped before committing the merge; it was aborted");
         }
-        if self.git_path_exists("SQUASH_MSG") {
+        if self.squash_stamp().is_some_and(|now| Some(now) != squash) {
             return Err(MidMerge("git squashed the merge instead of committing it; the changes are staged: check `git status`".into()).into());
         }
         let after = self.head_id();
@@ -91,8 +93,18 @@ impl GitCli {
 
     /// `name` inside the git dir (`MERGE_HEAD`, `rebase-merge`) exists, in this worktree.
     fn git_path_exists(&self, name: &str) -> bool {
-        let Ok(out) = self.quiet(Kind::Read, &["rev-parse", "--git-path", name], None) else { return false };
+        self.git_path_meta(name).is_some()
+    }
+
+    /// When and how big `SQUASH_MSG` is, if it exists.
+    fn squash_stamp(&self) -> Option<(std::time::SystemTime, u64)> {
+        let m = self.git_path_meta("SQUASH_MSG")?;
+        Some((m.modified().ok()?, m.len()))
+    }
+
+    fn git_path_meta(&self, name: &str) -> Option<std::fs::Metadata> {
+        let out = self.quiet(Kind::Read, &["rev-parse", "--git-path", name], None).ok()?;
         // relative to the directory git ran in; an absolute path replaces it
-        self.dir().join(String::from_utf8_lossy(&out).trim()).exists()
+        std::fs::metadata(self.dir().join(String::from_utf8_lossy(&out).trim())).ok()
     }
 }
