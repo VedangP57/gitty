@@ -43,6 +43,23 @@ fn create_from_head_and_from_a_start_point() {
 }
 
 #[test]
+fn a_start_point_is_a_commit_and_never_an_option() {
+    let f = base();
+    f.git(&["tag", "v1"]);
+    let sha = f.git(&["rev-parse", "HEAD"]);
+    f.add_bare_upstream();
+    let c = cli(&f);
+    for (name, start) in [("from-tag", "v1"), ("from-sha", sha.as_str()), ("from-remote", "origin/main")] {
+        c.create_branch(name, Some(start)).unwrap_or_else(|e| panic!("{start}: {e:#}"));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), sha);
+    }
+    for bad in ["", "--orphan", "-f", "main topic", "ma\nin", "HEAD\t", "nope", "v1:a.txt"] {
+        assert!(c.create_branch("never", Some(bad)).is_err(), "{bad:?} accepted as a start point");
+    }
+    assert_eq!(f.git(&["branch", "--list", "never"]), "", "no branch was created");
+}
+
+#[test]
 fn switching_to_a_remote_only_name_creates_a_tracking_branch() {
     let f = base();
     f.add_bare_upstream();

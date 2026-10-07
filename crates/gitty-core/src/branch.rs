@@ -52,11 +52,24 @@ impl GitCli {
     pub fn create_branch(&self, name: &str, start: Option<&str>) -> anyhow::Result<()> {
         self.check_branch_name(name)?;
         let mut args = vec!["switch", "-q", "-c", name];
+        let id;
         if let Some(s) = start {
-            self.check_branch_name(s)?;
-            args.push(s);
+            id = self.resolve_commit(s)?;
+            args.push(&id);
         }
         self.quiet(Kind::Write, &args, None).map(|_| ())
+    }
+
+    /// The commit a revision (branch, tag, `origin/x`, sha) names; never an option in disguise.
+    fn resolve_commit(&self, rev: &str) -> anyhow::Result<String> {
+        if rev.is_empty() || rev.starts_with('-') || rev.chars().any(|c| c.is_control() || c.is_whitespace()) {
+            bail!("`{rev}` is not a valid start point");
+        }
+        let peeled = format!("{rev}^{{commit}}");
+        match self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", "--end-of-options", &peeled], None) {
+            Ok(out) => Ok(String::from_utf8_lossy(&out).trim().to_string()),
+            Err(_) => bail!("`{rev}` is not a commit"),
+        }
     }
 
     pub fn rename_branch(&self, old: &str, new: &str) -> anyhow::Result<()> {
