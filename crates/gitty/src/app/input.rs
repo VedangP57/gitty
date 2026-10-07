@@ -304,6 +304,9 @@ impl App {
             Overlay::Confirm { .. } => self.overlay = Some(ov),
             Overlay::Prompt { ask, input } => self.prompt_key(ask, input, k),
             Overlay::BranchPicker { query, sel } => self.picker_key(query, sel, k),
+            Overlay::Switcher { query, sel } => self.switcher_key(query, sel, k),
+            Overlay::NameInput { kind, input } => self.name_key(kind, input, k),
+            Overlay::DirtySwitch { name, remote } => self.dirty_key(name, remote, k),
             Overlay::Quit { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
                 KeyCode::Char('n') | KeyCode::Esc => {}

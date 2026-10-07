@@ -77,6 +77,23 @@ impl H {
         }
         panic!("pump did not settle");
     }
+    /// Like [`H::pump`] but ignores timers: the focused status backstop re-arms forever.
+    fn drain(&mut self) {
+        for _ in 0..1000 {
+            let reqs = self.app.take_requests();
+            if reqs.is_empty() {
+                return;
+            }
+            let mut out: Vec<Msg> = Vec::new();
+            for r in reqs {
+                exec(&self.h, r, &mut |m| out.push(m), &self.gens);
+            }
+            for m in out {
+                self.app.handle_msg(m);
+            }
+        }
+        panic!("drain did not settle");
+    }
     fn key(&mut self, c: KeyCode) {
         self.app.handle_key(KeyEvent::new(c, KeyModifiers::NONE));
         self.pump();
@@ -1327,4 +1344,42 @@ fn committing_everything_leaves_no_stale_diff_title() {
     let s = text(&t.render(140, 24));
     assert!(s.contains("No local changes"), "{s}");
     assert!(!s.contains("a.txt"), "no diff title for a file that has no change left:\n{s}");
+}
+
+#[test]
+fn branch_picker_shows_title_marks_the_current_branch_and_footer_keys() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    f.git(&["branch", "topic"]);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("Branches"), "{s}");
+    assert!(s.contains("● main") && s.contains("topic"), "{s}");
+    assert!(s.contains("^N new") && s.contains("^R rename") && s.contains("^D delete"), "{s}");
+}
+
+#[test]
+fn dirty_switch_prompt_and_name_input_render() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    f.git(&["branch", "topic"]);
+    f.write("a.txt", "edited\n");
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_focus(true);
+    t.drain();
+    t.app.handle_focus(false); // the focused status backstop would keep `render` pumping forever
+    for c in "Btopic".chars() {
+        t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("uncommitted changes") && s.contains("switch anyway"), "{s}");
+    t.app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::NONE));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("New branch") && s.contains("Enter confirm"), "{s}");
 }

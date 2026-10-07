@@ -85,6 +85,20 @@ impl H {
         }
         panic!("pump did not settle");
     }
+    /// Runs requests and delivers results until none are left, ignoring timers (the focused
+    /// status backstop re-arms forever, so [`H::pump`] cannot settle while focused).
+    fn drain(&mut self) {
+        for _ in 0..1000 {
+            let reqs = self.app.take_requests();
+            if reqs.is_empty() {
+                return;
+            }
+            for m in self.exec_all(reqs) {
+                self.app.handle_msg(m);
+            }
+        }
+        panic!("drain did not settle");
+    }
     fn key(&mut self, c: KeyCode) {
         self.app.handle_key(KeyEvent::new(c, KeyModifiers::NONE));
     }
@@ -2894,4 +2908,179 @@ fn a_refused_branch_write_toasts_git_s_message() {
     let toast = t.app.toast.as_ref().expect("an error toast");
     assert!(toast.error && toast.detail.contains("not a valid branch name"), "{toast:?}");
     assert_eq!(current_branch(&f), "main");
+}
+
+fn ctrl(t: &mut H, c: char) {
+    t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
+
+/// main: two commits; topic: branches off main's first commit and adds t.txt.
+fn branch_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic work", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("m.txt", "m\n");
+    f.commit("main work", 1_700_000_200);
+    f
+}
+
+#[test]
+fn switcher_lists_the_current_branch_first_and_filters() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })));
+    let names: Vec<_> = t.app.switcher_matches("").into_iter().map(|x| (x.name, x.kind)).collect();
+    assert_eq!(names, [("main".into(), gitty_core::refs::TargetKind::Current), ("topic".into(), gitty_core::refs::TargetKind::Local)]);
+    typed(&mut t, "top");
+    let m = t.app.switcher_matches("top");
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].name, "topic");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+}
+
+#[test]
+fn enter_switches_a_clean_tree_and_history_follows() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.overlay.is_none());
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("topic"));
+    assert_eq!(t.selected_id(), id(&f.git(&["rev-parse", "topic"])), "history shows the new branch's tip");
+}
+
+#[test]
+fn a_dirty_tree_asks_and_switch_anyway_carries_the_change() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::DirtySwitch { .. })), "asks first");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(current_branch(&f), "main", "cancel changes nothing");
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('w');
+    t.drain();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "the change came along");
+}
+
+#[test]
+fn a_switch_git_refuses_shows_the_error_and_stays() {
+    let f = branch_fixture();
+    f.git(&["switch", "-q", "topic"]);
+    f.write("a.txt", "topic edit\n");
+    f.commit("topic edits a", 1_700_000_300);
+    f.git(&["switch", "-q", "main"]);
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "dirty\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('w');
+    t.drain();
+    assert_eq!(current_branch(&f), "main");
+    assert!(t.app.toast.as_ref().is_some_and(|x| x.error), "{:?}", t.app.toast);
+}
+
+#[test]
+fn ctrl_n_makes_a_branch_from_the_typed_name() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "feat/x");
+    ctrl(&mut t, 'n');
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::NameInput { input, .. }) => assert_eq!(input.text(), "feat/x", "prefilled from the query"),
+        _ => panic!("no name input"),
+    }
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(current_branch(&f), "feat/x");
+}
+
+#[test]
+fn ctrl_r_renames_the_highlighted_branch() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'r');
+    ctrl(&mut t, 'u');
+    typed(&mut t, "renamed");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(f.git(&["branch", "--list", "topic"]), "");
+    assert!(f.git(&["branch", "--list", "renamed"]).contains("renamed"));
+    assert_eq!(current_branch(&f), "main");
+}
+
+#[test]
+fn ctrl_d_asks_then_offers_force_for_an_unmerged_branch() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'd');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })));
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(
+        matches!(&t.app.overlay, Some(gitty::app::Overlay::Confirm { op: WriteOp::DeleteBranch { force: true, .. }, .. })),
+        "unmerged: asks again before forcing"
+    );
+    assert!(f.git(&["branch", "--list", "topic"]).contains("topic"), "nothing deleted yet");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(f.git(&["branch", "--list", "topic"]), "");
+}
+
+#[test]
+fn the_current_branch_cannot_be_renamed_away_or_deleted_from_the_picker() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    ctrl(&mut t, 'd');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })), "stays open");
+    assert!(t.app.toast.is_some());
+    assert_eq!(f.git(&["branch", "--list", "main"]).trim_start_matches("* "), "main");
+}
+
+#[test]
+fn the_picker_opens_in_a_repository_without_commits() {
+    let f = Fixture::new();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })));
+    assert!(t.app.switcher_matches("").is_empty());
+    t.key(KeyCode::Enter);
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
 }

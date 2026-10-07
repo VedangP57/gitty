@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod commit;
+pub mod branches;
 pub mod compare;
 pub mod net;
 pub mod diffstate;
@@ -61,6 +62,12 @@ pub enum Overlay {
     Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
     /// A pull found local and upstream commits: merge, rebase or cancel.
     Diverged,
+    /// `B`: switch, create, rename or delete a branch.
+    Switcher { query: crate::editor::Editor, sel: usize },
+    /// Typing the name of a new branch, or the new name of `old`.
+    NameInput { kind: branches::NameKind, input: crate::editor::Editor },
+    /// Switching with changes in the working tree: switch anyway, or cancel.
+    DirtySwitch { name: String, remote: bool },
     /// `b`: pick the branch to compare with.
     BranchPicker { query: crate::editor::Editor, sel: usize },
     /// `q` while a network job runs.
@@ -1159,9 +1166,6 @@ impl App {
         self.osc_out.push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
         self.toast = Some(Toast { what: format!("Copied {text}"), detail: String::new(), error: false });
     }
-
-    /// Opens the branch picker; filled in by the picker task.
-    pub fn open_switcher(&mut self) {}
 }
 
 fn is_large(t: &gitty_core::diff::text::Text) -> bool {
