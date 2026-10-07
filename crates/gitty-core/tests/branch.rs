@@ -140,3 +140,36 @@ fn from_a_detached_head_current_branch_is_none_and_switching_works() {
     c.switch_branch("topic").unwrap();
     assert_eq!(c.current_branch().as_deref(), Some("topic"));
 }
+
+use gitty_core::refs::{Target, TargetKind};
+
+fn targets(f: &Fixture) -> Vec<(String, TargetKind)> {
+    let refs = Repo::open(f.path()).unwrap().handle().refs().unwrap();
+    refs.switch_targets().into_iter().map(|Target { name, kind }| (name, kind)).collect()
+}
+
+#[test]
+fn targets_list_current_then_local_then_remote_only() {
+    let f = base();
+    f.git(&["branch", "topic"]);
+    f.add_bare_upstream();
+    f.git(&["switch", "-q", "-c", "feature"]);
+    f.git(&["push", "-q", "origin", "feature"]);
+    f.git(&["switch", "-q", "main"]);
+    f.git(&["branch", "-q", "-D", "feature"]);
+    assert_eq!(
+        targets(&f),
+        [("main".into(), TargetKind::Current), ("topic".into(), TargetKind::Local), ("origin/feature".into(), TargetKind::Remote)],
+        "origin/main is not listed: main exists locally"
+    );
+}
+
+#[test]
+fn a_detached_head_has_no_current_target() {
+    let f = base();
+    f.git(&["branch", "topic"]);
+    f.git(&["checkout", "-q", "--detach"]);
+    let t = targets(&f);
+    assert!(t.iter().all(|(_, k)| *k != TargetKind::Current), "{t:?}");
+    assert_eq!(t.len(), 2, "{t:?}");
+}
