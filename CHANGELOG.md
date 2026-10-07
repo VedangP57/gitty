@@ -16,7 +16,7 @@ All notable changes to gitty are listed here. The format follows
   so the repository is never left mid-merge. With uncommitted changes it offers "stash and merge":
   the changes are put back after the merge, and stay in the stash (with a notice) if they cannot be.
 - `S` opens the stash list: `a` applies, `p` pops, `d` drops (asks), `n` stashes the current
-  changes under a message. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
+  changes under a message. Each stash shows its age. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
   is kept.
 - Switching branches with uncommitted changes offers "stash and switch": the changes are stashed
   (untracked files included) under `gitty: auto-stash from <branch>`, and put back if the switch

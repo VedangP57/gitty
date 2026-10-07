@@ -4,9 +4,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use super::paint::{fill, spans, text};
+use super::paint::{fill, spans, text, text_right};
 use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
+use crate::dates::{DateMode, format_date};
 use crate::keymap::Ctx;
 
 /// Help sections, in display order, and the keys that are not rebindable.
@@ -249,7 +250,9 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 let y = inner.y + k as u16;
                 let row = if i == *sel { st.bg(ui.selection).add_modifier(Modifier::BOLD) } else { st };
                 fill(buf, Rect::new(inner.x, y, inner.width, 1), row);
-                text(buf, inner.x + 1, y, inner.right(), &format!("stash@{{{}}}  {}  ({})", s.index, s.message, s.branch), row);
+                let age = format_date(s.time, 0, app.now, DateMode::Relative);
+                let age_x = text_right(buf, inner.x + 1, inner.right(), y, &age, row.fg(ui.muted));
+                text(buf, inner.x + 1, y, age_x.saturating_sub(1), &format!("stash@{{{}}}  {}  ({})", s.index, s.message, s.branch), row);
             }
             if inner.height > 0 {
                 text(buf, inner.x, inner.bottom() - 1, inner.right(), "a apply · p pop · d drop · n new · Esc close", st.fg(ui.muted));

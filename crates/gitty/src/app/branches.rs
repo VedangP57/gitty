@@ -227,7 +227,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                if let Some(StashEntry { index, id: expect, message, branch }) = cur {
+                if let Some(StashEntry { index, id: expect, message, branch, .. }) = cur {
                     self.overlay = Some(Overlay::Confirm {
                         title: "Drop stash".into(),
                         body: format!("Drop stash@{{{index}}} \"{message}\" ({branch})? Its changes are lost."),

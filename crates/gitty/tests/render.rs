@@ -1424,11 +1424,12 @@ fn stash_list_and_the_stash_choice_render() {
     f.commit("base", NOW - DAY);
     f.git(&["branch", "topic"]);
     f.write("a.txt", "edited\n");
-    f.git(&["stash", "push", "-q", "-m", "half done"]);
+    f.git_env(&["stash", "push", "-q", "-m", "half done"], &[("GIT_COMMITTER_DATE", format!("{}", NOW - 3 * HOUR))]);
     let mut t = H::new(&f, "github-dark", (140, 30));
     t.app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE));
     let s = text(&t.render(140, 30));
     assert!(s.contains("Stashes") && s.contains("stash@{0}") && s.contains("half done"), "{s}");
+    assert!(s.lines().any(|l| l.contains("half done") && l.contains("(main)") && l.contains(" 3h")), "the row shows its age\n{s}");
     assert!(s.contains("a apply") && s.contains("p pop") && s.contains("d drop"), "{s}");
     t.key(KeyCode::Esc);
     f.write("a.txt", "dirty again\n");
