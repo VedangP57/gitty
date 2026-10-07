@@ -1357,7 +1357,7 @@ fn branch_picker_shows_title_marks_the_current_branch_and_footer_keys() {
     let s = text(&t.render(140, 30));
     assert!(s.contains("Branches"), "{s}");
     assert!(s.contains("● main") && s.contains("topic"), "{s}");
-    assert!(s.contains("^N new") && s.contains("^R rename") && s.contains("^D delete"), "{s}");
+    assert!(s.contains("^N new") && s.contains("^R rename") && s.contains("^D delete") && s.contains("^G merge"), "{s}");
 }
 
 #[test]
@@ -1382,6 +1382,39 @@ fn dirty_switch_prompt_and_name_input_render() {
     t.app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
     let s = text(&t.render(140, 30));
     assert!(s.contains("New branch") && s.contains("Enter confirm"), "{s}");
+}
+
+#[test]
+fn merge_prompts_render_for_a_clean_and_a_dirty_tree() {
+    for (w, h) in [(80u16, 24u16), (140, 30)] {
+        let f = Fixture::new();
+        f.write("a.txt", "a\n");
+        f.commit("base", NOW - DAY);
+        f.git(&["branch", "feat/branches-and-stash"]);
+        let mut t = H::new(&f, "github-dark", (w, h));
+        t.app.handle_focus(true);
+        t.drain();
+        t.app.handle_focus(false);
+        for c in "Bfeat/branches-and-stash".chars() {
+            t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        t.app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        let s = text(&t.render(w, h));
+        assert!(s.contains("Merge `feat/branches-and-stash` into `main`?"), "{w}x{h}\n{s}");
+        assert!(s.contains("Enter merge") && s.contains("Esc cancel"), "{w}x{h}\n{s}");
+        t.app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        f.write("a.txt", "edited\n");
+        t.app.handle_focus(true);
+        t.drain();
+        t.app.handle_focus(false);
+        for c in "Bfeat/branches-and-stash".chars() {
+            t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        t.app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+        let s = text(&t.render(w, h));
+        assert!(s.contains("uncommitted changes") && s.contains("Merging feat/branches-and-stash into main"), "{w}x{h}\n{s}");
+        assert!(s.contains("stash and merge") && s.contains("merge anyway"), "{w}x{h}\n{s}");
+    }
 }
 
 #[test]

@@ -66,8 +66,9 @@ pub enum Overlay {
     Switcher { query: crate::editor::Editor, sel: usize },
     /// Typing the name of a new branch, or the new name of `old`.
     NameInput { kind: branches::NameKind, input: crate::editor::Editor },
-    /// Switching with changes in the working tree: switch anyway, or cancel.
-    DirtySwitch { name: String, remote: bool },
+    /// Switching (or, with `merge`, merging) with changes in the working tree: stash first, go
+    /// ahead anyway, or cancel.
+    DirtySwitch { name: String, remote: bool, merge: bool },
     /// `b`: pick the branch to compare with.
     BranchPicker { query: crate::editor::Editor, sel: usize },
     /// `S`: the stash entries.

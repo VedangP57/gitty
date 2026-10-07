@@ -136,6 +136,11 @@ pub enum WriteOp {
     StashDrop { index: usize, expect: String },
     /// Stash the changes, then switch; if the switch fails the stash is popped back.
     StashAndSwitch { name: String, remote: bool, message: String },
+    /// Merge the branch into the checked-out one; `remote`: `name` is `origin/x`. Conflicts abort the
+    /// merge and come back as a note.
+    Merge { name: String, remote: bool },
+    /// Stash the changes, then merge; the stash is put back if nothing was merged.
+    StashAndMerge { name: String, remote: bool, message: String },
     /// Runs in order and stops at the first failure (a line discard that unstages first).
     Seq(Vec<WriteOp>),
 }
@@ -160,17 +165,19 @@ impl WriteOp {
             WriteOp::StashApply { .. } | WriteOp::StashPop { .. } => "applying the stash",
             WriteOp::StashDrop { .. } => "dropping the stash",
             WriteOp::StashAndSwitch { .. } => "stashing and switching branch",
+            WriteOp::Merge { .. } => "merging",
+            WriteOp::StashAndMerge { .. } => "stashing and merging",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
     /// Commits, undo and branch changes move HEAD or refs; refs and history refresh after them.
     pub fn moves_head(&self) -> bool {
-        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. })
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::Merge { .. } | WriteOp::StashAndMerge { .. })
     }
 
     /// The stash list changes after these.
     pub fn touches_stash(&self) -> bool {
-        matches!(self, WriteOp::StashPush { .. } | WriteOp::StashApply { .. } | WriteOp::StashPop { .. } | WriteOp::StashDrop { .. } | WriteOp::StashAndSwitch { .. })
+        matches!(self, WriteOp::StashPush { .. } | WriteOp::StashApply { .. } | WriteOp::StashPop { .. } | WriteOp::StashDrop { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::StashAndMerge { .. })
     }
 }
 

@@ -11,6 +11,10 @@ All notable changes to gitty are listed here. The format follows
 - `B` opens a branch picker: Enter switches (a remote-only branch gets a local tracking branch),
   `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
   branch with unmerged commits asks twice. With uncommitted changes, switching asks first.
+- `Ctrl-G` in the branch picker merges the highlighted branch (a remote-only one too) into the
+  checked-out branch after asking. A merge that hits conflicts is aborted and the files are listed,
+  so the repository is never left mid-merge. With uncommitted changes it offers "stash and merge";
+  the stash is kept after a merge (put back when nothing was merged), as with switching.
 - `S` opens the stash list: `a` applies, `p` pops, `d` drops (asks), `n` stashes the current
   changes under a message. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
   is kept.

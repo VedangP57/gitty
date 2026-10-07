@@ -1098,6 +1098,8 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::StashPop { index, .. } => format!("stash pop {index}"),
                 gitty::msg::WriteOp::StashDrop { index, .. } => format!("stash drop {index}"),
                 gitty::msg::WriteOp::StashAndSwitch { name, .. } => format!("stash and switch {name}"),
+                gitty::msg::WriteOp::Merge { name, remote } => format!("merge {name} {remote}"),
+                gitty::msg::WriteOp::StashAndMerge { name, .. } => format!("stash and merge {name}"),
             }),
             _ => None,
         })
@@ -3478,4 +3480,268 @@ fn r_on_a_pushed_branch_asks_to_open_its_pull_request_page() {
     f.git(&["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
     let (toast, url) = press_r(&f);
     assert_eq!(url.as_deref(), Some("https://github.com/o/r/pull/new/feat/x"), "{toast}");
+}
+
+/// branch_fixture, but topic and main also edit a.txt differently.
+fn conflicting_fixture() -> Fixture {
+    let f = branch_fixture();
+    f.git(&["switch", "-q", "topic"]);
+    f.write("a.txt", "topic a\n");
+    f.write("b.txt", "topic b\n");
+    f.commit("topic edits", 1_700_000_300);
+    f.git(&["switch", "-q", "main"]);
+    f.write("a.txt", "main a\n");
+    f.write("b.txt", "main b\n");
+    f.commit("main edits", 1_700_000_400);
+    f
+}
+
+fn parent_count(f: &Fixture) -> usize {
+    f.git(&["rev-list", "--parents", "-n1", "HEAD"]).split_whitespace().count() - 1
+}
+
+#[test]
+fn ctrl_g_asks_then_merges_the_highlighted_branch() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { body, op: WriteOp::Merge { name, remote: false }, .. }) => {
+            assert_eq!(body, "Merge `topic` into `main`?");
+            assert_eq!(name, "topic");
+        }
+        _ => panic!("no merge prompt"),
+    }
+    assert_eq!(parent_count(&f), 1, "asking changes nothing");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.overlay.is_none());
+    assert_eq!(parent_count(&f), 2);
+    assert!(f.path().join("t.txt").exists());
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what == "Merged topic into main", "{toast:?}");
+}
+
+#[test]
+fn m_is_typed_into_the_filter_not_taken_as_merge() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "m");
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Switcher { query, .. }) => assert_eq!(query.text(), "m"),
+        _ => panic!("the picker closed"),
+    }
+}
+
+#[test]
+fn y_confirms_and_n_or_esc_cancel_the_merge_prompt() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    for cancel in [KeyCode::Esc, KeyCode::Char('n')] {
+        t.ch('B');
+        typed(&mut t, "topic");
+        ctrl(&mut t, 'g');
+        t.key(cancel);
+        assert!(t.app.overlay.is_none());
+        assert!(t.app.take_requests_peek().is_empty(), "nothing was sent");
+        assert_eq!(parent_count(&f), 1);
+    }
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('y');
+    t.pump();
+    assert_eq!(parent_count(&f), 2);
+}
+
+#[test]
+fn ctrl_g_on_the_current_branch_or_a_detached_head_explains_and_sends_nothing() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    ctrl(&mut t, 'g');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })), "the picker stays open");
+    assert!(toast_text(&t).contains("itself"), "{}", toast_text(&t));
+    assert!(t.app.take_requests_peek().is_empty());
+    t.key(KeyCode::Esc);
+    f.git(&["checkout", "-q", "--detach"]);
+    t.app.handle_focus(true);
+    t.drain();
+    t.app.toast = None;
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    assert!(toast_text(&t).contains("No branch checked out"), "{}", toast_text(&t));
+    assert!(!matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })));
+}
+
+#[test]
+fn a_fast_forward_and_an_up_to_date_merge_each_say_so() {
+    let f = branch_fixture();
+    f.git(&["switch", "-q", "-c", "behind", "HEAD~1"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "main");
+    ctrl(&mut t, 'g');
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what == "Merged main into behind", "{toast:?}");
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), f.git(&["rev-parse", "main"]), "a fast-forward");
+    t.app.toast = None;
+    t.ch('B');
+    typed(&mut t, "main");
+    ctrl(&mut t, 'g');
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what == "Already up to date", "{toast:?}");
+}
+
+#[test]
+fn conflicts_are_reported_as_a_notice_and_nothing_changes() {
+    let f = conflicting_fixture();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error, "{toast:?}");
+    assert_eq!(toast.what, "Merge of topic has conflicts in 2 files: a.txt, b.txt. Nothing was changed - resolve in a terminal: git merge topic");
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+    assert!(!f.path().join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn a_merge_git_refuses_shows_an_error() {
+    let f = branch_fixture();
+    f.write("t.txt", "in the way\n");
+    f.git(&["add", "t.txt"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::DirtySwitch { merge: true, .. })), "a staged file is a change");
+    t.ch('w');
+    t.drain();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(toast.error && toast.what == "merging failed", "{toast:?}");
+    assert_eq!(parent_count(&f), 1);
+}
+
+#[test]
+fn a_remote_only_branch_is_merged_from_the_picker() {
+    let f = branch_fixture();
+    f.add_bare_upstream();
+    f.git(&["switch", "-q", "-c", "feature"]);
+    f.write("f.txt", "f\n");
+    f.commit("feature work", 1_700_000_300);
+    f.git(&["push", "-q", "origin", "feature"]);
+    f.git(&["switch", "-q", "main"]);
+    f.git(&["branch", "-q", "-D", "feature"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "origin/feature");
+    ctrl(&mut t, 'g');
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::Confirm { op: WriteOp::Merge { remote: true, .. }, .. })));
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what == "Merged origin/feature into main", "{toast:?}");
+    assert_eq!(current_branch(&f), "main");
+}
+
+#[test]
+fn a_dirty_tree_asks_whether_to_stash_before_merging() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::DirtySwitch { merge: true, .. })), "asks first");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(parent_count(&f), 1, "cancel changes nothing");
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('w');
+    t.drain();
+    assert_eq!(parent_count(&f), 2);
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "the change stayed");
+    assert!(t.app.stashes.is_empty());
+}
+
+#[test]
+fn s_at_the_dirty_merge_prompt_stashes_merges_and_leaves_the_stash() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('s');
+    t.drain();
+    assert_eq!(parent_count(&f), 2);
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the changes are not re-applied");
+    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from main");
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what.starts_with("Merged topic into main") && toast.what.contains("stash@{0}"), "{toast:?}");
+}
+
+#[test]
+fn stash_and_merge_puts_the_changes_back_when_the_merge_hits_conflicts_or_fails() {
+    let f = conflicting_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("m.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('s');
+    t.drain();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what.contains("conflicts in 2 files") && toast.what.contains("your changes were put back"), "{toast:?}");
+    assert_eq!(std::fs::read_to_string(f.path().join("m.txt")).unwrap(), "edited\n");
+    assert!(t.app.stashes.is_empty(), "the stash was popped");
+    assert_eq!(parent_count(&f), 1);
+
+    // up to date: nothing happened, so the work goes back too
+    f.git(&["checkout", "--", "m.txt"]);
+    f.git(&["branch", "same"]);
+    f.write("m.txt", "edited again\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "same");
+    ctrl(&mut t, 'g');
+    t.ch('s');
+    t.drain();
+    assert!(toast_text(&t).starts_with("Already up to date") && toast_text(&t).contains("put back"), "{}", toast_text(&t));
+    assert_eq!(std::fs::read_to_string(f.path().join("m.txt")).unwrap(), "edited again\n");
+    assert!(t.app.stashes.is_empty());
 }

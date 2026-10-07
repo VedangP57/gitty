@@ -117,13 +117,13 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 }
             }
         }
-        Overlay::Confirm { title, body, .. } => {
+        Overlay::Confirm { title, body, op } => {
             let w = (crate::text::display_width(title).max(crate::text::display_width(body)) as u16 + 6).clamp(40, area.width.saturating_sub(4).max(40));
             let inner = boxed(app, buf, area, w, 6, "Confirm");
             text(buf, inner.x, inner.y, inner.right(), title, st.fg(ui.warning).add_modifier(Modifier::BOLD));
             text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
             if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (" discard · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (if matches!(op, crate::msg::WriteOp::Merge { .. }) { " merge · " } else { " discard · " }, st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Prompt { ask, input } => {
@@ -204,7 +204,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 text(buf, inner.x + 1, y, inner.right(), &label, row);
             }
             if inner.height > 0 {
-                text(buf, inner.x, inner.bottom() - 1, inner.right(), "type to filter · Enter switch · ^N new · ^R rename · ^D delete · Esc", st.fg(ui.muted));
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "Enter switch · ^N new · ^R rename · ^D delete · ^G merge · Esc", st.fg(ui.muted));
             }
         }
         Overlay::NameInput { kind, input } => {
@@ -223,13 +223,18 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 text(buf, inner.x, inner.y + 2, inner.right(), hint, st.fg(ui.muted));
             }
         }
-        Overlay::DirtySwitch { name, .. } => {
-            let inner = boxed(app, buf, area, 72, 7, "Switch branch");
+        Overlay::DirtySwitch { name, merge, .. } => {
+            let (title, doing, verb, how) = if *merge {
+                ("Merge branch", format!("Merging {name} into {}", app.refs.as_ref().and_then(|r| r.head_branch()).unwrap_or("HEAD")), "merge", "git merges around the changes, or refuses.")
+            } else {
+                ("Switch branch", format!("Switching to {name}"), "switch", "git carries the changes over, or refuses.")
+            };
+            let inner = boxed(app, buf, area, 72, 7, title);
             text(buf, inner.x, inner.y, inner.right(), "You have uncommitted changes", st.fg(ui.warning).add_modifier(Modifier::BOLD));
-            text(buf, inner.x, inner.y + 1, inner.right(), &format!("Switching to {name}"), st.fg(ui.muted));
-            text(buf, inner.x, inner.y + 2, inner.right(), "git carries the changes over, or refuses.", st.fg(ui.muted));
+            text(buf, inner.x, inner.y + 1, inner.right(), &doing, st.fg(ui.muted));
+            text(buf, inner.x, inner.y + 2, inner.right(), how, st.fg(ui.muted));
             if inner.height > 4 {
-                spans(buf, inner.x, inner.y + 4, inner.right(), &[("s", st.fg(ui.accent)), (" stash and switch · ", st), ("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+                spans(buf, inner.x, inner.y + 4, inner.right(), &[("s", st.fg(ui.accent)), (&format!(" stash and {verb} · "), st), ("w", st.fg(ui.accent)), (&format!(" {verb} anyway · "), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Stashes { sel } => {

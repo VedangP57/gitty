@@ -309,7 +309,7 @@ impl App {
             Overlay::BranchPicker { query, sel } => self.picker_key(query, sel, k),
             Overlay::Switcher { query, sel } => self.switcher_key(query, sel, k),
             Overlay::NameInput { kind, input } => self.name_key(kind, input, k),
-            Overlay::DirtySwitch { name, remote } => self.dirty_key(name, remote, k),
+            Overlay::DirtySwitch { name, remote, merge } => self.dirty_key(name, remote, merge, k),
             Overlay::Stashes { sel } => self.stashes_key(sel, k),
             Overlay::Quit { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
