@@ -1055,6 +1055,8 @@ fn compare_mode_shows_title_tabs_and_the_branch_commits() {
     assert!(s.contains("Behind (2)") && s.contains("Ahead (1)") && s.contains("Files"), "{s}");
     assert!(s.contains("topic two") && s.contains("topic one"), "{s}");
     assert!(!s.contains("on main"), "the Behind tab lists only the branch's commits\n{s}");
+    let footer = s.lines().last().unwrap_or_default();
+    assert!(footer.contains("b other branch") && footer.contains("esc leave"), "`b` picks another branch to compare with\n{footer}");
 }
 
 #[test]

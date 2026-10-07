@@ -25,6 +25,10 @@ All notable changes to gitty are listed here. The format follows
   pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
   new-pull-request page.
 
+### Fixed
+
+- In compare mode the footer labels `b` "other branch" (it picks another branch to compare with) instead of "branch".
+
 ## [0.1.2] - 2026-10-05
 
 ### Changed
