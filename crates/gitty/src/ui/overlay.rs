@@ -7,9 +7,9 @@ use ratatui::style::{Modifier, Style};
 use super::paint::{fill, spans, text, text_right};
 use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
-use gitty_core::status::EntryKind;
 use crate::dates::{DateMode, format_date};
 use crate::keymap::Ctx;
+use gitty_core::status::EntryKind;
 
 /// Help sections, in display order, and the keys that are not rebindable.
 const SECTIONS: &[(Ctx, &str)] = &[
@@ -53,6 +53,18 @@ fn untracked_note(app: &App) -> String {
     match app.changes.entries().iter().filter(|e| e.kind == EntryKind::Untracked).count() {
         n if n > BIG => format!("Stash includes {n} untracked files: this can take a while"),
         _ => "Stash includes untracked files".to_string(),
+    }
+}
+
+/// What Enter does at a confirmation, as the label after "Enter".
+fn confirm_verb(op: &crate::msg::WriteOp) -> &'static str {
+    use crate::msg::WriteOp as W;
+    match op {
+        W::Merge { .. } => " merge · ",
+        W::DeleteBranch { .. } => " delete · ",
+        W::StashDrop { .. } => " drop · ",
+        W::RemoveIndexLock { .. } => " remove · ",
+        _ => " discard · ",
     }
 }
 
@@ -134,7 +146,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             text(buf, inner.x, inner.y, inner.right(), title, st.fg(ui.warning).add_modifier(Modifier::BOLD));
             text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
             if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (if matches!(op, crate::msg::WriteOp::Merge { .. }) { " merge · " } else { " discard · " }, st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (confirm_verb(op), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Prompt { ask, input } => {
@@ -302,10 +314,13 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
         Overlay::ErrorDetail => {
             let Some(t) = &app.toast else { return };
             let lines: Vec<&str> = t.detail.lines().collect();
-            let inner = boxed(app, buf, area, area.width.saturating_sub(8).min(100), lines.len() as u16 + 4, "Error");
+            let inner = boxed(app, buf, area, area.width.saturating_sub(8).min(100), lines.len() as u16 + 6, "Error");
             text(buf, inner.x, inner.y, inner.right(), &t.what, st.fg(ui.error).add_modifier(Modifier::BOLD));
-            for (k, l) in lines.iter().enumerate().take(inner.height.saturating_sub(2) as usize) {
+            for (k, l) in lines.iter().enumerate().take(inner.height.saturating_sub(4) as usize) {
                 text(buf, inner.x, inner.y + 2 + k as u16, inner.right(), l, st);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "Esc close", st.fg(ui.muted));
             }
         }
     }

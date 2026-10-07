@@ -253,7 +253,7 @@ impl App {
         }
         self.overlay = Some(Overlay::Confirm {
             title: "Delete branch".into(),
-            body: format!("`{name}` has commits no other branch has. Delete it anyway?"),
+            body: format!("`{name}` {}. Delete it anyway?", gitty_core::branch::UNMERGED),
             op: WriteOp::DeleteBranch { name: name.clone(), force: true },
         });
         true

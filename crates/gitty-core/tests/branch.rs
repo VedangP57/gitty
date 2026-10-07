@@ -117,6 +117,54 @@ fn a_branch_is_compared_with_its_upstream_not_head() {
 }
 
 #[test]
+fn a_gone_upstream_falls_back_to_head() {
+    let f = base();
+    f.add_bare_upstream();
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.git(&["push", "-q", "-u", "origin", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic work", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.git(&["update-ref", "-d", "refs/remotes/origin/topic"]);
+    let c = cli(&f);
+    let e = c.delete_branch("topic", false).unwrap_err();
+    assert!(e.downcast_ref::<Unmerged>().is_some(), "unmerged into HEAD: {e:#}");
+    f.git(&["merge", "-q", "--no-edit", "topic"]);
+    c.delete_branch("topic", false).unwrap();
+}
+
+#[test]
+fn from_a_detached_head_a_branch_is_judged_against_it() {
+    let f = base();
+    f.git(&["switch", "-q", "-c", "wip"]);
+    f.write("w.txt", "w\n");
+    f.commit("wip work", 1_700_000_100);
+    f.git(&["switch", "-q", "--detach", "main"]);
+    let c = cli(&f);
+    assert!(c.delete_branch("wip", false).unwrap_err().downcast_ref::<Unmerged>().is_some());
+    f.git(&["switch", "-q", "--detach", "wip"]);
+    c.delete_branch("wip", false).unwrap();
+}
+
+#[test]
+fn a_vanished_branch_is_git_s_own_error_not_unmerged() {
+    let f = base();
+    let e = cli(&f).delete_branch("ghost", false).unwrap_err();
+    assert!(e.downcast_ref::<Unmerged>().is_none(), "{e:#}");
+    assert!(e.downcast_ref::<gitty_core::GitError>().is_some(), "{e:#}");
+}
+
+#[test]
+fn a_remote_tracking_start_point_becomes_the_upstream() {
+    let f = base();
+    f.add_bare_upstream();
+    cli(&f).create_branch("from-origin", Some("origin/main")).unwrap();
+    assert_eq!(f.git(&["config", "branch.from-origin.remote"]), "origin");
+    cli(&f).create_branch("from-sha", Some(&f.git(&["rev-parse", "HEAD"]))).unwrap();
+    assert_eq!(f.git(&["for-each-ref", "--format=%(upstream)", "refs/heads/from-sha"]), "");
+}
+
+#[test]
 fn deleting_the_checked_out_branch_is_refused() {
     let f = base();
     let e = cli(&f).delete_branch("main", true).unwrap_err();

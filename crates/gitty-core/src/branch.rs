@@ -7,10 +7,10 @@ use crate::GitError;
 use crate::git_cli::{GitCli, Kind};
 
 /// What an [`Unmerged`] says after the branch name.
-pub const UNMERGED: &str = "has commits no other branch has";
+pub const UNMERGED: &str = "is not merged into its upstream (or HEAD)";
 
-/// `delete_branch` without `force` refused: the branch has commits no other branch has. Found
-/// by asking git about ancestry, not by reading its (possibly translated) message.
+/// `delete_branch` without `force` refused: the branch is not merged into its upstream (HEAD when
+/// it has none), as `branch -d` judges it. Found by asking git about ancestry, not by reading its (possibly translated) message.
 #[derive(Debug, thiserror::Error)]
 #[error("`{0}` {UNMERGED}")]
 pub struct Unmerged(pub String);
@@ -48,14 +48,18 @@ impl GitCli {
         self.quiet(Kind::Write, &["switch", "-q", "--track", remote_branch], None).map(|_| ())
     }
 
-    /// Creates `name` at `start` (HEAD when None) and switches to it.
+    /// Creates `name` at `start` (HEAD when None) and switches to it; a remote-tracking start point
+/// (`origin/x`) becomes its upstream.
     pub fn create_branch(&self, name: &str, start: Option<&str>) -> anyhow::Result<()> {
         self.check_branch_name(name)?;
         let mut args = vec!["switch", "-q", "-c", name];
         let id;
         if let Some(s) = start {
+            // whitespace is refused even where a revision allows it (`@{1 day ago}`): not worth the risk
             id = self.resolve_commit(s)?;
-            args.push(&id);
+            // a remote-tracking ref goes by name, so git sets the new branch to track it
+            let remote = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", &format!("refs/remotes/{s}")], None).is_ok();
+            args.push(if remote { s } else { &id });
         }
         self.quiet(Kind::Write, &args, None).map(|_| ())
     }

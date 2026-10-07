@@ -1438,6 +1438,38 @@ fn an_open_overlay_does_not_leave_the_pane_hints_in_the_footer() {
 }
 
 #[test]
+fn the_error_detail_says_how_to_close_it() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.toast = Some(gitty::app::Toast { what: "switching failed".into(), detail: "line one\nline two".into(), error: true });
+    t.app.overlay = Some(gitty::app::Overlay::ErrorDetail);
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("line two") && s.contains("Esc close"), "{s}");
+}
+
+#[test]
+fn a_confirmation_names_what_enter_does() {
+    use gitty::msg::WriteOp;
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    let ops = [
+        (WriteOp::DeleteBranch { name: "x".into(), force: true }, "Enter delete"),
+        (WriteOp::StashDrop { index: 0, expect: String::new() }, "Enter drop"),
+        (WriteOp::Merge { name: "x".into(), remote: false }, "Enter merge"),
+        (WriteOp::DiscardFiles { restore: vec![], remove: vec![] }, "Enter discard"),
+    ];
+    for (op, label) in ops {
+        t.app.overlay = Some(gitty::app::Overlay::Confirm { title: "Sure".into(), body: "body".into(), op });
+        let s = text(&t.render(140, 30));
+        assert!(s.contains(label), "{label}\n{s}");
+    }
+}
+
+#[test]
 fn stash_prompts_say_untracked_files_are_included_and_count_a_big_pile() {
     for (n, note) in [(1, "Stash includes untracked files"), (501, "Stash includes 502 untracked files: this can take a while")] {
         let f = Fixture::new();

@@ -28,11 +28,14 @@ impl Repo {
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Repo> {
         let path = path.as_ref();
         let ts = gix::ThreadSafeRepository::discover(path).map_err(|e| {
-            if in_a_repository(path) {
-                anyhow::Error::msg(format!("{e:#}")).context(format!("opening {}", path.display()))
+            let dir = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if !path.exists() {
+                anyhow::anyhow!("{} does not exist", path.display())
+            } else if in_a_repository(path) {
+                anyhow::Error::msg(format!("{e:#}")).context(format!("opening {}", dir.display()))
             } else {
                 // gix's own message carries the build machine's source path
-                anyhow::anyhow!("{} is not a git repository", std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).display())
+                anyhow::anyhow!("{} is not a git repository", dir.display())
             }
         })?;
         let local = ts.to_thread_local();
