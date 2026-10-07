@@ -226,9 +226,10 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
         Overlay::DirtySwitch { name, .. } => {
             let inner = boxed(app, buf, area, 72, 7, "Switch branch");
             text(buf, inner.x, inner.y, inner.right(), "You have uncommitted changes", st.fg(ui.warning).add_modifier(Modifier::BOLD));
-            text(buf, inner.x, inner.y + 1, inner.right(), &format!("Switching to {name}: git carries them over, or refuses."), st.fg(ui.muted));
-            if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 3, inner.right(), &[("s", st.fg(ui.accent)), (" stash and switch · ", st), ("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            text(buf, inner.x, inner.y + 1, inner.right(), &format!("Switching to {name}"), st.fg(ui.muted));
+            text(buf, inner.x, inner.y + 2, inner.right(), "git carries the changes over, or refuses.", st.fg(ui.muted));
+            if inner.height > 4 {
+                spans(buf, inner.x, inner.y + 4, inner.right(), &[("s", st.fg(ui.accent)), (" stash and switch · ", st), ("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Stashes { sel } => {

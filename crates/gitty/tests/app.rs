@@ -3173,6 +3173,8 @@ fn a_switch_that_fails_after_moving_head_keeps_the_stash() {
     std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
     std::fs::write(&hook, "#!/bin/sh\nexit 2\n").unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // a global core.hooksPath would otherwise make git ignore .git/hooks
+    f.git(&["config", "core.hooksPath", hook.parent().unwrap().to_str().unwrap()]);
     let mut t = H::new(&f);
     t.pump();
     f.write("a.txt", "edited\n");
@@ -3297,4 +3299,120 @@ fn an_empty_stash_message_gets_a_default() {
     t.key(KeyCode::Enter);
     t.drain();
     assert_eq!(t.app.stashes[0].message, "gitty: stash on main");
+}
+
+#[test]
+fn a_detached_head_has_no_current_entry_and_switches_to_a_branch() {
+    let f = branch_fixture();
+    f.git(&["checkout", "-q", "--detach"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    let m = t.app.switcher_matches("");
+    assert!(m.iter().all(|x| x.kind != gitty_core::refs::TargetKind::Current), "{m:?}");
+    typed(&mut t, "main");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(current_branch(&f), "main");
+}
+
+#[test]
+fn s_at_the_dirty_prompt_on_a_detached_head_names_head_in_the_stash() {
+    let f = branch_fixture();
+    f.git(&["checkout", "-q", "--detach"]);
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('s');
+    t.drain();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from HEAD");
+}
+
+/// `feature` was pushed and then deleted locally, so only `origin/feature` is left.
+fn remote_only_fixture() -> Fixture {
+    let f = branch_fixture();
+    f.add_bare_upstream();
+    f.git(&["branch", "feature"]);
+    f.git(&["push", "-q", "origin", "feature"]);
+    f.git(&["branch", "-q", "-D", "feature"]);
+    f
+}
+
+#[test]
+fn a_remote_only_branch_is_listed_and_switching_creates_a_tracking_branch() {
+    let f = remote_only_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    let m = t.app.switcher_matches("");
+    assert!(m.iter().any(|x| x.name == "origin/feature" && x.kind == gitty_core::refs::TargetKind::Remote), "{m:?}");
+    typed(&mut t, "feature");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(current_branch(&f), "feature");
+    assert_eq!(f.git(&["config", "branch.feature.remote"]), "origin");
+}
+
+#[test]
+fn rename_and_delete_leave_a_remote_branch_alone() {
+    let f = remote_only_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "origin/feature");
+    assert_eq!(t.app.switcher_matches("origin/feature")[0].name, "origin/feature");
+    let before = f.git(&["branch", "-a"]);
+    for c in ['r', 'd'] {
+        t.app.toast = None;
+        ctrl(&mut t, c);
+        assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })), "ctrl-{c} keeps the picker open");
+        assert!(t.app.toast.is_some(), "ctrl-{c} explains");
+        assert!(t.app.take_requests_peek().is_empty(), "ctrl-{c} sends nothing");
+        assert_eq!(f.git(&["branch", "-a"]), before, "ctrl-{c} changed nothing");
+    }
+}
+
+#[test]
+fn a_in_the_stash_list_applies_and_keeps_the_entry() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "one\n");
+    t.app.write(WriteOp::StashPush { message: "one".into() });
+    t.pump();
+    f.write("a.txt", "two\n");
+    t.app.write(WriteOp::StashPush { message: "two".into() });
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "a\n");
+    t.ch('S');
+    t.pump();
+    t.ch('a');
+    t.pump();
+    assert!(t.app.overlay.is_none(), "apply closes the list");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "two\n", "the highlighted (newest) stash came back");
+    assert_eq!(t.app.stashes.len(), 2);
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 2, "the entry is kept");
+}
+
+#[test]
+fn n_in_the_stash_list_asks_for_a_message_then_stashes() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.ch('S');
+    t.pump();
+    t.ch('n');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::NameInput { kind: gitty::app::branches::NameKind::Stash, .. })));
+    typed(&mut t, "from the list");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(t.app.stashes[0].message, "from the list");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 1);
 }
