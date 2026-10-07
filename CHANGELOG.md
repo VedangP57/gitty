@@ -12,8 +12,8 @@ All notable changes to gitty are listed here. The format follows
   `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
   branch with unmerged commits asks twice. With uncommitted changes, switching asks first.
 - `S` opens the stash list: `a` applies, `p` pops, `d` drops (asks), `n` stashes the current
-  changes under a message. `Z` in the Changes tab stashes them directly. A stash that hits
-  conflicts is kept.
+  changes under a message. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
+  is kept.
 - Switching branches with uncommitted changes offers "stash and switch": the changes are stashed
   (untracked files included) under `gitty: auto-stash from <branch>`, and put back if the switch
   fails. gitty never re-applies a stash by itself.

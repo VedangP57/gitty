@@ -1094,9 +1094,9 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::RenameBranch { old, new } => format!("rename branch {old} {new}"),
                 gitty::msg::WriteOp::DeleteBranch { name, force } => format!("delete branch {name} {force}"),
                 gitty::msg::WriteOp::StashPush { message } => format!("stash push {message}"),
-                gitty::msg::WriteOp::StashApply { index } => format!("stash apply {index}"),
-                gitty::msg::WriteOp::StashPop { index } => format!("stash pop {index}"),
-                gitty::msg::WriteOp::StashDrop { index } => format!("stash drop {index}"),
+                gitty::msg::WriteOp::StashApply { index, .. } => format!("stash apply {index}"),
+                gitty::msg::WriteOp::StashPop { index, .. } => format!("stash pop {index}"),
+                gitty::msg::WriteOp::StashDrop { index, .. } => format!("stash drop {index}"),
                 gitty::msg::WriteOp::StashAndSwitch { name, .. } => format!("stash and switch {name}"),
             }),
             _ => None,
@@ -3100,17 +3100,20 @@ fn stash_ops_push_list_apply_pop_and_drop() {
     t.pump();
     assert_eq!(f.git(&["status", "--porcelain"]), "");
     assert_eq!(t.app.stashes.iter().map(|s| s.message.as_str()).collect::<Vec<_>>(), ["wip"], "the list refreshed after the push");
-    t.app.write(WriteOp::StashApply { index: 0 });
+    let expect = t.app.stashes[0].id.clone();
+    t.app.write(WriteOp::StashApply { index: 0, expect });
     t.pump();
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n");
     assert_eq!(t.app.stashes.len(), 1);
     f.git(&["checkout", "--", "a.txt"]);
-    t.app.write(WriteOp::StashPop { index: 0 });
+    let expect = t.app.stashes[0].id.clone();
+    t.app.write(WriteOp::StashPop { index: 0, expect });
     t.pump();
     assert!(t.app.stashes.is_empty());
     t.app.write(WriteOp::StashPush { message: "again".into() });
     t.pump();
-    t.app.write(WriteOp::StashDrop { index: 0 });
+    let expect = t.app.stashes[0].id.clone();
+    t.app.write(WriteOp::StashDrop { index: 0, expect });
     t.pump();
     assert!(t.app.stashes.is_empty());
     assert_eq!(f.git(&["status", "--porcelain"]), "", "dropping does not restore");
@@ -3228,6 +3231,39 @@ fn the_stash_list_applies_pops_and_drops() {
     t.key(KeyCode::Enter);
     t.pump();
     assert!(t.app.stashes.is_empty());
+}
+
+#[test]
+fn a_stash_acted_on_after_the_list_changed_is_left_alone() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "one\n");
+    t.app.write(WriteOp::StashPush { message: "one".into() });
+    t.pump();
+    t.ch('S');
+    t.pump();
+    f.write("a.txt", "two\n");
+    f.git(&["stash", "push", "-m", "behind your back"]);
+    t.ch('p');
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("list changed"), "{toast:?}");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 2, "pop did nothing");
+    t.ch('S');
+    t.pump();
+    f.write("a.txt", "three\n");
+    f.git(&["stash", "push", "-m", "again"]);
+    t.ch('d');
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { body, .. }) => assert!(body.contains("\"") && body.contains("(main)"), "{body}"),
+        _ => panic!("no confirm"),
+    }
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("list changed"), "{toast:?}");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 3, "drop did nothing");
 }
 
 #[test]

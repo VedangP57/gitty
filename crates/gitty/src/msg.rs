@@ -123,9 +123,10 @@ pub enum WriteOp {
     DeleteBranch { name: String, force: bool },
     /// `git stash push -u`. Nothing to stash is a note, not an error.
     StashPush { message: String },
-    StashApply { index: usize },
-    StashPop { index: usize },
-    StashDrop { index: usize },
+    /// `expect` is the stash commit the user saw at `index`; a different one there means the list changed.
+    StashApply { index: usize, expect: String },
+    StashPop { index: usize, expect: String },
+    StashDrop { index: usize, expect: String },
     /// Stash the changes, then switch; if the switch fails the stash is popped back.
     StashAndSwitch { name: String, remote: bool, message: String },
     /// Runs in order and stops at the first failure (a line discard that unstages first).

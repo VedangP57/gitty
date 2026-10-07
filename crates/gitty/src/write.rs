@@ -315,9 +315,16 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 return Ok(Some("Nothing to stash".into()));
             }
         }
-        WriteOp::StashApply { index } => cli.stash_apply(*index)?,
-        WriteOp::StashPop { index } => cli.stash_pop(*index)?,
-        WriteOp::StashDrop { index } => cli.stash_drop(*index)?,
+        WriteOp::StashApply { index, expect } | WriteOp::StashPop { index, expect } | WriteOp::StashDrop { index, expect } => {
+            if cli.stash_id_at(*index).as_deref() != Some(expect.as_str()) {
+                bail!("the stash list changed; reopen it");
+            }
+            match op {
+                WriteOp::StashApply { .. } => cli.stash_apply(*index)?,
+                WriteOp::StashPop { .. } => cli.stash_pop(*index)?,
+                _ => cli.stash_drop(*index)?,
+            }
+        }
         WriteOp::StashAndSwitch { name, remote, message } => {
             let (head, branch) = (cli.head_id(), cli.current_branch());
             let stashed = cli.stash_push(message)?;

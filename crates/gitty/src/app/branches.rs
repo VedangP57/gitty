@@ -1,6 +1,7 @@
 //! Branches (spec: branches and stash): `B` opens a picker to switch, create, rename or delete.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use gitty_core::stash::StashEntry;
 use gitty_core::refs::{Target, TargetKind};
 use gitty_core::status::EntryKind;
 
@@ -173,6 +174,7 @@ impl App {
     }
 
     pub fn open_stashes(&mut self) {
+        self.stashes.clear();
         self.outbox.push(crate::msg::Request::StashList);
         self.overlay = Some(Overlay::Stashes { sel: 0 });
     }
@@ -184,29 +186,29 @@ impl App {
     /// Keys in the stash list.
     pub(super) fn stashes_key(&mut self, mut sel: usize, k: KeyEvent) {
         let n = self.stashes.len();
-        let cur = self.stashes.get(sel).map(|s| s.index);
+        let cur = self.stashes.get(sel).cloned();
         match k.code {
             KeyCode::Esc | KeyCode::Char('q') => return,
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(n.saturating_sub(1)),
             KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
             KeyCode::Char('a') => {
-                if let Some(index) = cur {
-                    self.write(WriteOp::StashApply { index });
+                if let Some(StashEntry { index, id: expect, .. }) = cur {
+                    self.write(WriteOp::StashApply { index, expect });
                     return;
                 }
             }
             KeyCode::Char('p') => {
-                if let Some(index) = cur {
-                    self.write(WriteOp::StashPop { index });
+                if let Some(StashEntry { index, id: expect, .. }) = cur {
+                    self.write(WriteOp::StashPop { index, expect });
                     return;
                 }
             }
             KeyCode::Char('d') => {
-                if let Some(index) = cur {
+                if let Some(StashEntry { index, id: expect, message, branch }) = cur {
                     self.overlay = Some(Overlay::Confirm {
                         title: "Drop stash".into(),
-                        body: format!("Drop stash@{{{index}}}? Its changes are lost."),
-                        op: WriteOp::StashDrop { index },
+                        body: format!("Drop stash@{{{index}}} \"{message}\" ({branch})? Its changes are lost."),
+                        op: WriteOp::StashDrop { index, expect },
                     });
                     return;
                 }
