@@ -133,7 +133,9 @@ pub fn bottom(app: &App, buf: &mut Buffer, r: Rect) {
         }
         x = end + 2;
     }
-    for (k, d) in hints(app) {
+    // an overlay has the keys: it prints its own hints, the pane's would mislead
+    let pane_hints = if app.overlay.is_some() { Vec::new() } else { hints(app) };
+    for (k, d) in pane_hints {
         if x + width(&k) + width(d) + 3 > max_x {
             break;
         }
