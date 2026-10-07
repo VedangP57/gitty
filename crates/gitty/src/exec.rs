@@ -285,7 +285,10 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             sink(Msg::StashList { result });
         }
         Request::PrUrl { branch } => {
-            let result = gitty_core::git_cli::GitCli::new(h.owner()).pr_url(&branch).map_err(|e| format!("{e:#}"));
+            let result = gitty_core::git_cli::GitCli::new(h.owner()).pr_url(&branch).map_err(|e| match e.downcast_ref::<gitty_core::forge::ForgeError>() {
+                Some(f) if f.is_guidance() => crate::msg::PrUrlError::Notice(f.to_string()),
+                _ => crate::msg::PrUrlError::Failed(format!("{e:#}")),
+            });
             sink(Msg::PrUrl { result });
         }
         Request::HeadMessage => {

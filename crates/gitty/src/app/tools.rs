@@ -91,7 +91,7 @@ impl App {
     pub fn open_pr(&mut self) {
         match self.refs.as_ref().and_then(|r| r.head_branch()) {
             Some(branch) => self.outbox.push(Request::PrUrl { branch: branch.to_string() }),
-            None => self.toast = Some(Toast { what: "No branch checked out.".into(), detail: String::new(), error: false }),
+            None => self.toast = Some(Toast { what: "No branch checked out".into(), detail: String::new(), error: false }),
         }
     }
 

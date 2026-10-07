@@ -1,7 +1,5 @@
 //! Forge links: the GitHub "open a pull request" page for a branch. The URL half is pure.
 
-use anyhow::bail;
-
 use crate::git_cli::{GitCli, Kind};
 use crate::net::push_target;
 
@@ -13,6 +11,17 @@ pub enum ForgeError {
     Unparsable,
     #[error("Not a valid branch name for a link")]
     BadBranch,
+    #[error("No remote to open")]
+    NoRemote,
+    #[error("Push the branch first (P)")]
+    NotPushed,
+}
+
+impl ForgeError {
+    /// Something the user can act on (a notice), as opposed to a failure to read the repository.
+    pub fn is_guidance(self) -> bool {
+        matches!(self, ForgeError::NotGithub | ForgeError::NoRemote | ForgeError::NotPushed)
+    }
 }
 
 /// `https://github.com/{owner}/{repo}/pull/new/{branch}` for a GitHub remote URL (scp-like, ssh,
@@ -82,15 +91,15 @@ impl GitCli {
     pub fn pr_url(&self, branch: &str) -> anyhow::Result<String> {
         self.check_branch_name(branch)?;
         let Ok(target) = push_target(self, branch) else {
-            bail!("No remote to open");
+            return Err(ForgeError::NoRemote.into());
         };
         let to = target.refspec.split_once(':').map_or(target.refspec.as_str(), |(_, to)| to);
         let name = to.strip_prefix("refs/heads/").unwrap_or(to);
         let remote = target.remote;
         if self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", &format!("refs/remotes/{remote}/{name}")], None).is_err() {
-            bail!("Push the branch first (P)");
+            return Err(ForgeError::NotPushed.into());
         }
-        let out = self.quiet(Kind::Read, &["remote", "get-url", "--", &remote], None)?;
+        let out = self.quiet(Kind::Read, &["remote", "get-url", "--push", "--", &remote], None)?;
         Ok(github_pr_url(String::from_utf8_lossy(&out).trim(), name)?)
     }
 }
@@ -187,5 +196,6 @@ mod tests {
     fn messages_suit_a_toast() {
         assert_eq!(ForgeError::NotGithub.to_string(), "Only GitHub remotes are supported");
         assert_eq!(ForgeError::Unparsable.to_string(), "Could not read the remote URL");
+        assert!(ForgeError::NotPushed.is_guidance() && ForgeError::NoRemote.is_guidance() && !ForgeError::Unparsable.is_guidance());
     }
 }

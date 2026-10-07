@@ -3441,7 +3441,7 @@ fn r_on_a_detached_head_says_there_is_no_branch() {
     let f = pr_fixture();
     f.git(&["checkout", "-q", "--detach"]);
     let (toast, url) = press_r(&f);
-    assert!(toast.starts_with("No branch checked out."), "{toast}");
+    assert!(toast.starts_with("No branch checked out"), "{toast}");
     assert_eq!(url, None);
 }
 

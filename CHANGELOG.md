@@ -17,7 +17,7 @@ All notable changes to gitty are listed here. The format follows
 - Switching branches with uncommitted changes offers "stash and switch": the changes are stashed
   (untracked files included) under `gitty: auto-stash from <branch>`, and put back if the switch
   fails. gitty never re-applies a stash by itself.
-- `R` opens the current branch's GitHub pull-request page in the browser (the branch must be
+- `R` opens the current branch's pull-request page (GitHub only) in the browser (the branch must be
   pushed first).
 
 ## [0.1.2] - 2026-10-05

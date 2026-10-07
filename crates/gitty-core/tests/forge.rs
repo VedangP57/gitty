@@ -98,6 +98,15 @@ fn insteadof_rewrite_is_applied() {
 }
 
 #[test]
+fn push_url_wins_over_url() {
+    let f = on_branch("feat/x");
+    f.git(&["remote", "add", "origin", "https://github.com/acme/widgets.git"]);
+    f.git(&["remote", "set-url", "--push", "origin", "git@github.com:me/fork.git"]);
+    f.git(&["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
+    assert_eq!(cli(&f).pr_url("feat/x").unwrap(), "https://github.com/me/fork/pull/new/feat/x");
+}
+
+#[test]
 fn hostile_branch_names_are_refused() {
     let f = on_branch("feat/x");
     f.git(&["remote", "add", "origin", "git@github.com:acme/widgets.git"]);

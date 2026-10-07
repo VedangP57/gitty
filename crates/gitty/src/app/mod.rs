@@ -29,7 +29,7 @@ use ratatui::layout::Rect;
 
 use crate::config::{Config, Density, UiState};
 use crate::dates::{DateMode, next_threshold};
-use crate::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request, SharedHistory};
+use crate::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, PrUrlError, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
 use crate::ui::layout::{self, LayoutInput, Mode, Panes, Sep};
 use diffstate::{DiffState, Wrap};
@@ -695,7 +695,8 @@ impl App {
             }
             Msg::PrUrl { result } => match result {
                 Ok(url) => self.open_url = Some(url),
-                Err(what) => self.toast = Some(Toast { what, detail: String::new(), error: true }),
+                Err(PrUrlError::Notice(what)) => self.toast = Some(Toast { what, detail: String::new(), error: false }),
+                Err(PrUrlError::Failed(detail)) => self.toast = Some(Toast { what: "Could not open the pull request page".into(), detail, error: true }),
             },
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),

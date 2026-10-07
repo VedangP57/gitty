@@ -22,6 +22,13 @@ use gitty_core::CommitId;
 
 pub type SharedHistory = Arc<RwLock<History>>;
 
+/// Why there is no pull-request page: guidance for a toast, or a real failure.
+#[derive(Debug)]
+pub enum PrUrlError {
+    Notice(String),
+    Failed(String),
+}
+
 /// Where a file list comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FilesOf {
@@ -292,7 +299,7 @@ pub enum Msg {
     StaleIndexLock { seen: crate::write::LockId },
     HeadMessage { result: Result<String, String> },
     /// The page to open, or the reason there is none (ready to show).
-    PrUrl { result: Result<String, String> },
+    PrUrl { result: Result<String, PrUrlError> },
     StashList { result: Result<Vec<gitty_core::stash::StashEntry>, String> },
     Error { what: String, detail: String },
 }
