@@ -3,7 +3,7 @@
 use anyhow::bail;
 
 use crate::git_cli::{GitCli, Kind};
-use crate::net::{config, remote_of};
+use crate::net::push_target;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ForgeError {
@@ -11,12 +11,17 @@ pub enum ForgeError {
     NotGithub,
     #[error("Could not read the remote URL")]
     Unparsable,
+    #[error("Not a valid branch name for a link")]
+    BadBranch,
 }
 
 /// `https://github.com/{owner}/{repo}/pull/new/{branch}` for a GitHub remote URL (scp-like, ssh,
 /// git, http or https). Only `github.com` and `www.github.com` count; owner and repo are checked
 /// so a crafted URL cannot smuggle `?`, `#` or `..` into the result.
 pub fn github_pr_url(remote_url: &str, branch: &str) -> Result<String, ForgeError> {
+    if branch.is_empty() || branch.starts_with('/') || branch.split('/').any(|p| p.is_empty() || p == "." || p == "..") {
+        return Err(ForgeError::BadBranch);
+    }
     let url = remote_url.trim();
     let (authority, path) = match url.split_once("://") {
         Some((scheme, rest)) => {
@@ -24,8 +29,15 @@ pub fn github_pr_url(remote_url: &str, branch: &str) -> Result<String, ForgeErro
                 return Err(ForgeError::Unparsable);
             }
             let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+            if authority.contains('\\') {
+                return Err(ForgeError::NotGithub);
+            }
             let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-            (host_port.rsplit_once(':').map_or(host_port, |(h, _)| h), path)
+            match host_port.rsplit_once(':') {
+                Some((_, port)) if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) => return Err(ForgeError::Unparsable),
+                Some((h, _)) => (h, path),
+                None => (host_port, path),
+            }
         }
         None => {
             let (authority, path) = url.split_once(':').ok_or(ForgeError::Unparsable)?;
@@ -65,18 +77,21 @@ fn encode_branch(branch: &str) -> String {
 }
 
 impl GitCli {
-    /// The "open a pull request" page of a pushed branch on its remote.
+    /// The "open a pull request" page of a pushed branch, on the remote and under the name `P`
+    /// would push it to.
     pub fn pr_url(&self, branch: &str) -> anyhow::Result<String> {
         self.check_branch_name(branch)?;
-        let Some(remote) = remote_of(self, Some(branch)) else {
+        let Ok(target) = push_target(self, branch) else {
             bail!("No remote to open");
         };
-        let name = config(self, &format!("branch.{branch}.merge")).map(|m| m.strip_prefix("refs/heads/").unwrap_or(&m).to_string()).unwrap_or_else(|| branch.to_string());
+        let to = target.refspec.split_once(':').map_or(target.refspec.as_str(), |(_, to)| to);
+        let name = to.strip_prefix("refs/heads/").unwrap_or(to);
+        let remote = target.remote;
         if self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", &format!("refs/remotes/{remote}/{name}")], None).is_err() {
             bail!("Push the branch first (P)");
         }
         let out = self.quiet(Kind::Read, &["remote", "get-url", "--", &remote], None)?;
-        Ok(github_pr_url(String::from_utf8_lossy(&out).trim(), &name)?)
+        Ok(github_pr_url(String::from_utf8_lossy(&out).trim(), name)?)
     }
 }
 
@@ -131,6 +146,9 @@ mod tests {
             "https://notgithub.com/owner/repo",
             "https://github.example.com/owner/repo",
             "git@github.com.evil.com:owner/repo.git",
+            "https://github.com@evil.com/o/r",
+            "https://evil.com/github.com/o/r",
+            "https://evil.com\\@github.com/o/r",
         ] {
             assert_eq!(github_pr_url(url, "m"), Err(ForgeError::NotGithub), "{url}");
         }
@@ -150,8 +168,18 @@ mod tests {
             "https://github.com/owner/re#po",
             "git@github.com:owner",
             "https://github.com/owner/.git",
+            "https://github.com:abc/owner/repo",
+            "https://github.com:/owner/repo",
         ] {
             assert_eq!(github_pr_url(url, "m"), Err(ForgeError::Unparsable), "{url}");
+        }
+    }
+
+    #[test]
+    fn bad_branches_are_refused() {
+        let u = "git@github.com:owner/repo.git";
+        for b in ["", "/x", "a//b", "a/", "./x", "a/./b", "..", "a/../b"] {
+            assert_eq!(github_pr_url(u, b), Err(ForgeError::BadBranch), "{b:?}");
         }
     }
 

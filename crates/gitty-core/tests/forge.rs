@@ -50,19 +50,60 @@ fn non_github_remote_is_reported() {
 }
 
 #[test]
-fn differently_named_upstream_branch_is_used() {
-    let f = on_branch("mine");
+fn branch_cut_from_another_branch_uses_its_own_name() {
+    let f = on_branch("feature");
     f.git(&["remote", "add", "origin", "https://github.com/acme/widgets.git"]);
-    f.git(&["config", "branch.mine.remote", "origin"]);
-    f.git(&["config", "branch.mine.merge", "refs/heads/theirs"]);
-    f.git(&["update-ref", "refs/remotes/origin/theirs", "HEAD"]);
-    assert_eq!(cli(&f).pr_url("mine").unwrap(), "https://github.com/acme/widgets/pull/new/theirs");
+    f.git(&["config", "branch.feature.remote", "origin"]);
+    f.git(&["config", "branch.feature.merge", "refs/heads/main"]);
+    f.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    assert!(err(&f, "feature").contains("Push the branch first"));
+    f.git(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+    assert_eq!(cli(&f).pr_url("feature").unwrap(), "https://github.com/acme/widgets/pull/new/feature");
+}
+
+#[test]
+fn local_upstream_falls_back_like_push() {
+    let f = on_branch("feature");
+    f.git(&["remote", "add", "origin", "https://github.com/acme/widgets.git"]);
+    f.git(&["config", "branch.feature.remote", "."]);
+    f.git(&["config", "branch.feature.merge", "refs/heads/main"]);
+    assert!(err(&f, "feature").contains("Push the branch first"));
+    f.git(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+    assert_eq!(cli(&f).pr_url("feature").unwrap(), "https://github.com/acme/widgets/pull/new/feature");
+}
+
+#[test]
+fn fork_workflow_uses_the_push_remote() {
+    let f = on_branch("feature");
+    f.git(&["remote", "add", "upstream", "https://github.com/acme/widgets.git"]);
+    f.git(&["remote", "add", "fork", "https://github.com/me/widgets.git"]);
+    f.git(&["config", "branch.feature.remote", "upstream"]);
+    f.git(&["config", "branch.feature.merge", "refs/heads/main"]);
+    f.git(&["config", "remote.pushDefault", "fork"]);
+    f.git(&["update-ref", "refs/remotes/upstream/feature", "HEAD"]);
+    assert!(err(&f, "feature").contains("Push the branch first"));
+    f.git(&["update-ref", "refs/remotes/fork/feature", "HEAD"]);
+    assert_eq!(cli(&f).pr_url("feature").unwrap(), "https://github.com/me/widgets/pull/new/feature");
+    f.git(&["config", "branch.feature.pushRemote", "upstream"]);
+    assert_eq!(cli(&f).pr_url("feature").unwrap(), "https://github.com/acme/widgets/pull/new/feature");
+}
+
+#[test]
+fn insteadof_rewrite_is_applied() {
+    let f = on_branch("feat/x");
+    f.git(&["remote", "add", "origin", "gh:acme/widgets.git"]);
+    f.git(&["config", "url.https://github.com/.insteadOf", "gh:"]);
+    f.git(&["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
+    assert_eq!(cli(&f).pr_url("feat/x").unwrap(), "https://github.com/acme/widgets/pull/new/feat/x");
 }
 
 #[test]
 fn hostile_branch_names_are_refused() {
     let f = on_branch("feat/x");
     f.git(&["remote", "add", "origin", "git@github.com:acme/widgets.git"]);
-    assert!(cli(&f).pr_url("-x").is_err());
-    assert!(cli(&f).pr_url("a b").is_err());
+    f.git(&["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
+    assert!(cli(&f).pr_url("feat/x").is_ok());
+    for name in ["-x", "a b"] {
+        assert_eq!(err(&f, name), format!("`{name}` is not a valid branch name"));
+    }
 }
