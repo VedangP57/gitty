@@ -114,6 +114,13 @@ pub enum WriteOp {
     /// `git update-index -q --refresh`: saves fresh stat data so later read-only statuses stop
     /// re-hashing racily clean files.
     RefreshIndex,
+    /// `git switch`; `remote`: `name` is `origin/x` and a local branch tracking it is created.
+    SwitchBranch { name: String, remote: bool },
+    /// Create a branch at HEAD and switch to it.
+    CreateBranch { name: String },
+    RenameBranch { old: String, new: String },
+    /// `-d`, or `-D` with `force` (after the user confirmed losing unmerged commits).
+    DeleteBranch { name: String, force: bool },
     /// Runs in order and stops at the first failure (a line discard that unstages first).
     Seq(Vec<WriteOp>),
 }
@@ -130,12 +137,16 @@ impl WriteOp {
             WriteOp::UndoCommit { .. } => "undoing the commit",
             WriteOp::RemoveIndexLock { .. } => "removing index.lock",
             WriteOp::RefreshIndex => "refreshing the index",
+            WriteOp::SwitchBranch { .. } => "switching branch",
+            WriteOp::CreateBranch { .. } => "creating the branch",
+            WriteOp::RenameBranch { .. } => "renaming the branch",
+            WriteOp::DeleteBranch { .. } => "deleting the branch",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
-    /// Commits and undo move HEAD; refs and history refresh after them.
+    /// Commits, undo and branch changes move HEAD or refs; refs and history refresh after them.
     pub fn moves_head(&self) -> bool {
-        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. })
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. })
     }
 }
 

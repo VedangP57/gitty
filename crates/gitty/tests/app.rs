@@ -11,6 +11,7 @@ use gitty::app::{App, AppInit, Focus};
 use gitty::config::{Config, UiState};
 use gitty::exec::exec;
 use gitty::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request};
+use gitty::msg::WriteOp;
 use gitty::theme::{ColorDepth, Registry};
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::Row;
@@ -1074,6 +1075,10 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::RemoveIndexLock { .. } => "remove index.lock".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
+                gitty::msg::WriteOp::SwitchBranch { name, .. } => format!("switch {name}"),
+                gitty::msg::WriteOp::CreateBranch { name } => format!("create branch {name}"),
+                gitty::msg::WriteOp::RenameBranch { old, new } => format!("rename branch {old} {new}"),
+                gitty::msg::WriteOp::DeleteBranch { name, force } => format!("delete branch {name} {force}"),
             }),
             _ => None,
         })
@@ -2847,4 +2852,46 @@ fn editor_debug_never_prints_the_text() {
     e.insert("hunter2");
     let d = format!("{e:?}");
     assert!(!d.contains("hunter2") && d.contains('7'), "{d}");
+}
+
+fn current_branch(f: &Fixture) -> String {
+    f.git(&["branch", "--show-current"])
+}
+
+#[test]
+fn branch_write_ops_run_on_the_writer_and_refresh_refs() {
+    let f = Fixture::new();
+    commits(&f, 2);
+    f.git(&["branch", "topic"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(WriteOp::SwitchBranch { name: "topic".into(), remote: false });
+    t.pump();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("topic"), "refs refreshed after the switch");
+    t.app.write(WriteOp::CreateBranch { name: "feat/x".into() });
+    t.pump();
+    assert_eq!(current_branch(&f), "feat/x");
+    t.app.write(WriteOp::RenameBranch { old: "feat/x".into(), new: "feat/y".into() });
+    t.pump();
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("feat/y"));
+    t.app.write(WriteOp::SwitchBranch { name: "main".into(), remote: false });
+    t.pump();
+    t.app.write(WriteOp::DeleteBranch { name: "feat/y".into(), force: false });
+    t.pump();
+    assert_eq!(f.git(&["branch", "--list", "feat/y"]), "");
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
+}
+
+#[test]
+fn a_refused_branch_write_toasts_git_s_message() {
+    let f = Fixture::new();
+    commits(&f, 1);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(WriteOp::CreateBranch { name: "bad..name".into() });
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error toast");
+    assert!(toast.error && toast.detail.contains("not a valid branch name"), "{toast:?}");
+    assert_eq!(current_branch(&f), "main");
 }

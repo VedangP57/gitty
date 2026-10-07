@@ -305,6 +305,11 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             return Ok(Some(String::from_utf8_lossy(&head).trim().to_string()));
         }
         WriteOp::UndoCommit { expect } => return Ok(Some(cli.undo_commit(expect)?)),
+        WriteOp::SwitchBranch { name, remote: false } => cli.switch_branch(name)?,
+        WriteOp::SwitchBranch { name, remote: true } => cli.switch_tracking(name)?,
+        WriteOp::CreateBranch { name } => cli.create_branch(name, None)?,
+        WriteOp::RenameBranch { old, new } => cli.rename_branch(old, new)?,
+        WriteOp::DeleteBranch { name, force } => cli.delete_branch(name, *force)?,
         WriteOp::Seq(ops) => {
             let mut note = None;
             for op in ops {
