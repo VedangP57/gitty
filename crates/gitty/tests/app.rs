@@ -3692,7 +3692,7 @@ fn a_dirty_tree_asks_whether_to_stash_before_merging() {
 }
 
 #[test]
-fn s_at_the_dirty_merge_prompt_stashes_merges_and_leaves_the_stash() {
+fn s_at_the_dirty_merge_prompt_stashes_merges_and_puts_the_changes_back() {
     let f = branch_fixture();
     let mut t = H::new(&f);
     t.pump();
@@ -3705,10 +3705,33 @@ fn s_at_the_dirty_merge_prompt_stashes_merges_and_leaves_the_stash() {
     t.ch('s');
     t.drain();
     assert_eq!(parent_count(&f), 2);
-    assert_eq!(f.git(&["status", "--porcelain"]), "", "the changes are not re-applied");
-    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from main");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "back on the same branch");
+    assert!(t.app.stashes.is_empty(), "the stash was popped");
     let toast = t.app.toast.as_ref().unwrap();
-    assert!(!toast.error && toast.what.starts_with("Merged topic into main") && toast.what.contains("stash@{0}"), "{toast:?}");
+    assert!(!toast.error && toast.what == "Merged topic into main; your changes were put back", "{toast:?}");
+}
+
+#[test]
+fn a_stash_that_will_not_pop_after_the_merge_is_kept_and_reported() {
+    let f = branch_fixture();
+    f.git(&["switch", "-q", "topic"]);
+    f.write("a.txt", "topic a\n");
+    f.commit("topic edits a", 1_700_000_300);
+    f.git(&["switch", "-q", "main"]);
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('s');
+    t.drain();
+    assert_eq!(parent_count(&f), 2, "the merge happened");
+    assert_eq!(t.app.stashes.len(), 1, "the stash was kept");
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(toast.what.starts_with("Merged topic into main; ") && toast.what.contains("putting your changes back failed") && toast.what.contains("stash@{0}"), "{toast:?}");
 }
 
 #[test]

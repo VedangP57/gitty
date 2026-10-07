@@ -225,3 +225,16 @@ fn a_merge_stopped_by_a_hook_is_aborted_with_git_s_message() {
     assert_eq!(f.git(&["status", "--porcelain"]), "");
     no_merge_in_progress(&f);
 }
+
+#[test]
+fn configured_merge_options_cannot_leave_a_merge_uncommitted() {
+    for opt in ["--no-commit", "--squash"] {
+        let f = diverged(None);
+        f.git(&["config", "branch.main.mergeOptions", opt]);
+        assert_eq!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::Merged, "{opt}");
+        assert_eq!(parents(&f), 2, "{opt}");
+        no_merge_in_progress(&f);
+        assert!(!f.path().join(".git/SQUASH_MSG").exists(), "{opt}");
+        assert_eq!(f.git(&["status", "--porcelain"]), "", "{opt}");
+    }
+}
