@@ -304,10 +304,14 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 }
                 Some(r) => {
                     let s = if r.others == 1 { "" } else { "s" };
-                    let mut l = wrap_text(&format!("{remote} has {} commit{s} you don't have, they will be removed from the remote:", r.others), wrap);
+                    let mut l = wrap_text(&format!("{remote} has {} commit{s} by others, they will be removed from the remote:", r.others), wrap);
                     l.extend(r.top.iter().map(|c| format!("  {c}")));
                     if r.others > r.top.len() {
                         l.push(format!("  …and {} more", r.others - r.top.len()));
+                    }
+                    if r.total > r.others {
+                        let own = r.total - r.others;
+                        l.push(format!("and {own} of your own earlier commit{}", if own == 1 { "" } else { "s" }));
                     }
                     l
                 }

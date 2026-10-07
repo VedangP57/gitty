@@ -107,6 +107,8 @@ pub struct ForcePush {
     pub branch: String,
     pub target: PushTarget,
     pub expected: String,
+    /// The local branch's commit when the question was asked; the push is refused if it moved.
+    pub tip: String,
     /// None: git could not tell, and the user is told so.
     pub removal: Option<Removal>,
 }
@@ -312,7 +314,11 @@ fn default_branch(cli: &GitCli, remote: &str) -> Option<String> {
 /// makes the push stale instead of moving the goalposts.
 pub fn force_push_plan(cli: &GitCli, branch: &str) -> anyhow::Result<ForcePush> {
     let target = push_target(cli, branch)?;
-    let mut plan = ForcePush { branch: branch.to_string(), target, expected: String::new(), removal: None };
+    let tip = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    if tip.is_empty() {
+        bail!("{branch} is not a branch with commits")
+    }
+    let mut plan = ForcePush { branch: branch.to_string(), target, expected: String::new(), tip, removal: None };
     let remote_branch = plan.remote_branch().to_string();
     let default = default_branch(cli, &plan.target.remote);
     for b in [branch, remote_branch.as_str()] {
@@ -330,9 +336,11 @@ pub fn force_push_plan(cli: &GitCli, branch: &str) -> anyhow::Result<ForcePush> 
     Ok(plan)
 }
 
-/// The commits at `expected` that `branch` lacks. Each one the user once had (it is in the
-/// branch's reflog, as an amend's earlier tip is) and wrote counts as their own; the rest are
-/// `others`. None when git cannot say.
+/// The commits at `expected` that `branch` lacks. Each one the user made on this branch (its
+/// reflog records it as a commit, amend, rebase or cherry-pick, as an amend's earlier tip is)
+/// and wrote counts as their own; the rest are `others`. None when git cannot say. A
+/// teammate's commit that was pulled and then reset away is not in that set, even under a
+/// shared `user.email`; one that was cherry-picked or rebased by the user is.
 pub fn removal(cli: &GitCli, branch: &str, expected: &str) -> Option<Removal> {
     let read = |args: &[&str]| cli.run(cli.cmd(Kind::Read, args), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).into_owned());
     let own = format!("refs/heads/{branch}");
@@ -341,14 +349,20 @@ pub fn removal(cli: &GitCli, branch: &str, expected: &str) -> Option<Removal> {
         return Some(Removal { total, others: 0, top: Vec::new() });
     }
     let listed = read(&["log", "-n", "200", "--format=%H%x09%ae%x09%h %an: %s", expected, "--not", &own]).ok()?;
-    let reflog = read(&["log", "-g", "-n", "100", "--format=%H", &own]).unwrap_or_default();
+    let reflog = read(&["log", "-g", "-n", "100", "--format=%H%x09%gs", &own]).unwrap_or_default();
+    let made_here: Vec<&str> = reflog
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(_, why)| ["commit", "rebase", "cherry-pick"].iter().any(|p| why.starts_with(p)))
+        .map(|(h, _)| h)
+        .collect();
     let me = config(cli, "user.email").map(|e| e.to_lowercase());
     let mut mine = 0;
     let mut top = Vec::new();
     for l in listed.lines() {
         let mut f = l.splitn(3, '\t');
         let (Some(hash), Some(email), Some(line)) = (f.next(), f.next(), f.next()) else { return None };
-        if me.as_deref() == Some(email.to_lowercase().as_str()) && reflog.lines().any(|h| h == hash) {
+        if me.as_deref() == Some(email.to_lowercase().as_str()) && made_here.contains(&hash) {
             mine += 1;
         } else if top.len() < 3 {
             top.push(line.to_string());
@@ -648,7 +662,7 @@ mod tests {
     #[test]
     fn the_lease_names_the_remote_ref_and_the_expected_commit() {
         let target = PushTarget { remote: "origin".into(), refspec: "refs/heads/feat:refs/heads/other".into(), set_upstream: false };
-        let cmd = NetCmd::ForcePush(ForcePush { branch: "feat".into(), target, expected: "abc".into(), removal: None });
+        let cmd = NetCmd::ForcePush(ForcePush { branch: "feat".into(), target, expected: "abc".into(), tip: "def".into(), removal: None });
         assert_eq!(cmd.args(), ["push", "--progress", "--porcelain", "--force-with-lease=refs/heads/other:abc", "origin", "refs/heads/feat:refs/heads/other"]);
     }
 

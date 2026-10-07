@@ -22,6 +22,11 @@ fn has_upstream(cli: &GitCli, branch: &str) -> bool {
     cli.run(cli.cmd(Kind::Read, &["config", "--get", &format!("branch.{branch}.merge")]), None, &mut |_| {}).is_ok()
 }
 
+fn tip_of(cli: &GitCli, branch: &str) -> Option<String> {
+    let out = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, &mut |_| {}).ok()?;
+    Some(String::from_utf8_lossy(&out).trim().to_string())
+}
+
 fn failed(detail: impl Into<String>) -> Outcome {
     Outcome::Failed { detail: detail.into() }
 }
@@ -93,11 +98,12 @@ fn outcome(cli: &GitCli, branch: Option<&str>, op: NetOp, mode: &Mode, force: Op
         NetOp::PullMerge => step(cli, op, NetCmd::Merge, "Merging the upstream".into(), false, mode, sink),
         NetOp::PullRebase => step(cli, op, NetCmd::Rebase, "Rebasing onto the upstream".into(), false, mode, sink),
         NetOp::ForcePush => match force {
-            Some(f) if branch == Some(f.branch.as_str()) => {
+            Some(f) if branch == Some(f.branch.as_str()) && tip_of(cli, &f.branch).as_deref() == Some(f.tip.as_str()) => {
                 let label = format!("Force pushing {} to {}", f.remote_branch(), f.target.remote);
                 step(cli, op, NetCmd::ForcePush(f), label, true, mode, sink)
             }
-            Some(f) => failed(format!("HEAD is no longer on {}: check it out and push again (P)", f.branch)),
+            Some(f) if branch != Some(f.branch.as_str()) => failed(format!("HEAD is no longer on {}: check it out and push again (P)", f.branch)),
+            Some(_) => failed("The branch changed since this screen: push again (P)"),
             None => failed("There is nothing to force push"),
         },
         NetOp::Push => {

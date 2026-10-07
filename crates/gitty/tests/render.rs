@@ -1548,7 +1548,7 @@ fn force_question_at(removal: Option<gitty_core::net::Removal>, size: (u16, u16)
     let f = fixture();
     let mut t = H::new(&f, "github-dark", size);
     let target = gitty_core::net::PushTarget { remote: "origin".into(), refspec: "refs/heads/feat:refs/heads/topic".into(), set_upstream: false };
-    let plan = gitty_core::net::ForcePush { branch: "feat".into(), target, expected: "a".repeat(40), removal };
+    let plan = gitty_core::net::ForcePush { branch: "feat".into(), target, expected: "a".repeat(40), tip: "b".repeat(40), removal };
     t.app.overlay = Some(gitty::app::Overlay::ForcePush { plan });
     text(&t.render(size.0, size.1))
 }
@@ -1570,10 +1570,11 @@ fn the_force_push_question_for_a_plain_amend() {
 #[test]
 fn the_force_push_question_lists_what_the_remote_loses() {
     let s = force_question_at(removal(6, 5, &["abc1234 Ann: one", "def5678 Bob: two", "0123456 Cy: three"]), (80, 24));
-    assert!(s.contains("origin/topic has 5 commits you don't have"), "the remote's name for the branch: {s}");
+    assert!(s.contains("origin/topic has 5 commits by others"), "the remote's name for the branch: {s}");
     assert!(s.contains("they will be removed from"), "{s}");
     assert!(s.contains("  abc1234 Ann: one") && s.contains("  0123456 Cy: three"), "{s}");
     assert!(s.contains("…and 2 more"), "{s}");
+    assert!(s.contains("and 1 of your own earlier commit"), "{s}");
     assert!(s.contains("Enter force push · Esc cancel"), "{s}");
 }
 

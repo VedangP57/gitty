@@ -422,3 +422,19 @@ fn the_lease_is_read_from_the_push_remote_not_the_upstream_remote() {
     let e = force_push_plan(&cli(&f), "topic").unwrap_err().to_string();
     assert!(e.contains("no remote-tracking branch"), "origin/topic must not stand in for fork/topic: {e}");
 }
+
+#[test]
+fn a_pulled_commit_is_not_yours_even_under_a_shared_email() {
+    let (f, bare) = base();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    run(&f, NetCmd::Push(push_target(&cli(&f), "topic").unwrap()), Mode::Background);
+    someone_else_pushes_topic(&bare);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    f.git(&["merge", "-q", "--ff-only", "origin/topic"]);
+    f.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    f.git(&["config", "user.email", "o@example.com"]);
+    let r = force_push_plan(&cli(&f), "topic").unwrap().removal.unwrap();
+    assert_eq!((r.total, r.others), (1, 1), "{r:?}");
+}

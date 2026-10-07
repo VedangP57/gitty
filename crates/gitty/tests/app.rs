@@ -3952,3 +3952,18 @@ fn a_force_push_confirmed_after_the_branch_changed_is_not_run() {
     assert!(toast_text(&t).contains("HEAD is no longer on topic"), "{}", toast_text(&t));
     assert_eq!(remote_rev(&bare, "topic"), before);
 }
+
+#[test]
+fn a_branch_that_moved_while_the_question_was_open_is_not_force_pushed() {
+    let (f, bare) = amended_topic();
+    let before = remote_rev(&bare, "topic");
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    f.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert!(toast_text(&t).contains("The branch changed since this screen: push again (P)"), "{}", toast_text(&t));
+    assert_eq!(remote_rev(&bare, "topic"), before);
+}
