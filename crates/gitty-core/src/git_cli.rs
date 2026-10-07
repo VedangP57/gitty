@@ -142,7 +142,7 @@ impl GitCli {
         Ok(got)
     }
 
-    fn quiet(&self, kind: Kind, args: &[&str], stdin: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
+    pub(crate) fn quiet(&self, kind: Kind, args: &[&str], stdin: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
         self.run(self.cmd(kind, args), stdin, &mut |_| {})
     }
 
