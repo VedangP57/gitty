@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::repo::{from_oid, Handle};
 use crate::types::CommitId;
@@ -29,6 +29,22 @@ pub enum HistoryScope {
     AllRefs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    /// The checked-out branch.
+    Current,
+    Local,
+    /// A remote branch with no local branch of the same name: switching creates one.
+    Remote,
+}
+
+/// A branch `git switch` can go to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub name: String,
+    pub kind: TargetKind,
+}
+
 #[derive(Debug, Clone)]
 pub struct RefsSnapshot {
     pub head: Head,
@@ -54,6 +70,29 @@ impl RefsSnapshot {
             Head::Branch { name, .. } => Some(name),
             Head::Detached { .. } => None,
         }
+    }
+    /// The branches the picker offers: the current one, the other local ones, then the remote-only
+    /// ones (each group by name).
+    pub fn switch_targets(&self) -> Vec<Target> {
+        let mut local: Vec<(String, bool)> = Vec::new();
+        let mut remote: Vec<String> = Vec::new();
+        for l in self.labels.values().flatten() {
+            match l.kind {
+                RefKind::LocalBranch => local.push((l.name.clone(), l.is_head)),
+                RefKind::RemoteBranch if !l.name.ends_with("/HEAD") => remote.push(l.name.clone()),
+                _ => {}
+            }
+        }
+        local.sort();
+        local.dedup();
+        remote.sort();
+        remote.dedup();
+        let names: HashSet<&str> = local.iter().map(|(n, _)| n.as_str()).collect();
+        remote.retain(|r| r.split_once('/').is_some_and(|(_, short)| !names.contains(short)));
+        let mut out: Vec<Target> = local.iter().filter(|(_, head)| *head).map(|(n, _)| Target { name: n.clone(), kind: TargetKind::Current }).collect();
+        out.extend(local.iter().filter(|(_, head)| !*head).map(|(n, _)| Target { name: n.clone(), kind: TargetKind::Local }));
+        out.extend(remote.into_iter().map(|n| Target { name: n, kind: TargetKind::Remote }));
+        out
     }
     pub fn tips(&self, scope: HistoryScope) -> Vec<CommitId> {
         match scope {

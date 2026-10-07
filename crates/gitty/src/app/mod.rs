@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod commit;
+pub mod branches;
 pub mod compare;
 pub mod net;
 pub mod diffstate;
@@ -61,8 +62,16 @@ pub enum Overlay {
     Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
     /// A pull found local and upstream commits: merge, rebase or cancel.
     Diverged,
+    /// `B`: switch, create, rename or delete a branch.
+    Switcher { query: crate::editor::Editor, sel: usize },
+    /// Typing the name of a new branch, or the new name of `old`.
+    NameInput { kind: branches::NameKind, input: crate::editor::Editor },
+    /// Switching with changes in the working tree: switch anyway, or cancel.
+    DirtySwitch { name: String, remote: bool },
     /// `b`: pick the branch to compare with.
     BranchPicker { query: crate::editor::Editor, sel: usize },
+    /// `S`: the stash entries.
+    Stashes { sel: usize },
     /// `q` while a network job runs.
     Quit { label: String },
 }
@@ -172,6 +181,7 @@ pub struct App {
     pub fullscreen: bool,
 
     pub refs: Option<RefsSnapshot>,
+    pub stashes: Vec<gitty_core::stash::StashEntry>,
     pub fetched_at: Option<i64>,
     pub ahead: HashSet<CommitId>,
     pub behind: HashSet<CommitId>,
@@ -315,6 +325,7 @@ impl App {
             history_focus: Focus::History,
             fullscreen: false,
             refs: None,
+            stashes: Vec::new(),
             fetched_at: None,
             ahead: HashSet::new(),
             behind: HashSet::new(),
@@ -536,6 +547,7 @@ impl App {
         let Some(m) = self.handle_net_msg(m) else { return };
         let Some(m) = self.handle_search_msg(m) else { return };
         let Some(m) = self.handle_compare_msg(m) else { return };
+        let Some(m) = self.handle_stash_msg(m) else { return };
         match m {
             Msg::Refs { refs, fetched_at } => {
                 match (refs.head_id(), &refs.upstream) {
@@ -681,7 +693,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }

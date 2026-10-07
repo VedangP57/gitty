@@ -321,6 +321,7 @@ impl App {
                     // a discard whose copies did not go to the Trash says where they are
                     Ok(Some(note)) => self.toast = Some(Toast { what: note, detail: String::new(), error: false }),
                     Ok(None) => {}
+                    Err(detail) if self.offer_force_delete(&op, &detail) => {}
                     Err(detail) => {
                         let what = format!("{} failed", op.label());
                         self.toast = Some(Toast { what, detail, error: true });
@@ -329,6 +330,9 @@ impl App {
                 self.request_status();
                 if op.moves_head() {
                     self.outbox.push(Request::Refs);
+                }
+                if op.touches_stash() {
+                    self.outbox.push(Request::StashList);
                 }
             }
             Msg::HeadMessage { result } => self.install_head_message(result),

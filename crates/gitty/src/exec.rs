@@ -280,6 +280,10 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             };
             sink(Msg::Tuned { applied, error });
         }
+        Request::StashList => {
+            let result = gitty_core::git_cli::GitCli::new(h.owner()).stash_list().map_err(|e| format!("{e:#}"));
+            sink(Msg::StashList { result });
+        }
         Request::HeadMessage => {
             let result = gitty_core::git_cli::GitCli::new(h.owner()).head_message().map_err(|e| format!("{e:#}"));
             sink(Msg::HeadMessage { result });

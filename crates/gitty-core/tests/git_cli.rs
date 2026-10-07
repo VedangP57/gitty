@@ -2,7 +2,7 @@ mod common;
 
 use common::Fixture;
 use gitty_core::Repo;
-use gitty_core::git_cli::GitCli;
+use gitty_core::git_cli::{GitCli, Kind};
 use gitty_core::status::{Check, EntryKind, Status};
 
 fn cli(f: &Fixture) -> GitCli {
@@ -197,4 +197,13 @@ fn symlinks_and_type_changes_are_whole_file_only() {
     assert!(!e("link").line_stageable(), "symlink retarget");
     assert!(!e("t.txt").line_stageable(), "file → symlink");
     assert!(e("plain.txt").line_stageable());
+}
+
+#[test]
+fn git_runs_with_english_messages() {
+    let f = Fixture::new();
+    let cmd = cli(&f).cmd(Kind::Read, &["status"]);
+    let lc = cmd.get_envs().find(|(k, _)| *k == "LC_MESSAGES").and_then(|(_, v)| v);
+    assert_eq!(lc, Some(std::ffi::OsStr::new("C")));
+    assert!(cmd.get_envs().all(|(k, _)| k != "LC_ALL"));
 }

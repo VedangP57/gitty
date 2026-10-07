@@ -179,6 +179,76 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 text(buf, inner.x, inner.bottom() - 1, inner.right(), "type to filter · ↑/↓ · Enter compare · Esc cancel", st.fg(ui.muted));
             }
         }
+        Overlay::Switcher { query, sel } => {
+            let matches = app.switcher_matches(query.text());
+            let h = (matches.len() as u16).clamp(1, 12) + 5;
+            let inner = boxed(app, buf, area, 76, h, "Branches");
+            let x = spans(buf, inner.x, inner.y, inner.right(), &[("> ", st.fg(ui.accent)), (query.text(), st)]);
+            if x < inner.right() {
+                buf[(x, inner.y)].set_style(st.add_modifier(Modifier::REVERSED));
+            }
+            let rows = inner.height.saturating_sub(3) as usize;
+            if matches.is_empty() {
+                text(buf, inner.x, inner.y + 2, inner.right(), "No matching branch", st.fg(ui.muted));
+            }
+            let first = sel.saturating_sub(rows.saturating_sub(1));
+            for (k, (i, t)) in matches.iter().enumerate().skip(first).take(rows).enumerate() {
+                let y = inner.y + 2 + k as u16;
+                let row = if i == *sel { st.bg(ui.selection).add_modifier(Modifier::BOLD) } else { st };
+                fill(buf, Rect::new(inner.x, y, inner.width, 1), row);
+                let label = match t.kind {
+                    gitty_core::refs::TargetKind::Current => format!("● {}", t.name),
+                    gitty_core::refs::TargetKind::Local => format!("  {}", t.name),
+                    gitty_core::refs::TargetKind::Remote => format!("  {}  (remote)", t.name),
+                };
+                text(buf, inner.x + 1, y, inner.right(), &label, row);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "type to filter · Enter switch · ^N new · ^R rename · ^D delete · Esc", st.fg(ui.muted));
+            }
+        }
+        Overlay::NameInput { kind, input } => {
+            let title = match kind {
+                crate::app::branches::NameKind::Create => "New branch".to_string(),
+                crate::app::branches::NameKind::Rename { old } => format!("Rename {old}"),
+                crate::app::branches::NameKind::Stash => "Stash changes".to_string(),
+            };
+            let inner = boxed(app, buf, area, 56, 6, &title);
+            let x = spans(buf, inner.x, inner.y, inner.right(), &[("> ", st.fg(ui.accent)), (input.text(), st)]);
+            if x < inner.right() {
+                buf[(x, inner.y)].set_style(st.add_modifier(Modifier::REVERSED));
+            }
+            if inner.height > 2 {
+                let hint = if matches!(kind, crate::app::branches::NameKind::Stash) { "Enter confirm (empty: default message) · Esc cancel" } else { "Enter confirm · Esc cancel" };
+                text(buf, inner.x, inner.y + 2, inner.right(), hint, st.fg(ui.muted));
+            }
+        }
+        Overlay::DirtySwitch { name, .. } => {
+            let inner = boxed(app, buf, area, 72, 7, "Switch branch");
+            text(buf, inner.x, inner.y, inner.right(), "You have uncommitted changes", st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            text(buf, inner.x, inner.y + 1, inner.right(), &format!("Switching to {name}: git carries them over, or refuses."), st.fg(ui.muted));
+            if inner.height > 3 {
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("s", st.fg(ui.accent)), (" stash and switch · ", st), ("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            }
+        }
+        Overlay::Stashes { sel } => {
+            let h = (app.stashes.len() as u16).clamp(1, 12) + 5;
+            let inner = boxed(app, buf, area, 76, h, "Stashes");
+            if app.stashes.is_empty() {
+                text(buf, inner.x, inner.y, inner.right(), "No stashes", st.fg(ui.muted));
+            }
+            let rows = inner.height.saturating_sub(2) as usize;
+            let first = sel.saturating_sub(rows.saturating_sub(1));
+            for (k, (i, s)) in app.stashes.iter().enumerate().skip(first).take(rows).enumerate() {
+                let y = inner.y + k as u16;
+                let row = if i == *sel { st.bg(ui.selection).add_modifier(Modifier::BOLD) } else { st };
+                fill(buf, Rect::new(inner.x, y, inner.width, 1), row);
+                text(buf, inner.x + 1, y, inner.right(), &format!("stash@{{{}}}  {}  ({})", s.index, s.message, s.branch), row);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "a apply · p pop · d drop · n new · Esc close", st.fg(ui.muted));
+            }
+        }
         Overlay::Quit { label } => {
             let inner = boxed(app, buf, area, 56, 6, "Quit");
             text(buf, inner.x, inner.y, inner.right(), &format!("{label} is still running"), st.fg(ui.warning).add_modifier(Modifier::BOLD));

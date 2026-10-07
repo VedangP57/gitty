@@ -20,6 +20,8 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
   undo.
 - **Network:** fetch, pull (fast-forward, merge or rebase) and push with progress, cancel, and
   password or passphrase prompts inside the app. A background fetch runs every few minutes.
+- **Branches:** switch, create, rename and delete branches from a picker (`B`), and stash and
+  restore work (`S`, `Z`).
 - **Search and compare:** `/` searches the whole history (text, author, `path:`) while you keep
   working; `b` compares HEAD with any branch (behind, ahead, and the files that differ).
 
@@ -128,6 +130,8 @@ reported at startup:
 | `x` | cancel the running fetch, pull or push | `cancel` |
 | `O` | open the diff in the difftool | `difftool` |
 | `T` | theme picker | `theme` |
+| `B` | branches: switch, create, rename, delete | `branches` |
+| `S` | stashes: apply, pop, drop | `stashes` |
 | `?` | this help | `help` |
 | `!` | details of the last error | `error_details` |
 | `h` `←` | compare: previous tab | `compare_prev_tab` |
@@ -135,6 +139,7 @@ reported at startup:
 | `c` | Changes: write the commit message | `commit_box` |
 | `A` | Changes: amend the last commit | `amend` |
 | `u` | Changes: undo the last commit | `undo_commit` |
+| `Z` | Changes: stash all changes | `stash_push` |
 | `Space` | Changes: stage file / line (again: unstage) | `stage` |
 | `a` | Changes: stage everything / the whole file | `stage_all` |
 | `d` | Changes: discard file / lines (asks first) | `discard` |

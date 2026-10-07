@@ -11,6 +11,7 @@ use gitty::app::{App, AppInit, Focus};
 use gitty::config::{Config, UiState};
 use gitty::exec::exec;
 use gitty::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, Request};
+use gitty::msg::WriteOp;
 use gitty::theme::{ColorDepth, Registry};
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::Row;
@@ -83,6 +84,20 @@ impl H {
             }
         }
         panic!("pump did not settle");
+    }
+    /// Runs requests and delivers results until none are left, ignoring timers (the focused
+    /// status backstop re-arms forever, so [`H::pump`] cannot settle while focused).
+    fn drain(&mut self) {
+        for _ in 0..1000 {
+            let reqs = self.app.take_requests();
+            if reqs.is_empty() {
+                return;
+            }
+            for m in self.exec_all(reqs) {
+                self.app.handle_msg(m);
+            }
+        }
+        panic!("drain did not settle");
     }
     fn key(&mut self, c: KeyCode) {
         self.app.handle_key(KeyEvent::new(c, KeyModifiers::NONE));
@@ -1074,6 +1089,15 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::RemoveIndexLock { .. } => "remove index.lock".into(),
                 gitty::msg::WriteOp::RefreshIndex => "refresh index".into(),
                 gitty::msg::WriteOp::Seq(ops) => format!("seq of {}", ops.len()),
+                gitty::msg::WriteOp::SwitchBranch { name, .. } => format!("switch {name}"),
+                gitty::msg::WriteOp::CreateBranch { name } => format!("create branch {name}"),
+                gitty::msg::WriteOp::RenameBranch { old, new } => format!("rename branch {old} {new}"),
+                gitty::msg::WriteOp::DeleteBranch { name, force } => format!("delete branch {name} {force}"),
+                gitty::msg::WriteOp::StashPush { message } => format!("stash push {message}"),
+                gitty::msg::WriteOp::StashApply { index, .. } => format!("stash apply {index}"),
+                gitty::msg::WriteOp::StashPop { index, .. } => format!("stash pop {index}"),
+                gitty::msg::WriteOp::StashDrop { index, .. } => format!("stash drop {index}"),
+                gitty::msg::WriteOp::StashAndSwitch { name, .. } => format!("stash and switch {name}"),
             }),
             _ => None,
         })
@@ -2847,4 +2871,430 @@ fn editor_debug_never_prints_the_text() {
     e.insert("hunter2");
     let d = format!("{e:?}");
     assert!(!d.contains("hunter2") && d.contains('7'), "{d}");
+}
+
+fn current_branch(f: &Fixture) -> String {
+    f.git(&["branch", "--show-current"])
+}
+
+#[test]
+fn branch_write_ops_run_on_the_writer_and_refresh_refs() {
+    let f = Fixture::new();
+    commits(&f, 2);
+    f.git(&["branch", "topic"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(WriteOp::SwitchBranch { name: "topic".into(), remote: false });
+    t.pump();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("topic"), "refs refreshed after the switch");
+    t.app.write(WriteOp::CreateBranch { name: "feat/x".into() });
+    t.pump();
+    assert_eq!(current_branch(&f), "feat/x");
+    t.app.write(WriteOp::RenameBranch { old: "feat/x".into(), new: "feat/y".into() });
+    t.pump();
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("feat/y"));
+    t.app.write(WriteOp::SwitchBranch { name: "main".into(), remote: false });
+    t.pump();
+    t.app.write(WriteOp::DeleteBranch { name: "feat/y".into(), force: false });
+    t.pump();
+    assert_eq!(f.git(&["branch", "--list", "feat/y"]), "");
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
+}
+
+#[test]
+fn a_refused_branch_write_toasts_git_s_message() {
+    let f = Fixture::new();
+    commits(&f, 1);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(WriteOp::CreateBranch { name: "bad..name".into() });
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error toast");
+    assert!(toast.error && toast.detail.contains("not a valid branch name"), "{toast:?}");
+    assert_eq!(current_branch(&f), "main");
+}
+
+fn ctrl(t: &mut H, c: char) {
+    t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+}
+
+/// main: two commits; topic: branches off main's first commit and adds t.txt.
+fn branch_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic work", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("m.txt", "m\n");
+    f.commit("main work", 1_700_000_200);
+    f
+}
+
+#[test]
+fn switcher_lists_the_current_branch_first_and_filters() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })));
+    let names: Vec<_> = t.app.switcher_matches("").into_iter().map(|x| (x.name, x.kind)).collect();
+    assert_eq!(names, [("main".into(), gitty_core::refs::TargetKind::Current), ("topic".into(), gitty_core::refs::TargetKind::Local)]);
+    typed(&mut t, "top");
+    let m = t.app.switcher_matches("top");
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].name, "topic");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+}
+
+#[test]
+fn enter_switches_a_clean_tree_and_history_follows() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.overlay.is_none());
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("topic"));
+    assert_eq!(t.selected_id(), id(&f.git(&["rev-parse", "topic"])), "history shows the new branch's tip");
+}
+
+#[test]
+fn a_dirty_tree_asks_and_switch_anyway_carries_the_change() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::DirtySwitch { .. })), "asks first");
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert_eq!(current_branch(&f), "main", "cancel changes nothing");
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('w');
+    t.drain();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "the change came along");
+}
+
+#[test]
+fn a_switch_git_refuses_shows_the_error_and_stays() {
+    let f = branch_fixture();
+    f.git(&["switch", "-q", "topic"]);
+    f.write("a.txt", "topic edit\n");
+    f.commit("topic edits a", 1_700_000_300);
+    f.git(&["switch", "-q", "main"]);
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "dirty\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('w');
+    t.drain();
+    assert_eq!(current_branch(&f), "main");
+    assert!(t.app.toast.as_ref().is_some_and(|x| x.error), "{:?}", t.app.toast);
+}
+
+#[test]
+fn ctrl_n_makes_a_branch_from_the_typed_name() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "feat/x");
+    ctrl(&mut t, 'n');
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::NameInput { input, .. }) => assert_eq!(input.text(), "feat/x", "prefilled from the query"),
+        _ => panic!("no name input"),
+    }
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(current_branch(&f), "feat/x");
+}
+
+#[test]
+fn ctrl_r_renames_the_highlighted_branch() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'r');
+    ctrl(&mut t, 'u');
+    typed(&mut t, "renamed");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(f.git(&["branch", "--list", "topic"]), "");
+    assert!(f.git(&["branch", "--list", "renamed"]).contains("renamed"));
+    assert_eq!(current_branch(&f), "main");
+}
+
+#[test]
+fn ctrl_d_asks_then_offers_force_for_an_unmerged_branch() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'd');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })));
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(
+        matches!(&t.app.overlay, Some(gitty::app::Overlay::Confirm { op: WriteOp::DeleteBranch { force: true, .. }, .. })),
+        "unmerged: asks again before forcing"
+    );
+    assert!(f.git(&["branch", "--list", "topic"]).contains("topic"), "nothing deleted yet");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(f.git(&["branch", "--list", "topic"]), "");
+}
+
+#[test]
+fn the_current_branch_cannot_be_renamed_away_or_deleted_from_the_picker() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    ctrl(&mut t, 'd');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })), "stays open");
+    assert!(t.app.toast.is_some());
+    assert_eq!(f.git(&["branch", "--list", "main"]).trim_start_matches("* "), "main");
+}
+
+#[test]
+fn the_picker_opens_in_a_repository_without_commits() {
+    let f = Fixture::new();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('B');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Switcher { .. })));
+    assert!(t.app.switcher_matches("").is_empty());
+    t.key(KeyCode::Enter);
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+}
+
+#[test]
+fn stash_ops_push_list_apply_pop_and_drop() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.write(WriteOp::StashPush { message: "wip".into() });
+    t.pump();
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+    assert_eq!(t.app.stashes.iter().map(|s| s.message.as_str()).collect::<Vec<_>>(), ["wip"], "the list refreshed after the push");
+    let expect = t.app.stashes[0].id.clone();
+    t.app.write(WriteOp::StashApply { index: 0, expect });
+    t.pump();
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n");
+    assert_eq!(t.app.stashes.len(), 1);
+    f.git(&["checkout", "--", "a.txt"]);
+    let expect = t.app.stashes[0].id.clone();
+    t.app.write(WriteOp::StashPop { index: 0, expect });
+    t.pump();
+    assert!(t.app.stashes.is_empty());
+    t.app.write(WriteOp::StashPush { message: "again".into() });
+    t.pump();
+    let expect = t.app.stashes[0].id.clone();
+    t.app.write(WriteOp::StashDrop { index: 0, expect });
+    t.pump();
+    assert!(t.app.stashes.is_empty());
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "dropping does not restore");
+}
+
+#[test]
+fn stashing_nothing_says_so_without_an_error() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.write(WriteOp::StashPush { message: "x".into() });
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("a note");
+    assert!(!toast.error && toast.what.contains("Nothing to stash"), "{toast:?}");
+}
+
+#[test]
+fn stash_and_switch_parks_the_work_then_switches() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    f.write("new.txt", "fresh\n");
+    t.app.write(WriteOp::StashAndSwitch { name: "topic".into(), remote: false, message: "gitty: auto-stash from main".into() });
+    t.pump();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the work is parked");
+    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from main");
+    assert_eq!(t.app.refs.as_ref().unwrap().head_branch(), Some("topic"));
+}
+
+#[test]
+fn a_failed_stash_and_switch_puts_the_work_back() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    f.git(&["add", "a.txt"]);
+    f.write("m.txt", "unstaged\n");
+    t.app.write(WriteOp::StashAndSwitch { name: "no-such-branch".into(), remote: false, message: "m".into() });
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("put back"), "{toast:?}");
+    assert_eq!(current_branch(&f), "main");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "nothing lost");
+    assert_eq!(f.git(&["status", "--porcelain", "a.txt"]), "M  a.txt", "staged stays staged");
+    assert_eq!(f.git(&["diff", "--name-only"]), "m.txt", "unstaged stays unstaged");
+    assert!(f.git(&["stash", "list"]).is_empty());
+    assert!(t.app.stashes.is_empty());
+}
+
+#[test]
+fn a_switch_that_fails_after_moving_head_keeps_the_stash() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = branch_fixture();
+    let hook = f.path().join(".git/hooks/post-checkout");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 2\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.write(WriteOp::StashAndSwitch { name: "topic".into(), remote: false, message: "m".into() });
+    t.pump();
+    assert_eq!(current_branch(&f), "topic", "the switch happened");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 1, "the stash is kept");
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the work was not applied here");
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("stash@{0}") && !toast.detail.contains("put back"), "{toast:?}");
+}
+
+#[test]
+fn s_at_the_dirty_prompt_stashes_and_switches() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('s');
+    t.drain();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from main");
+}
+
+#[test]
+fn the_stash_list_applies_pops_and_drops() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "one\n");
+    t.app.write(WriteOp::StashPush { message: "one".into() });
+    t.pump();
+    f.write("a.txt", "two\n");
+    t.app.write(WriteOp::StashPush { message: "two".into() });
+    t.pump();
+    t.ch('S');
+    t.pump();
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Stashes { .. })));
+    assert_eq!(t.app.stashes.len(), 2);
+    t.ch('j');
+    t.ch('p');
+    t.pump();
+    assert!(t.app.overlay.is_none(), "pop closes the list");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "one\n", "the older stash came back");
+    assert_eq!(t.app.stashes.len(), 1);
+    t.ch('S');
+    t.pump();
+    t.ch('d');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })), "drop asks");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.stashes.is_empty());
+}
+
+#[test]
+fn a_stash_acted_on_after_the_list_changed_is_left_alone() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "one\n");
+    t.app.write(WriteOp::StashPush { message: "one".into() });
+    t.pump();
+    t.ch('S');
+    t.pump();
+    f.write("a.txt", "two\n");
+    f.git(&["stash", "push", "-m", "behind your back"]);
+    t.ch('p');
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("list changed"), "{toast:?}");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 2, "pop did nothing");
+    t.ch('S');
+    t.pump();
+    f.write("a.txt", "three\n");
+    f.git(&["stash", "push", "-m", "again"]);
+    t.ch('d');
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { body, .. }) => assert!(body.contains("\"") && body.contains("(main)"), "{body}"),
+        _ => panic!("no confirm"),
+    }
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("list changed"), "{toast:?}");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 3, "drop did nothing");
+}
+
+#[test]
+fn z_in_changes_asks_for_a_message_then_stashes() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('1');
+    t.ch('Z');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::NameInput { kind: gitty::app::branches::NameKind::Stash, .. })));
+    typed(&mut t, "half done");
+    t.key(KeyCode::Enter);
+    t.drain();
+    assert_eq!(t.app.stashes[0].message, "half done");
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn an_empty_stash_message_gets_a_default() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('1');
+    t.ch('Z');
+    t.key(KeyCode::Enter);
+    t.drain();
+    assert_eq!(t.app.stashes[0].message, "gitty: stash on main");
 }

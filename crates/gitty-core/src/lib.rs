@@ -1,6 +1,7 @@
 //! gitty-core: the read/write engine behind gitty. The only crate that talks to gix.
 
 pub mod ahead_behind;
+pub mod branch;
 pub mod commit_files;
 pub mod compare;
 pub mod diff;
@@ -14,6 +15,7 @@ pub mod refs;
 pub mod repo;
 pub mod search;
 pub mod stage;
+pub mod stash;
 pub mod status;
 pub mod tune;
 pub mod types;

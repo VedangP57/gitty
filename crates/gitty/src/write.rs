@@ -305,6 +305,45 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             return Ok(Some(String::from_utf8_lossy(&head).trim().to_string()));
         }
         WriteOp::UndoCommit { expect } => return Ok(Some(cli.undo_commit(expect)?)),
+        WriteOp::SwitchBranch { name, remote: false } => cli.switch_branch(name)?,
+        WriteOp::SwitchBranch { name, remote: true } => cli.switch_tracking(name)?,
+        WriteOp::CreateBranch { name } => cli.create_branch(name, None)?,
+        WriteOp::RenameBranch { old, new } => cli.rename_branch(old, new)?,
+        WriteOp::DeleteBranch { name, force } => cli.delete_branch(name, *force)?,
+        WriteOp::StashPush { message } => {
+            if !cli.stash_push(message)? {
+                return Ok(Some("Nothing to stash".into()));
+            }
+        }
+        WriteOp::StashApply { index, expect } | WriteOp::StashPop { index, expect } | WriteOp::StashDrop { index, expect } => {
+            if cli.stash_id_at(*index).as_deref() != Some(expect.as_str()) {
+                bail!("the stash list changed; reopen it");
+            }
+            match op {
+                WriteOp::StashApply { .. } => cli.stash_apply(*index)?,
+                WriteOp::StashPop { .. } => cli.stash_pop(*index)?,
+                _ => cli.stash_drop(*index)?,
+            }
+        }
+        WriteOp::StashAndSwitch { name, remote, message } => {
+            let (head, branch) = (cli.head_id(), cli.current_branch());
+            let stashed = cli.stash_push(message)?;
+            let switched = if *remote { cli.switch_tracking(name) } else { cli.switch_branch(name) };
+            if let Err(e) = switched {
+                if stashed {
+                    // git can fail after switching (a failing post-checkout hook); popping then would put the work on the wrong branch
+                    if cli.head_id() != head || cli.current_branch() != branch {
+                        bail!("the branch was switched but git reported a failure: {e:#}; your changes are in the stash (stash@{{0}})");
+                    }
+                    let back = match cli.stash_pop_index(0).or_else(|_| cli.stash_pop(0)) {
+                        Ok(()) => "your changes were put back".to_string(),
+                        Err(p) => format!("putting your changes back failed ({p:#}); they are still in the stash (stash@{{0}})"),
+                    };
+                    bail!("{e:#}; {back}");
+                }
+                return Err(e);
+            }
+        }
         WriteOp::Seq(ops) => {
             let mut note = None;
             for op in ops {
