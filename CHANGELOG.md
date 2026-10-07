@@ -33,6 +33,7 @@ All notable changes to gitty are listed here. The format follows
 
 - In compare mode the footer labels `b` "other branch" (it picks another branch to compare with) instead of "branch".
 - The footer no longer shows the hints of the pane underneath while a picker, prompt or confirmation is open.
+- Outside a repository gitty prints `gitty: <dir> is not a git repository`, without the internal source path.
 
 ## [0.1.2] - 2026-10-05
 
