@@ -104,6 +104,7 @@ impl App {
             Action::Pull => self.start_net(crate::msg::NetOp::Pull),
             Action::Push => self.start_net(crate::msg::NetOp::Push),
             Action::Cancel => self.cancel_net(),
+            Action::OpenPr => self.open_pr(),
             Action::Difftool => self.open_difftool(),
             Action::Theme => self.open_theme_picker(),
             Action::Branches => self.open_switcher(),

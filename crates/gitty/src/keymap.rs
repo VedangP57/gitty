@@ -78,6 +78,7 @@ actions! {
     Push "push" Global ["P"] "push",
     Cancel "cancel" Global ["x"] "cancel the running fetch, pull or push",
     Difftool "difftool" Global ["O"] "open the diff in the difftool",
+    OpenPr "open_pr" Global ["R"] "open the branch's pull request in the browser",
     Theme "theme" Global ["T"] "theme picker",
     Branches "branches" Global ["B"] "branches: switch, create, rename, delete",
     Stashes "stashes" Global ["S"] "stashes: apply, pop, drop",

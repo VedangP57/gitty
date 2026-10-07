@@ -289,6 +289,8 @@ pub struct App {
     pub compare: Option<compare::CompareMode>,
     /// A tool for the main loop to run with the terminal handed over.
     pub external: Option<crate::external::External>,
+    /// A page for the main loop to open in the browser.
+    pub open_url: Option<String>,
     /// The working tree, for opening files in the editor (set by the main loop).
     pub workdir: Option<PathBuf>,
     last_click: Option<(Instant, u16, u16)>,
@@ -399,6 +401,7 @@ impl App {
             search: Default::default(),
             compare: None,
             external: None,
+            open_url: None,
             workdir: None,
             last_click: None,
             compare_gen: 0,
@@ -690,6 +693,10 @@ impl App {
                     self.hl_cache.insert(key, spans);
                 }
             }
+            Msg::PrUrl { result } => match result {
+                Ok(url) => self.open_url = Some(url),
+                Err(what) => self.toast = Some(Toast { what, detail: String::new(), error: true }),
+            },
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg

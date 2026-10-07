@@ -3416,3 +3416,66 @@ fn n_in_the_stash_list_asks_for_a_message_then_stashes() {
     assert_eq!(t.app.stashes[0].message, "from the list");
     assert_eq!(f.git(&["stash", "list"]).lines().count(), 1);
 }
+
+fn pr_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "feat/x"]);
+    f
+}
+
+/// `R` on `f`, the toast it ends in and the page it asked to open.
+fn press_r(f: &Fixture) -> (String, Option<String>) {
+    let mut t = H::new(f);
+    t.pump();
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('R');
+    t.drain();
+    (toast_text(&t), t.app.open_url.clone())
+}
+
+#[test]
+fn r_on_a_detached_head_says_there_is_no_branch() {
+    let f = pr_fixture();
+    f.git(&["checkout", "-q", "--detach"]);
+    let (toast, url) = press_r(&f);
+    assert!(toast.starts_with("No branch checked out."), "{toast}");
+    assert_eq!(url, None);
+}
+
+#[test]
+fn r_without_a_remote_says_so() {
+    let (toast, url) = press_r(&pr_fixture());
+    assert!(toast.starts_with("No remote to open"), "{toast}");
+    assert_eq!(url, None);
+}
+
+#[test]
+fn r_on_an_unpushed_branch_asks_for_a_push() {
+    let f = pr_fixture();
+    f.git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+    let (toast, url) = press_r(&f);
+    assert!(toast.starts_with("Push the branch first (P)"), "{toast}");
+    assert_eq!(url, None);
+}
+
+#[test]
+fn r_on_a_non_github_remote_says_so() {
+    let f = pr_fixture();
+    f.git(&["remote", "add", "origin", "git@gitlab.com:o/r.git"]);
+    f.git(&["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
+    let (toast, url) = press_r(&f);
+    assert!(toast.starts_with("Only GitHub remotes are supported"), "{toast}");
+    assert_eq!(url, None);
+}
+
+#[test]
+fn r_on_a_pushed_branch_asks_to_open_its_pull_request_page() {
+    let f = pr_fixture();
+    f.git(&["remote", "add", "origin", "git@github.com:o/r.git"]);
+    f.git(&["update-ref", "refs/remotes/origin/feat/x", "HEAD"]);
+    let (toast, url) = press_r(&f);
+    assert_eq!(url.as_deref(), Some("https://github.com/o/r/pull/new/feat/x"), "{toast}");
+}
