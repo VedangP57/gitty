@@ -3148,13 +3148,38 @@ fn a_failed_stash_and_switch_puts_the_work_back() {
     let mut t = H::new(&f);
     t.pump();
     f.write("a.txt", "edited\n");
+    f.git(&["add", "a.txt"]);
+    f.write("m.txt", "unstaged\n");
     t.app.write(WriteOp::StashAndSwitch { name: "no-such-branch".into(), remote: false, message: "m".into() });
     t.pump();
     let toast = t.app.toast.as_ref().expect("an error");
     assert!(toast.error && toast.detail.contains("put back"), "{toast:?}");
     assert_eq!(current_branch(&f), "main");
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "nothing lost");
+    assert_eq!(f.git(&["status", "--porcelain", "a.txt"]), "M  a.txt", "staged stays staged");
+    assert_eq!(f.git(&["diff", "--name-only"]), "m.txt", "unstaged stays unstaged");
+    assert!(f.git(&["stash", "list"]).is_empty());
     assert!(t.app.stashes.is_empty());
+}
+
+#[test]
+fn a_switch_that_fails_after_moving_head_keeps_the_stash() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = branch_fixture();
+    let hook = f.path().join(".git/hooks/post-checkout");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nexit 2\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.write(WriteOp::StashAndSwitch { name: "topic".into(), remote: false, message: "m".into() });
+    t.pump();
+    assert_eq!(current_branch(&f), "topic", "the switch happened");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 1, "the stash is kept");
+    assert_eq!(f.git(&["status", "--porcelain"]), "", "the work was not applied here");
+    let toast = t.app.toast.as_ref().expect("an error");
+    assert!(toast.error && toast.detail.contains("stash@{0}") && !toast.detail.contains("put back"), "{toast:?}");
 }
 
 #[test]

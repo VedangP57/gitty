@@ -319,11 +319,19 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         WriteOp::StashPop { index } => cli.stash_pop(*index)?,
         WriteOp::StashDrop { index } => cli.stash_drop(*index)?,
         WriteOp::StashAndSwitch { name, remote, message } => {
+            let (head, branch) = (cli.head_id(), cli.current_branch());
             let stashed = cli.stash_push(message)?;
             let switched = if *remote { cli.switch_tracking(name) } else { cli.switch_branch(name) };
             if let Err(e) = switched {
                 if stashed {
-                    let back = if cli.stash_pop(0).is_ok() { "your changes were put back" } else { "your changes are still in the stash (stash@{0})" };
+                    // git can fail after switching (a failing post-checkout hook); popping then would put the work on the wrong branch
+                    if cli.head_id() != head || cli.current_branch() != branch {
+                        bail!("the branch was switched but git reported a failure: {e:#}; your changes are in the stash (stash@{{0}})");
+                    }
+                    let back = match cli.stash_pop_index(0).or_else(|_| cli.stash_pop(0)) {
+                        Ok(()) => "your changes were put back".to_string(),
+                        Err(p) => format!("putting your changes back failed ({p:#}); they are still in the stash (stash@{{0}})"),
+                    };
                     bail!("{e:#}; {back}");
                 }
                 return Err(e);

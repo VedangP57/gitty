@@ -19,6 +19,12 @@ impl GitCli {
         (!s.is_empty()).then_some(s)
     }
 
+    /// The commit HEAD points at, or None in a repository without commits.
+    pub fn head_id(&self) -> Option<String> {
+        let out = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", "HEAD"], None).ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
     /// `name` is a legal branch name that cannot be taken for an option or for `@{-1}`.
     pub fn check_branch_name(&self, name: &str) -> anyhow::Result<()> {
         if name.is_empty() || name.starts_with('-') || name.contains("@{") || self.quiet(Kind::Read, &["check-ref-format", "--branch", name], None).is_err() {

@@ -113,3 +113,36 @@ fn push_reports_true_only_when_the_stash_ref_moved() {
     assert!(!c.stash_push("clean again").unwrap());
     assert_eq!(c.stash_list().unwrap().len(), 2);
 }
+
+#[test]
+fn stash_id_at_matches_the_list_and_is_none_when_missing() {
+    let f = base();
+    let c = cli(&f);
+    f.write("a.txt", "one\n");
+    c.stash_push("first").unwrap();
+    f.write("a.txt", "two\n");
+    c.stash_push("second").unwrap();
+    let list = c.stash_list().unwrap();
+    for s in &list {
+        assert_eq!(c.stash_id_at(s.index).as_deref(), Some(s.id.as_str()));
+    }
+    assert_ne!(list[0].id, list[1].id);
+    assert_eq!(c.stash_id_at(2), None);
+}
+
+#[test]
+fn pop_index_keeps_staged_and_unstaged_apart_and_head_id_names_head() {
+    let f = base();
+    let c = cli(&f);
+    f.write("b.txt", "b\n");
+    f.commit("second", 1_700_000_050);
+    assert_eq!(c.head_id().unwrap(), f.git(&["rev-parse", "HEAD"]).trim());
+    f.write("a.txt", "edited\n");
+    f.git(&["add", "a.txt"]);
+    f.write("b.txt", "edited\n");
+    assert!(c.stash_push("both").unwrap());
+    c.stash_pop_index(0).unwrap();
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "a.txt");
+    assert_eq!(f.git(&["diff", "--name-only"]), "b.txt");
+    assert!(c.stash_list().unwrap().is_empty());
+}

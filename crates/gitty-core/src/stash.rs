@@ -11,28 +11,31 @@ pub struct StashEntry {
     /// The branch it was made on.
     pub branch: String,
     pub message: String,
+    /// The stash commit; lets a caller check that `stash@{index}` is still the one it saw.
+    pub id: String,
 }
 
-/// `git stash list --format=%gd%x1f%gs`: one `stash@{n}` and one subject per line, which reads
+/// `git stash list --format=%gd%x1f%H%x1f%gs`: one `stash@{n}`, id and subject per line, the subject reading
 /// `On <branch>: <message>` or `WIP on <branch>: <hash> <subject>`.
 pub fn parse_list(out: &str) -> Vec<StashEntry> {
     out.lines()
         .filter_map(|l| {
-            let (gd, gs) = l.split_once('\x1f')?;
+            let (gd, rest) = l.split_once('\x1f')?;
+            let (id, gs) = rest.split_once('\x1f')?;
             let index = gd.strip_prefix("stash@{")?.strip_suffix('}')?.parse().ok()?;
             let (branch, message) = gs
                 .strip_prefix("WIP on ")
                 .or_else(|| gs.strip_prefix("On "))
                 .and_then(|rest| rest.split_once(": "))
                 .map_or((String::new(), gs.to_string()), |(b, m)| (b.to_string(), m.to_string()));
-            Some(StashEntry { index, branch, message })
+            Some(StashEntry { index, branch, message, id: id.to_string() })
         })
         .collect()
 }
 
 impl GitCli {
     pub fn stash_list(&self) -> anyhow::Result<Vec<StashEntry>> {
-        let out = self.quiet(Kind::Read, &["stash", "list", "--format=%gd%x1f%gs"], None)?;
+        let out = self.quiet(Kind::Read, &["stash", "list", "--format=%gd%x1f%H%x1f%gs"], None)?;
         Ok(parse_list(&String::from_utf8_lossy(&out)))
     }
 
@@ -50,6 +53,12 @@ impl GitCli {
         Some(String::from_utf8_lossy(&out).trim().to_string())
     }
 
+    /// The commit `stash@{index}` points at, or None when there is no such entry.
+    pub fn stash_id_at(&self, index: usize) -> Option<String> {
+        let out = self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", &format!("stash@{{{index}}}")], None).ok()?;
+        Some(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
     /// Applies `stash@{index}`, keeping the entry. Conflicts leave their markers and the entry.
     pub fn stash_apply(&self, index: usize) -> anyhow::Result<()> {
         self.stash_verb("apply", index)
@@ -58,6 +67,12 @@ impl GitCli {
     /// Applies and drops `stash@{index}`; when it stops on conflicts the entry is kept.
     pub fn stash_pop(&self, index: usize) -> anyhow::Result<()> {
         self.stash_verb("pop", index)
+    }
+
+    /// Pops `stash@{index}` restoring the staged state too (`--index`); refuses when that cannot be
+    /// done, leaving the entry.
+    pub fn stash_pop_index(&self, index: usize) -> anyhow::Result<()> {
+        self.quiet(Kind::Write, &["stash", "pop", "--index", "-q", &format!("stash@{{{index}}}")], None).map(|_| ())
     }
 
     pub fn stash_drop(&self, index: usize) -> anyhow::Result<()> {
@@ -78,13 +93,13 @@ mod tests {
 
     #[test]
     fn parses_both_subject_shapes() {
-        let out = "stash@{0}\x1fOn main: wip parser\nstash@{1}\x1fWIP on topic: 1a2b3c4 some subject\nstash@{2}\x1ffix: thing\nnoise\n";
+        let out = "stash@{0}\x1faaa\x1fOn main: wip parser\nstash@{1}\x1fbbb\x1fWIP on topic: 1a2b3c4 some subject\nstash@{2}\x1fccc\x1ffix: thing\nnoise\n";
         assert_eq!(
             parse_list(out),
             [
-                StashEntry { index: 0, branch: "main".into(), message: "wip parser".into() },
-                StashEntry { index: 1, branch: "topic".into(), message: "1a2b3c4 some subject".into() },
-                StashEntry { index: 2, branch: String::new(), message: "fix: thing".into() },
+                StashEntry { index: 0, branch: "main".into(), message: "wip parser".into(), id: "aaa".into() },
+                StashEntry { index: 1, branch: "topic".into(), message: "1a2b3c4 some subject".into(), id: "bbb".into() },
+                StashEntry { index: 2, branch: String::new(), message: "fix: thing".into(), id: "ccc".into() },
             ]
         );
     }
