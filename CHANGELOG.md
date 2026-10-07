@@ -18,7 +18,8 @@ All notable changes to gitty are listed here. The format follows
   (untracked files included) under `gitty: auto-stash from <branch>`, and put back if the switch
   fails. gitty never re-applies a stash by itself.
 - `R` opens the current branch's pull-request page (GitHub only) in the browser (the branch must be
-  pushed first).
+  pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
+  new-pull-request page.
 
 ## [0.1.2] - 2026-10-05
 

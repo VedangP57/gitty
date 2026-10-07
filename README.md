@@ -129,7 +129,7 @@ reported at startup:
 | `P` | push | `push` |
 | `x` | cancel the running fetch, pull or push | `cancel` |
 | `O` | open the diff in the difftool | `difftool` |
-| `R` | open the branch's pull request in the browser | `open_pr` |
+| `R` | open the branch's open pull request in the browser (needs the `gh` CLI; otherwise the new-PR page) | `open_pr` |
 | `T` | theme picker | `theme` |
 | `B` | branches: switch, create, rename, delete | `branches` |
 | `S` | stashes: apply, pop, drop | `stashes` |

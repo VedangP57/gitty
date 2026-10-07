@@ -2,6 +2,9 @@
 
 use crate::git_cli::{GitCli, Kind};
 use crate::net::push_target;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ForgeError {
@@ -100,8 +103,49 @@ impl GitCli {
             return Err(ForgeError::NotPushed.into());
         }
         let out = self.quiet(Kind::Read, &["remote", "get-url", "--push", "--", &remote], None)?;
-        Ok(github_pr_url(String::from_utf8_lossy(&out).trim(), name)?)
+        let compare = github_pr_url(String::from_utf8_lossy(&out).trim(), name)?;
+        Ok(open_pr_url("gh", &compare, name).unwrap_or(compare))
     }
+}
+
+/// The page of the open pull request for `branch`, asked of the `gh` CLI. `compare` is the
+/// `/pull/new/` URL, which names the repository. `None` on any trouble: gh missing, not logged
+/// in, no open PR, an odd answer or no answer within a few seconds.
+fn open_pr_url(program: &str, compare: &str, branch: &str) -> Option<String> {
+    let (repo, _) = compare.strip_prefix("https://github.com/")?.split_once("/pull/new/")?;
+    let mut child = Command::new(program)
+        .args(["pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    let mut out = String::new();
+    child.stdout.take()?.take(4096).read_to_string(&mut out).ok()?;
+    pick_pr_url(&out, repo)
+}
+
+/// `gh`'s output if it is exactly one line holding `https://github.com/{repo}/pull/{number}`.
+fn pick_pr_url(output: &str, repo: &str) -> Option<String> {
+    let line = output.strip_suffix('\n').unwrap_or(output);
+    let number = line.strip_prefix("https://github.com/")?.strip_prefix(repo)?.strip_prefix("/pull/")?;
+    (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then(|| line.to_string())
 }
 
 #[cfg(test)]
@@ -110,6 +154,34 @@ mod tests {
 
     fn ok(url: &str, branch: &str) -> String {
         github_pr_url(url, branch).unwrap()
+    }
+
+    #[test]
+    fn picks_only_a_plain_pr_url() {
+        let pick = |o: &str| pick_pr_url(o, "o/r");
+        assert_eq!(pick("https://github.com/o/r/pull/12\n").as_deref(), Some("https://github.com/o/r/pull/12"));
+        assert_eq!(pick("https://github.com/o/r/pull/12").as_deref(), Some("https://github.com/o/r/pull/12"));
+        for bad in [
+            "",
+            "\n",
+            "https://example.com/o/r/pull/12\n",
+            "https://github.com/o/other/pull/12\n",
+            "https://github.com/o/r2/pull/12\n",
+            "https://github.com/o/r/pull/12\nhttps://github.com/o/r/pull/13\n",
+            "https://github.com/o/r/pull/12\n\n",
+            "https://github.com/o/r/pull/\n",
+            "https://github.com/o/r/pull/1a\n",
+            "https://github.com/o/r/pull/12/files\n",
+            "https://github.com/o/r/pull/new/x\n",
+            "null\n",
+        ] {
+            assert_eq!(pick(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn missing_gh_falls_back() {
+        assert_eq!(open_pr_url("gitty-no-such-gh", "https://github.com/o/r/pull/new/b", "b"), None);
     }
 
     const BASE: &str = "https://github.com/owner/repo/pull/new/";
