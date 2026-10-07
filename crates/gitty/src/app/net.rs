@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent};
-use gitty_core::net::{Cancel, Mode, Outcome};
+use gitty_core::net::{Cancel, ForcePush, Mode, Outcome};
 use gitty_core::tune::Action;
 
 use super::{App, Overlay, Toast};
@@ -46,6 +46,8 @@ impl App {
             return;
         }
         let label = match op {
+            // started with a plan, by start_force_push
+            NetOp::ForcePush => return,
             NetOp::Fetch => "Fetching",
             NetOp::Pull => "Pulling",
             NetOp::PullMerge => "Merging",
@@ -55,7 +57,21 @@ impl App {
         self.net = Some(NetJob { op, label: label.into(), fraction: None, cancel: None, background: false, remote: None });
         self.prompt_cancelled = false;
         let mode = self.net_mode(false);
-        self.outbox.push(Request::Net { op, mode, background: false });
+        self.outbox.push(Request::Net { op, mode, background: false, force: None });
+    }
+
+    /// Enter on the force-push question: `plan` was captured when the rejection came.
+    pub(super) fn start_force_push(&mut self, plan: ForcePush) {
+        if self.net.is_some() {
+            // an auto-fetch started meanwhile: the question stays
+            self.overlay = Some(Overlay::ForcePush { plan });
+            self.toast = Some(Toast { what: "Fetch in progress, try again in a moment".into(), detail: String::new(), error: false });
+            return;
+        }
+        self.net = Some(NetJob { op: NetOp::ForcePush, label: "Force pushing".into(), fraction: None, cancel: None, background: false, remote: None });
+        self.prompt_cancelled = false;
+        let mode = self.net_mode(false);
+        self.outbox.push(Request::Net { op: NetOp::ForcePush, mode, background: false, force: Some(plan) });
     }
 
     /// `q`: with a job running in the foreground, ask first; a background fetch is just cancelled.
@@ -123,6 +139,7 @@ impl App {
                 }
             }
             Msg::NetDone { op, background, outcome } => self.net_done(op, background, outcome),
+            Msg::ForceOffer(result) => self.force_offer(result),
             Msg::Tuned { applied, error } => self.tuned(applied, error),
             Msg::Ask(a) => {
                 self.asks.push_back(a);
@@ -159,7 +176,7 @@ impl App {
             self.needs_auth = None;
             self.bg_failure = None;
         }
-        if ok && op != NetOp::Push {
+        if ok && !matches!(op, NetOp::Push | NetOp::ForcePush) {
             if op != NetOp::Fetch {
                 // HEAD moved: check now, not at the next 10-minute slot
                 self.last_tune = None;
@@ -180,6 +197,7 @@ impl App {
                     NetOp::Fetch => label.replacen("Fetching", "Fetched", 1),
                     NetOp::Pull | NetOp::PullMerge | NetOp::PullRebase => "Pulled".to_string(),
                     NetOp::Push => label.replacen("Pushing", "Pushed", 1),
+                    NetOp::ForcePush => label.replacen("Force pushing", "Force pushed", 1),
                 };
                 toast(what, summary, false)
             }
@@ -194,9 +212,15 @@ impl App {
                 None
             }
             Outcome::Rejected { refs, detail } => {
+                let stale = op == NetOp::ForcePush && refs.iter().any(|r| r.is_stale());
                 let lines = refs.iter().filter(|r| r.flag == '!').map(|r| format!("{} → {}: {}", r.local, r.remote, r.summary)).collect::<Vec<_>>().join("\n");
                 let detail = format!("{lines}\n{detail}").trim().to_string();
-                if refs.iter().any(|r| r.needs_pull()) {
+                let fetch = self.keymap.keys_of(crate::keymap::Action::Fetch).first().map_or_else(|| "f".to_string(), crate::keymap::Key::label);
+                if stale {
+                    toast(format!("The remote has new commits you haven't seen. Fetch first ({fetch}) and look at them."), detail, true)
+                } else if refs.iter().any(|r| r.is_fetch_first()) {
+                    toast(format!("The remote has new commits. Fetch first ({fetch})"), detail, true)
+                } else if refs.iter().any(|r| r.needs_pull()) {
                     toast("Push rejected: the remote has commits you don't have; pull first (p)".into(), detail, true)
                 } else {
                     // "[remote rejected] (pre-receive hook declined)" → "pre-receive hook declined"
@@ -221,6 +245,23 @@ impl App {
                 toast(what, detail, true)
             }
         };
+    }
+
+    /// The push was rejected because the remote moved on: ask whether to force push with a lease,
+    /// or say why not. The rejection's toast stays (under the question, or with the reason added).
+    fn force_offer(&mut self, result: Result<ForcePush, String>) {
+        match result {
+            Ok(plan) if self.overlay.is_none() => self.overlay = Some(Overlay::ForcePush { plan }),
+            Ok(_) => {
+                let push = self.keymap.keys_of(crate::keymap::Action::Push).first().map_or_else(|| "P".to_string(), crate::keymap::Key::label);
+                self.toast = Some(Toast { what: format!("Push was rejected; press {push} to see the force push option"), detail: String::new(), error: true });
+            }
+            Err(notice) => {
+                if let Some(t) = self.toast.as_mut() {
+                    t.what = format!("{} · {notice}", t.what);
+                }
+            }
+        }
     }
 
     /// Background (auto-fetch) results are quiet: credentials it cannot supply turn it off,
@@ -248,7 +289,7 @@ impl App {
         if self.auto_fetch_deadline().is_some_and(|d| d <= at) {
             self.last_fetch = at;
             self.net = Some(NetJob { op: NetOp::Fetch, label: "Fetching".into(), fraction: None, cancel: None, background: true, remote: None });
-            self.outbox.push(Request::Net { op: NetOp::Fetch, mode: Mode::Background, background: true });
+            self.outbox.push(Request::Net { op: NetOp::Fetch, mode: Mode::Background, background: true, force: None });
         }
     }
 

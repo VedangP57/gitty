@@ -222,7 +222,7 @@ pub enum Request {
     /// The state of `branch`'s newest pull request, for the top bar.
     PrBadge { branch: String },
     /// A network job, on the single network thread. `background` jobs (auto-fetch) report quietly.
-    Net { op: NetOp, mode: gitty_core::net::Mode, background: bool },
+    Net { op: NetOp, mode: gitty_core::net::Mode, background: bool, force: Option<gitty_core::net::ForcePush> },
     /// Auto-tuning check (and apply) on the maintenance thread.
     Tune { history_len: usize, th: gitty_core::tune::Thresholds },
 }
@@ -237,6 +237,8 @@ pub enum NetOp {
     PullMerge,
     PullRebase,
     Push,
+    /// Run a confirmed [`gitty_core::net::ForcePush`] (carried by the request).
+    ForcePush,
 }
 
 impl NetOp {
@@ -246,7 +248,7 @@ impl NetOp {
             NetOp::Pull => "Pull",
             NetOp::PullMerge => "Merge",
             NetOp::PullRebase => "Rebase",
-            NetOp::Push => "Push",
+            NetOp::Push | NetOp::ForcePush => "Push",
         }
     }
 }
@@ -298,6 +300,9 @@ pub enum Msg {
     NetStarted { op: NetOp, label: String, remote: Option<String>, cancel: Option<gitty_core::net::Cancel> },
     NetProgress { op: NetOp, fraction: f32 },
     NetDone { op: NetOp, background: bool, outcome: gitty_core::net::Outcome },
+    /// After a push rejected because the remote moved on: what a force push with lease would be,
+    /// or why gitty will not offer it.
+    ForceOffer(Result<gitty_core::net::ForcePush, String>),
     /// git or ssh asks for a username, password, passphrase or yes/no through the trampoline.
     Ask(crate::askpass::Ask),
     /// What auto-tuning applied (empty when nothing was needed).
@@ -352,6 +357,7 @@ impl std::fmt::Debug for Msg {
             Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
             Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
             Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),
+            Msg::ForceOffer(result) => write!(f, "ForceOffer {{ {:?} }}", result.as_ref().map(|p| (&p.branch, &p.expected))),
             Msg::Tuned { applied, error } => write!(f, "Tuned {{ {applied:?}, error: {} }}", error.is_some()),
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),

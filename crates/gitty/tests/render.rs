@@ -1630,3 +1630,52 @@ fn dirty_switch_prompt_is_not_cut_off_with_a_long_branch_name() {
         assert!(s.contains("stash and switch"), "{w}x{h}\n{s}");
     }
 }
+
+fn force_question_at(removal: Option<gitty_core::net::Removal>, size: (u16, u16)) -> String {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", size);
+    let target = gitty_core::net::PushTarget { remote: "origin".into(), refspec: "refs/heads/feat:refs/heads/topic".into(), set_upstream: false };
+    let plan = gitty_core::net::ForcePush { branch: "feat".into(), target, expected: "a".repeat(40), tip: "b".repeat(40), removal };
+    t.app.overlay = Some(gitty::app::Overlay::ForcePush { plan });
+    text(&t.render(size.0, size.1))
+}
+
+fn removal(total: usize, others: usize, top: &[&str]) -> Option<gitty_core::net::Removal> {
+    Some(gitty_core::net::Removal { total, others, top: top.iter().map(|s| s.to_string()).collect() })
+}
+
+#[test]
+fn the_force_push_question_for_a_plain_amend() {
+    let s = force_question_at(removal(1, 0, &[]), (80, 24));
+    assert!(s.contains("Force push `feat` with lease?"), "{s}");
+    assert!(s.contains("It replaces your earlier version of this branch (1 commit)."), "{s}");
+    assert!(s.contains("If anyone pushes after this screen, git refuses instead."), "{s}");
+    assert!(s.contains("Enter force push · Esc cancel"), "{s}");
+    assert!(force_question_at(removal(0, 0, &[]), (80, 24)).contains("Nothing on the remote is lost."));
+}
+
+#[test]
+fn the_force_push_question_lists_what_the_remote_loses() {
+    let s = force_question_at(removal(6, 5, &["abc1234 Ann: one", "def5678 Bob: two", "0123456 Cy: three"]), (80, 24));
+    assert!(s.contains("origin/topic has 5 commits by others"), "the remote's name for the branch: {s}");
+    assert!(s.contains("they will be removed from"), "{s}");
+    assert!(s.contains("  abc1234 Ann: one") && s.contains("  0123456 Cy: three"), "{s}");
+    assert!(s.contains("…and 2 more"), "{s}");
+    assert!(s.contains("and 1 of your own earlier commit"), "{s}");
+    assert!(s.contains("Enter force push · Esc cancel"), "{s}");
+}
+
+#[test]
+fn the_force_push_question_warns_when_git_cannot_tell() {
+    let s = force_question_at(None, (80, 24));
+    assert!(s.contains("Could not tell which commits on origin/topic would be lost."), "{s}");
+    assert!(!s.contains("earlier version"), "{s}");
+    assert!(s.contains("Enter force push · Esc cancel"), "{s}");
+}
+
+#[test]
+fn a_short_terminal_cuts_the_force_push_text_not_the_keys() {
+    let s = force_question_at(removal(6, 5, &["abc1234 Ann: one", "def5678 Bob: two", "0123456 Cy: three"]), (80, 14));
+    assert!(s.contains("Force push `feat` with lease?"), "{s}");
+    assert!(s.contains("Enter force push · Esc cancel"), "{s}");
+}
