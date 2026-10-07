@@ -1438,6 +1438,32 @@ fn an_open_overlay_does_not_leave_the_pane_hints_in_the_footer() {
 }
 
 #[test]
+fn stash_prompts_say_untracked_files_are_included_and_count_a_big_pile() {
+    for (n, note) in [(1, "Stash includes untracked files"), (501, "Stash includes 502 untracked files: this can take a while")] {
+        let f = Fixture::new();
+        f.write("a.txt", "a\n");
+        f.commit("base", NOW - DAY);
+        f.git(&["branch", "topic"]);
+        f.write("a.txt", "edited\n");
+        for i in 0..n {
+            f.write(&format!("pile/f{i}.txt"), "x\n");
+        }
+        f.write("new.txt", "n\n");
+        let mut t = H::new(&f, "github-dark", (140, 30));
+        t.app.open_stash_name();
+        let s = text(&t.render(140, 30));
+        assert!(s.contains(note) && (n > 500) == s.contains("this can take a while"), "{n}\n{s}");
+        t.key(KeyCode::Esc);
+        for c in "Btopic".chars() {
+            t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = text(&t.render(140, 30));
+        assert!(s.contains("stash and switch") && s.contains(note), "{n}\n{s}");
+    }
+}
+
+#[test]
 fn stash_list_and_the_stash_choice_render() {
     let f = Fixture::new();
     f.write("a.txt", "a\n");

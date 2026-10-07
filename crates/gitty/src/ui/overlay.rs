@@ -7,6 +7,7 @@ use ratatui::style::{Modifier, Style};
 use super::paint::{fill, spans, text, text_right};
 use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
+use gitty_core::status::EntryKind;
 use crate::dates::{DateMode, format_date};
 use crate::keymap::Ctx;
 
@@ -44,6 +45,15 @@ pub fn help_lines(app: &App) -> Vec<(Option<String>, String)> {
     out.push((None, "Fixed".into()));
     out.extend(FIXED.iter().map(|(k, w)| (Some(k.to_string()), w.to_string())));
     out
+}
+
+/// What a stash says about the untracked files it takes (`stash push -u`): a big pile is slow.
+fn untracked_note(app: &App) -> String {
+    const BIG: usize = 500;
+    match app.changes.entries().iter().filter(|e| e.kind == EntryKind::Untracked).count() {
+        n if n > BIG => format!("Stash includes {n} untracked files: this can take a while"),
+        _ => "Stash includes untracked files".to_string(),
+    }
 }
 
 fn boxed(app: &App, buf: &mut Buffer, area: Rect, w: u16, h: u16, title: &str) -> Rect {
@@ -214,10 +224,13 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 crate::app::branches::NameKind::Rename { old } => format!("Rename {old}"),
                 crate::app::branches::NameKind::Stash => "Stash changes".to_string(),
             };
-            let inner = boxed(app, buf, area, 56, 6, &title);
+            let inner = boxed(app, buf, area, 64, 6, &title);
             let x = spans(buf, inner.x, inner.y, inner.right(), &[("> ", st.fg(ui.accent)), (input.text(), st)]);
             if x < inner.right() {
                 buf[(x, inner.y)].set_style(st.add_modifier(Modifier::REVERSED));
+            }
+            if matches!(kind, crate::app::branches::NameKind::Stash) && inner.height > 3 {
+                text(buf, inner.x, inner.y + 1, inner.right(), &untracked_note(app), st.fg(ui.muted));
             }
             if inner.height > 2 {
                 let hint = if matches!(kind, crate::app::branches::NameKind::Stash) { "Enter confirm (empty: default message) · Esc cancel" } else { "Enter confirm · Esc cancel" };
@@ -234,6 +247,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             text(buf, inner.x, inner.y, inner.right(), "You have uncommitted changes", st.fg(ui.warning).add_modifier(Modifier::BOLD));
             text(buf, inner.x, inner.y + 1, inner.right(), &doing, st.fg(ui.muted));
             text(buf, inner.x, inner.y + 2, inner.right(), how, st.fg(ui.muted));
+            text(buf, inner.x, inner.y + 3, inner.right(), &untracked_note(app), st.fg(ui.muted));
             if inner.height > 4 {
                 spans(buf, inner.x, inner.y + 4, inner.right(), &[("s", st.fg(ui.accent)), (&format!(" stash and {verb} · "), st), ("w", st.fg(ui.accent)), (&format!(" {verb} anyway · "), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }

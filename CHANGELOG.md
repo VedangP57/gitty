@@ -25,6 +25,10 @@ All notable changes to gitty are listed here. The format follows
   pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
   new-pull-request page.
 
+### Changed
+
+- The stash message prompt and the "stash and switch/merge" prompt say that untracked files are included, and how many when there are more than 500 (it can take a while).
+
 ### Fixed
 
 - In compare mode the footer labels `b` "other branch" (it picks another branch to compare with) instead of "branch".
