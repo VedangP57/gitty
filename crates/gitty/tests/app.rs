@@ -1686,7 +1686,7 @@ fn shift_p_publishes_a_new_branch() {
 }
 
 #[test]
-fn rejected_push_says_pull_first() {
+fn a_fetch_first_rejection_says_to_fetch_and_offers_no_force_push() {
     let (f, bare) = remote_fixture();
     common::push_as_someone_else(&bare, "b.txt");
     f.write("c.txt", "mine\n");
@@ -1696,7 +1696,8 @@ fn rejected_push_says_pull_first() {
     t.ch('P');
     t.pump();
     let toast = t.app.toast.clone().unwrap();
-    assert!(toast.error && toast.what.contains("pull first"), "{toast:?}");
+    assert!(toast.error && toast.what == "The remote has new commits. Fetch first (f)", "{toast:?}");
+    assert!(t.app.overlay.is_none());
 }
 
 #[test]
@@ -3789,4 +3790,180 @@ fn stash_and_merge_puts_the_changes_back_when_the_merge_hits_conflicts_or_fails(
     assert!(toast_text(&t).starts_with("Already up to date") && toast_text(&t).contains("put back"), "{}", toast_text(&t));
     assert_eq!(std::fs::read_to_string(f.path().join("m.txt")).unwrap(), "edited again\n");
     assert!(t.app.stashes.is_empty());
+}
+
+// ---- force push with lease ----
+
+/// `topic` is pushed, then its tip is amended: a normal push is rejected.
+fn amended_topic() -> (Fixture, std::path::PathBuf) {
+    let (f, bare) = remote_fixture();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    f.git(&["push", "-q", "-u", "origin", "topic"]);
+    f.write("t.txt", "t amended\n");
+    f.git_env(&["commit", "-q", "-a", "--amend", "-m", "topic amended"], &[("GIT_COMMITTER_DATE", "1700000200 +0000".into())]);
+    (f, bare)
+}
+
+fn remote_rev(bare: &std::path::Path, branch: &str) -> String {
+    let out = std::process::Command::new("git").arg("--git-dir").arg(bare).args(["rev-parse", branch]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Pushes `P` and runs it; the rejection arrives with the force-push question.
+fn push_rejected(t: &mut H) {
+    t.ch('P');
+    let reqs = net_requests(t);
+    run_net(t, reqs);
+}
+
+#[test]
+fn a_rejected_push_offers_a_force_push_with_lease() {
+    let (f, _bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::ForcePush { plan }) if plan.branch == "topic" && plan.expected == f.git(&["rev-parse", "origin/topic"])), "{}", toast_text(&t));
+    assert!(toast_text(&t).contains("pull first"), "the rejection stays under the question");
+}
+
+#[test]
+fn esc_cancels_the_force_push_and_runs_nothing() {
+    let (f, bare) = amended_topic();
+    let before = remote_rev(&bare, "topic");
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert!(net_requests(&mut t).is_empty());
+    assert_eq!(remote_rev(&bare, "topic"), before);
+}
+
+#[test]
+fn enter_force_pushes_with_the_lease() {
+    let (f, bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    assert!(matches!(reqs.as_slice(), [Request::Net { op: gitty::msg::NetOp::ForcePush, force: Some(_), .. }]), "{} requests", reqs.len());
+    run_net(&mut t, reqs);
+    assert_eq!(remote_rev(&bare, "topic"), f.git(&["rev-parse", "HEAD"]));
+    assert!(toast_text(&t).contains("Force pushed topic"), "{}", toast_text(&t));
+}
+
+#[test]
+fn a_force_push_the_lease_refuses_says_to_fetch_first() {
+    let (f, bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    // someone pushes after the question came up
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(tmp.path(), &["clone", "-q", "-b", "topic", bare.to_str().unwrap(), "o"]);
+    let o = tmp.path().join("o");
+    std::fs::write(o.join("theirs.txt"), "theirs\n").unwrap();
+    git(&o, &["add", "-A"]);
+    git(&o, &["-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-qm", "theirs"]);
+    git(&o, &["push", "-q", "origin", "topic"]);
+    let theirs = remote_rev(&bare, "topic");
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    let s = toast_text(&t);
+    assert!(s.contains("The remote has new commits you haven't seen. Fetch first (f) and look at them."), "{s}");
+    assert_eq!(remote_rev(&bare, "topic"), theirs);
+}
+
+#[test]
+fn main_is_never_offered_a_force_push() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "b.txt");
+    f.git(&["fetch", "-q"]);
+    f.write("c.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    assert!(t.app.overlay.is_none());
+    assert!(toast_text(&t).contains("Force pushing main is blocked in gitty"), "{}", toast_text(&t));
+}
+
+#[test]
+fn an_offer_that_finds_another_overlay_open_says_how_to_get_it_back() {
+    let (f, _bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('P');
+    let reqs = net_requests(&mut t);
+    t.app.overlay = Some(gitty::app::Overlay::Help { scroll: 0 });
+    run_net(&mut t, reqs);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })));
+    assert!(toast_text(&t).contains("press P to see the force push option"), "{}", toast_text(&t));
+}
+
+#[test]
+fn enter_during_an_auto_fetch_keeps_the_question() {
+    let (f, _bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    started(&mut t, gitty::msg::NetOp::Fetch, "Fetching", true);
+    t.key(KeyCode::Enter);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::ForcePush { .. })));
+    assert!(toast_text(&t).contains("Fetch in progress"), "{}", toast_text(&t));
+    assert!(net_requests(&mut t).is_empty());
+}
+
+#[test]
+fn a_switch_during_the_push_does_not_change_the_offer() {
+    let (f, _bare) = amended_topic();
+    f.git(&["branch", "other", "main"]);
+    // the push is running when the user switches branches
+    let hook = f.path().join(".git/hooks/pre-push");
+    std::fs::write(&hook, "#!/bin/sh\nunset GIT_DIR GIT_INDEX_FILE\ngit checkout -q other\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    assert_eq!(f.git(&["rev-parse", "--abbrev-ref", "HEAD"]), "other", "the hook switched");
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::ForcePush { plan }) if plan.branch == "topic"), "{}", toast_text(&t));
+}
+
+#[test]
+fn a_force_push_confirmed_after_the_branch_changed_is_not_run() {
+    let (f, bare) = amended_topic();
+    let before = remote_rev(&bare, "topic");
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    f.git(&["checkout", "-q", "main"]);
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert!(toast_text(&t).contains("HEAD is no longer on topic"), "{}", toast_text(&t));
+    assert_eq!(remote_rev(&bare, "topic"), before);
+}
+
+#[test]
+fn a_branch_that_moved_while_the_question_was_open_is_not_force_pushed() {
+    let (f, bare) = amended_topic();
+    let before = remote_rev(&bare, "topic");
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    f.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert!(toast_text(&t).contains("The branch changed since this screen: push again (P)"), "{}", toast_text(&t));
+    assert_eq!(remote_rev(&bare, "topic"), before);
 }

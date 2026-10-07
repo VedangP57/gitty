@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gitty_core::Handle;
 use gitty_core::git_cli::{GitCli, Kind};
-use gitty_core::net::{Job, Mode, NetCmd, Outcome, push_target, remote_of};
+use gitty_core::net::{ForcePush, Job, Mode, NetCmd, Outcome, force_push_plan, push_target, remote_of};
 
 use crate::msg::{Msg, NetOp};
 
@@ -22,6 +22,11 @@ fn has_upstream(cli: &GitCli, branch: &str) -> bool {
     cli.run(cli.cmd(Kind::Read, &["config", "--get", &format!("branch.{branch}.merge")]), None, &mut |_| {}).is_ok()
 }
 
+fn tip_of(cli: &GitCli, branch: &str) -> Option<String> {
+    let out = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, &mut |_| {}).ok()?;
+    Some(String::from_utf8_lossy(&out).trim().to_string())
+}
+
 fn failed(detail: impl Into<String>) -> Outcome {
     Outcome::Failed { detail: detail.into() }
 }
@@ -31,6 +36,7 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     let remote = match &cmd {
         NetCmd::Fetch { remote } => Some(remote.clone()),
         NetCmd::Push(t) => Some(t.remote.clone()),
+        NetCmd::ForcePush(f) => Some(f.target.remote.clone()),
         _ => None,
     };
     // fast-forward, merge and rebase write the index and worktree: never alongside the writer
@@ -51,39 +57,61 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     })
 }
 
-pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, sink: &mut dyn FnMut(Msg)) {
-    let outcome = outcome(h, op, &mode, sink);
-    sink(Msg::NetDone { op, background, outcome });
-}
-
-fn outcome(h: &Handle, op: NetOp, mode: &Mode, sink: &mut dyn FnMut(Msg)) -> Outcome {
+pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) {
+    // the branch the job was started on: a switch while it runs changes neither the push nor its offer
     let cli = GitCli::new(h.owner());
     let branch = current_branch(&cli);
-    let remote = || remote_of(&cli, branch.as_deref());
+    let outcome = outcome(&cli, branch.as_deref(), op, &mode, force, sink);
+    // The lease is read now, at the rejection: a fetch before the confirm must make the push
+    // stale, not move what it is checked against. A "fetch first" rejection means commits we
+    // do not have: look at them first.
+    let offer = match (&outcome, op, branch) {
+        (Outcome::Rejected { refs, .. }, NetOp::Push, Some(b)) if refs.iter().any(|r| r.needs_pull()) && !refs.iter().any(|r| r.is_fetch_first()) => {
+            Some(force_push_plan(&cli, &b).map_err(|e| format!("{e:#}")))
+        }
+        _ => None,
+    };
+    sink(Msg::NetDone { op, background, outcome });
+    if let Some(result) = offer {
+        sink(Msg::ForceOffer(result));
+    }
+}
+
+fn outcome(cli: &GitCli, branch: Option<&str>, op: NetOp, mode: &Mode, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) -> Outcome {
+    let remote = || remote_of(cli, branch);
     match op {
         NetOp::Fetch => match remote() {
-            Some(r) => step(&cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Fetching {r}"), true, mode, sink),
+            Some(r) => step(cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Fetching {r}"), true, mode, sink),
             None => failed("This repository has no remote to fetch from"),
         },
         NetOp::Pull => {
-            let Some(b) = branch.as_deref() else { return failed("HEAD is detached: check out a branch to pull") };
-            if !has_upstream(&cli, b) {
+            let Some(b) = branch else { return failed("HEAD is detached: check out a branch to pull") };
+            if !has_upstream(cli, b) {
                 return failed(format!("{b} has no upstream branch: push it first (P)"));
             }
             let Some(r) = remote() else { return failed("This repository has no remote to pull from") };
-            match step(&cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Pulling {r}"), true, mode, sink) {
-                Outcome::Ok { .. } => step(&cli, op, NetCmd::FfMerge, format!("Updating {b}"), false, mode, sink),
+            match step(cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Pulling {r}"), true, mode, sink) {
+                Outcome::Ok { .. } => step(cli, op, NetCmd::FfMerge, format!("Updating {b}"), false, mode, sink),
                 o => o,
             }
         }
-        NetOp::PullMerge => step(&cli, op, NetCmd::Merge, "Merging the upstream".into(), false, mode, sink),
-        NetOp::PullRebase => step(&cli, op, NetCmd::Rebase, "Rebasing onto the upstream".into(), false, mode, sink),
+        NetOp::PullMerge => step(cli, op, NetCmd::Merge, "Merging the upstream".into(), false, mode, sink),
+        NetOp::PullRebase => step(cli, op, NetCmd::Rebase, "Rebasing onto the upstream".into(), false, mode, sink),
+        NetOp::ForcePush => match force {
+            Some(f) if branch == Some(f.branch.as_str()) && tip_of(cli, &f.branch).as_deref() == Some(f.tip.as_str()) => {
+                let label = format!("Force pushing {} to {}", f.remote_branch(), f.target.remote);
+                step(cli, op, NetCmd::ForcePush(f), label, true, mode, sink)
+            }
+            Some(f) if branch != Some(f.branch.as_str()) => failed(format!("HEAD is no longer on {}: check it out and push again (P)", f.branch)),
+            Some(_) => failed("The branch changed since this screen: push again (P)"),
+            None => failed("There is nothing to force push"),
+        },
         NetOp::Push => {
-            let Some(b) = branch.as_deref() else { return failed("HEAD is detached: check out a branch to push") };
-            match push_target(&cli, b) {
+            let Some(b) = branch else { return failed("HEAD is detached: check out a branch to push") };
+            match push_target(cli, b) {
                 Ok(t) => {
                     let label = format!("Pushing {b} to {}", t.remote);
-                    step(&cli, op, NetCmd::Push(t), label, true, mode, sink)
+                    step(cli, op, NetCmd::Push(t), label, true, mode, sink)
                 }
                 Err(e) => failed(format!("{e:#}")),
             }

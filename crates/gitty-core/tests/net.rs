@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use common::Fixture;
 use gitty_core::Repo;
 use gitty_core::git_cli::GitCli;
-use gitty_core::net::{Job, Mode, NetCmd, Outcome, push_target, remote_of};
+use gitty_core::net::{Job, Mode, NetCmd, Outcome, force_push_plan, push_target, remote_of, removal};
 
 fn cli(f: &Fixture) -> GitCli {
     GitCli::new(&Repo::open(f.path()).unwrap())
@@ -248,4 +248,193 @@ fn a_hook_decline_is_not_a_pull_first_rejection() {
         Outcome::Rejected { refs, .. } => assert!(refs.iter().any(|r| r.needs_pull()), "{refs:?}"),
         o => panic!("{o:?}"),
     }
+}
+
+/// A pushed `topic` whose tip was then amended: the next normal push is rejected.
+fn amended_topic() -> (Fixture, std::path::PathBuf) {
+    let (f, bare) = base();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    let (out, _) = run(&f, NetCmd::Push(push_target(&cli(&f), "topic").unwrap()), Mode::Background);
+    assert!(matches!(out, Outcome::Ok { .. }), "{out:?}");
+    f.write("t.txt", "t amended\n");
+    f.git_env(&["commit", "-q", "-a", "--amend", "-m", "topic amended"], &[("GIT_COMMITTER_DATE", "1700000200 +0000".into())]);
+    (f, bare)
+}
+
+fn remote_head(bare: &std::path::Path, branch: &str) -> String {
+    let out = std::process::Command::new("git").arg("--git-dir").arg(bare).args(["rev-parse", branch]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Another person's clone commits on `topic` and pushes it.
+fn someone_else_pushes_topic(bare: &std::path::Path) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let o = tmp.path().join("o");
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(tmp.path(), &["clone", "-q", "-b", "topic", bare.to_str().unwrap(), "o"]);
+    std::fs::write(o.join("theirs.txt"), "theirs\n").unwrap();
+    git(&o, &["add", "-A"]);
+    git(&o, &["-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-qm", "theirs"]);
+    git(&o, &["push", "-q", "origin", "topic"]);
+    git(&o, &["rev-parse", "HEAD"])
+}
+
+#[test]
+fn force_with_lease_replaces_an_amended_commit() {
+    let (f, bare) = amended_topic();
+    let (out, _) = run(&f, NetCmd::Push(push_target(&cli(&f), "topic").unwrap()), Mode::Background);
+    match out {
+        Outcome::Rejected { refs, .. } => assert!(refs.iter().any(|r| r.needs_pull()), "{refs:?}"),
+        o => panic!("{o:?}"),
+    }
+    let plan = force_push_plan(&cli(&f), "topic").unwrap();
+    assert_eq!(plan.expected, f.git(&["rev-parse", "refs/remotes/origin/topic"]));
+    let (out, _) = run(&f, NetCmd::ForcePush(plan), Mode::Background);
+    assert!(matches!(out, Outcome::Ok { .. }), "{out:?}");
+    assert_eq!(remote_head(&bare, "topic"), f.git(&["rev-parse", "HEAD"]));
+}
+
+#[test]
+fn force_with_lease_refuses_when_the_remote_moved_after_the_last_fetch() {
+    let (f, bare) = amended_topic();
+    let plan = force_push_plan(&cli(&f), "topic").unwrap();
+    let theirs = someone_else_pushes_topic(&bare);
+    let (out, _) = run(&f, NetCmd::ForcePush(plan), Mode::Background);
+    match out {
+        Outcome::Rejected { refs, .. } => assert!(refs.iter().any(|r| r.is_stale()), "{refs:?}"),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(remote_head(&bare, "topic"), theirs);
+}
+
+#[test]
+fn a_fetch_between_the_rejection_and_the_confirm_cannot_unlock_unseen_commits() {
+    let (f, bare) = amended_topic();
+    let plan = force_push_plan(&cli(&f), "topic").unwrap();
+    let theirs = someone_else_pushes_topic(&bare);
+    // auto-fetch moves the tracking ref, which a bare --force-with-lease would trust
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    assert_eq!(f.git(&["rev-parse", "refs/remotes/origin/topic"]), theirs);
+    let (out, _) = run(&f, NetCmd::ForcePush(plan), Mode::Background);
+    match out {
+        Outcome::Rejected { refs, .. } => assert!(refs.iter().any(|r| r.is_stale()), "{refs:?}"),
+        o => panic!("{o:?}"),
+    }
+    assert_eq!(remote_head(&bare, "topic"), theirs);
+}
+
+#[test]
+fn force_push_is_blocked_for_main_master_and_the_default_branch() {
+    let (f, _bare) = amended_topic();
+    let blocked = |b: &str| force_push_plan(&cli(&f), b).unwrap_err().to_string();
+    assert_eq!(blocked("main"), "Force pushing main is blocked in gitty");
+    f.git(&["branch", "master"]);
+    assert_eq!(blocked("master"), "Force pushing master is blocked in gitty");
+    assert!(force_push_plan(&cli(&f), "topic").is_ok());
+    f.git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/topic"]);
+    assert_eq!(blocked("topic"), "Force pushing topic is blocked in gitty");
+}
+
+#[test]
+fn force_push_needs_a_remote_tracking_branch() {
+    let (f, _bare) = base();
+    f.git(&["checkout", "-q", "-b", "fresh"]);
+    f.write("x.txt", "x\n");
+    f.commit("fresh", 1_700_000_100);
+    let e = force_push_plan(&cli(&f), "fresh").unwrap_err().to_string();
+    assert!(e.contains("no remote-tracking branch"), "{e}");
+}
+
+#[test]
+fn the_plan_counts_what_the_push_removes_and_whose_it_was() {
+    let (f, bare) = amended_topic();
+    let r = force_push_plan(&cli(&f), "topic").unwrap().removal.unwrap();
+    assert_eq!((r.total, r.others, r.top.len()), (1, 0, 0), "an amend replaces only the user's own commit");
+    // a teammate's commit comes in with an auto-fetch
+    someone_else_pushes_topic(&bare);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    let r = force_push_plan(&cli(&f), "topic").unwrap().removal.unwrap();
+    assert_eq!((r.total, r.others), (2, 1));
+    assert!(r.top[0].contains("O: theirs"), "{:?}", r.top);
+}
+
+#[test]
+fn a_teammate_commit_you_once_pulled_is_still_theirs() {
+    let (f, bare) = base();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    run(&f, NetCmd::Push(push_target(&cli(&f), "topic").unwrap()), Mode::Background);
+    someone_else_pushes_topic(&bare);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    f.git(&["merge", "-q", "--ff-only", "origin/topic"]);
+    f.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    let r = force_push_plan(&cli(&f), "topic").unwrap().removal.unwrap();
+    assert_eq!((r.total, r.others), (1, 1), "in the reflog, but not the user's");
+    assert!(r.top[0].contains("O: theirs"), "{:?}", r.top);
+}
+
+#[test]
+fn a_removal_git_cannot_work_out_is_unknown_not_empty() {
+    let (f, _bare) = amended_topic();
+    assert_eq!(removal(&cli(&f), "topic", &"0".repeat(40)), None);
+}
+
+#[test]
+fn main_and_master_are_blocked_in_any_case() {
+    let (f, _bare) = amended_topic();
+    f.git(&["branch", "Master"]);
+    assert_eq!(force_push_plan(&cli(&f), "Master").unwrap_err().to_string(), "Force pushing Master is blocked in gitty");
+}
+
+#[test]
+fn the_lease_follows_a_differently_named_upstream() {
+    let (f, bare) = base();
+    f.git(&["checkout", "-q", "-b", "feat"]);
+    f.write("t.txt", "t\n");
+    f.commit("feat", 1_700_000_100);
+    f.git(&["push", "-q", "origin", "feat:refs/heads/other"]);
+    f.git(&["fetch", "-q", "origin"]);
+    f.git(&["branch", "-q", "--set-upstream-to=origin/other", "feat"]);
+    f.git(&["config", "push.default", "upstream"]);
+    f.git_env(&["commit", "-q", "-a", "--amend", "-m", "feat amended", "--allow-empty"], &[("GIT_COMMITTER_DATE", "1700000200 +0000".into())]);
+    let plan = force_push_plan(&cli(&f), "feat").unwrap();
+    assert_eq!((plan.remote_branch(), plan.branch.as_str()), ("other", "feat"));
+    assert_eq!(plan.expected, f.git(&["rev-parse", "refs/remotes/origin/other"]));
+    let (out, _) = run(&f, NetCmd::ForcePush(plan), Mode::Background);
+    assert!(matches!(out, Outcome::Ok { .. }), "{out:?}");
+    assert_eq!(remote_head(&bare, "other"), f.git(&["rev-parse", "HEAD"]));
+}
+
+#[test]
+fn the_lease_is_read_from_the_push_remote_not_the_upstream_remote() {
+    let (f, _bare) = amended_topic();
+    let fork = f.path().parent().unwrap().join("fork.git");
+    std::process::Command::new("git").args(["init", "-q", "--bare"]).arg(&fork).output().unwrap();
+    f.git(&["remote", "add", "fork", fork.to_str().unwrap()]);
+    f.git(&["config", "branch.topic.pushRemote", "fork"]);
+    let e = force_push_plan(&cli(&f), "topic").unwrap_err().to_string();
+    assert!(e.contains("no remote-tracking branch"), "origin/topic must not stand in for fork/topic: {e}");
+}
+
+#[test]
+fn a_pulled_commit_is_not_yours_even_under_a_shared_email() {
+    let (f, bare) = base();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    run(&f, NetCmd::Push(push_target(&cli(&f), "topic").unwrap()), Mode::Background);
+    someone_else_pushes_topic(&bare);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    f.git(&["merge", "-q", "--ff-only", "origin/topic"]);
+    f.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    f.git(&["config", "user.email", "o@example.com"]);
+    let r = force_push_plan(&cli(&f), "topic").unwrap().removal.unwrap();
+    assert_eq!((r.total, r.others), (1, 1), "{r:?}");
 }

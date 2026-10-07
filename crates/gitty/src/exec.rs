@@ -271,7 +271,7 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 sink(Msg::StaleIndexLock { seen });
             }
         }
-        Request::Net { op, mode, background } => crate::netjob::run(h, op, mode, background, sink),
+        Request::Net { op, mode, background, force } => crate::netjob::run(h, op, mode, background, force, sink),
         Request::Tune { history_len, th } => {
             let actions = gitty_core::tune::plan(h, history_len, th);
             let (applied, error) = match gitty_core::tune::apply(h, &actions) {

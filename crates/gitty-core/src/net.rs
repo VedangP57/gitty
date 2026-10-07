@@ -87,6 +87,40 @@ pub struct PushTarget {
     pub set_upstream: bool,
 }
 
+/// What a force push would take off the remote branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+    /// Every commit at `expected` that the local branch does not have.
+    pub total: usize,
+    /// Those that are not the user's own earlier work (not in the branch's reflog, or by someone
+    /// else): news to the user.
+    pub others: usize,
+    /// The newest few of `others`, as `<hash> <author>: <subject>`.
+    pub top: Vec<String>,
+}
+
+/// A force push guarded by a lease: the remote branch is replaced only while it is still at
+/// `expected`, the commit the user last saw there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForcePush {
+    /// The local branch the question was asked for.
+    pub branch: String,
+    pub target: PushTarget,
+    pub expected: String,
+    /// The local branch's commit when the question was asked; the push is refused if it moved.
+    pub tip: String,
+    /// None: git could not tell, and the user is told so.
+    pub removal: Option<Removal>,
+}
+
+impl ForcePush {
+    /// The branch name on the remote (`topic` in `refs/heads/feat:refs/heads/topic`).
+    pub fn remote_branch(&self) -> &str {
+        let to = self.target.refspec.rsplit_once(':').map_or(self.target.refspec.as_str(), |(_, to)| to);
+        to.strip_prefix("refs/heads/").unwrap_or(to)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetCmd {
     Fetch { remote: String },
@@ -95,6 +129,7 @@ pub enum NetCmd {
     Merge,
     Rebase,
     Push(PushTarget),
+    ForcePush(ForcePush),
 }
 
 impl NetCmd {
@@ -105,24 +140,38 @@ impl NetCmd {
             NetCmd::FfMerge => v(&["merge", "--ff-only", "@{u}"]),
             NetCmd::Merge => v(&["merge", "--no-edit", "@{u}"]),
             NetCmd::Rebase => v(&["rebase", "@{u}"]),
-            NetCmd::Push(t) => {
-                let mut a = v(&["push", "--progress", "--porcelain"]);
-                if t.set_upstream {
-                    a.push("-u".into());
-                }
-                a.push(t.remote.clone());
-                a.push(t.refspec.clone());
-                a
-            }
+            NetCmd::Push(t) => push_args(t, None),
+            NetCmd::ForcePush(f) => push_args(&f.target, Some(&f.expected)),
         }
+    }
+
+    fn is_push(&self) -> bool {
+        matches!(self, NetCmd::Push(_) | NetCmd::ForcePush(_))
     }
 
     fn weights(&self) -> Weights {
         match self {
-            NetCmd::Push(_) => Weights::PUSH,
+            NetCmd::Push(_) | NetCmd::ForcePush(_) => Weights::PUSH,
             _ => Weights::FETCH,
         }
     }
+}
+
+/// `git push`; with a lease, `--force-with-lease=<remote ref>:<expected>`. The expected value is
+/// always explicit: a bare lease compares against the remote-tracking ref, which a fetch
+/// (auto-fetch included) moves, and so would let the push overwrite commits nobody looked at.
+fn push_args(t: &PushTarget, expected: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = ["push", "--progress", "--porcelain"].map(String::from).into();
+    if let Some(e) = expected {
+        let to = t.refspec.rsplit_once(':').map_or(t.refspec.as_str(), |(_, to)| to);
+        a.push(format!("--force-with-lease={to}:{e}"));
+    }
+    if t.set_upstream {
+        a.push("-u".into());
+    }
+    a.push(t.remote.clone());
+    a.push(t.refspec.clone());
+    a
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +197,16 @@ impl PushRef {
     /// lease): pulling fixes it. Other rejections (hooks, protected branches) do not.
     pub fn needs_pull(&self) -> bool {
         self.flag == '!' && !self.summary.contains("remote rejected") && ["fetch first", "non-fast-forward", "stale info"].iter().any(|s| self.summary.contains(s))
+    }
+
+    /// The remote has commits whose objects we do not have: a fetch comes first.
+    pub fn is_fetch_first(&self) -> bool {
+        self.flag == '!' && self.summary.contains("fetch first")
+    }
+
+    /// A lease that did not hold: the remote moved after the user's last look.
+    pub fn is_stale(&self) -> bool {
+        self.flag == '!' && self.summary.contains("stale info")
     }
 }
 
@@ -240,6 +299,77 @@ pub fn push_target(cli: &GitCli, branch: &str) -> anyhow::Result<PushTarget> {
         _ => own.clone(),
     };
     Ok(PushTarget { remote, refspec: format!("{own}:{to}"), set_upstream: !tracked })
+}
+
+/// The remote's default branch (`refs/remotes/<remote>/HEAD`), when the clone recorded it.
+fn default_branch(cli: &GitCli, remote: &str) -> Option<String> {
+    let out = cli.run(cli.cmd(Kind::Read, &["symbolic-ref", "--short", "-q", &format!("refs/remotes/{remote}/HEAD")]), None, &mut |_| {}).ok()?;
+    let s = String::from_utf8_lossy(&out).trim().to_string();
+    s.strip_prefix(&format!("{remote}/")).map(str::to_string)
+}
+
+/// What a force push of `branch` would do, or why gitty refuses: never `main` or `master` (any
+/// case) or the branch the remote's HEAD points to, and only with a remote-tracking ref to lease
+/// against. `expected` is that ref's commit right now; the caller keeps it, so a later fetch
+/// makes the push stale instead of moving the goalposts.
+pub fn force_push_plan(cli: &GitCli, branch: &str) -> anyhow::Result<ForcePush> {
+    let target = push_target(cli, branch)?;
+    let tip = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")]), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    if tip.is_empty() {
+        bail!("{branch} is not a branch with commits")
+    }
+    let mut plan = ForcePush { branch: branch.to_string(), target, expected: String::new(), tip, removal: None };
+    let remote_branch = plan.remote_branch().to_string();
+    let default = default_branch(cli, &plan.target.remote);
+    for b in [branch, remote_branch.as_str()] {
+        if b.eq_ignore_ascii_case("main") || b.eq_ignore_ascii_case("master") || default.as_deref() == Some(b) {
+            bail!("Force pushing {b} is blocked in gitty")
+        }
+    }
+    let tracking = format!("refs/remotes/{}/{remote_branch}", plan.target.remote);
+    let out = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("{tracking}^{{commit}}")]), None, &mut |_| {});
+    plan.expected = out.map(|o| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    if plan.expected.is_empty() {
+        bail!("{branch} has no remote-tracking branch to check against: fetch (f) or push normally first")
+    }
+    plan.removal = removal(cli, branch, &plan.expected);
+    Ok(plan)
+}
+
+/// The commits at `expected` that `branch` lacks. Each one the user made on this branch (its
+/// reflog records it as a commit, amend, rebase or cherry-pick, as an amend's earlier tip is)
+/// and wrote counts as their own; the rest are `others`. None when git cannot say. A
+/// teammate's commit that was pulled and then reset away is not in that set, even under a
+/// shared `user.email`; one that was cherry-picked or rebased by the user is.
+pub fn removal(cli: &GitCli, branch: &str, expected: &str) -> Option<Removal> {
+    let read = |args: &[&str]| cli.run(cli.cmd(Kind::Read, args), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).into_owned());
+    let own = format!("refs/heads/{branch}");
+    let total: usize = read(&["rev-list", "--count", expected, "--not", &own]).ok()?.trim().parse().ok()?;
+    if total == 0 {
+        return Some(Removal { total, others: 0, top: Vec::new() });
+    }
+    let listed = read(&["log", "-n", "200", "--format=%H%x09%ae%x09%h %an: %s", expected, "--not", &own]).ok()?;
+    let reflog = read(&["log", "-g", "-n", "100", "--format=%H%x09%gs", &own]).unwrap_or_default();
+    let made_here: Vec<&str> = reflog
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .filter(|(_, why)| ["commit", "rebase", "cherry-pick"].iter().any(|p| why.starts_with(p)))
+        .map(|(h, _)| h)
+        .collect();
+    let me = config(cli, "user.email").map(|e| e.to_lowercase());
+    let mut mine = 0;
+    let mut top = Vec::new();
+    for l in listed.lines() {
+        let mut f = l.splitn(3, '\t');
+        let (Some(hash), Some(email), Some(line)) = (f.next(), f.next(), f.next()) else { return None };
+        if me.as_deref() == Some(email.to_lowercase().as_str()) && made_here.contains(&hash) {
+            mine += 1;
+        } else if top.len() < 3 {
+            top.push(line.to_string());
+        }
+    }
+    // commits past the 200 listed are not vouched for
+    Some(Removal { total, others: total.saturating_sub(mine), top })
 }
 
 /// Cancels a running job by killing its process group: SIGTERM, then SIGKILL after 2 s.
@@ -441,15 +571,15 @@ impl Job {
         if self.cancel.cancelled.load(Ordering::SeqCst) && !ok {
             return Outcome::Cancelled;
         }
-        let refs = matches!(self.cmd, NetCmd::Push(_)).then(|| parse_push_porcelain(&stdout)).unwrap_or_default();
+        let refs = if self.cmd.is_push() { parse_push_porcelain(&stdout) } else { Vec::new() };
         // merge and rebase explain conflicts on stdout
         let detail = match &self.cmd {
-            NetCmd::Push(_) => stderr.trim_end().to_string(),
+            c if c.is_push() => stderr.trim_end().to_string(),
             _ => format!("{}\n{}", stdout.trim_end(), stderr.trim_end()).trim().to_string(),
         };
         if ok {
             let summary = match &self.cmd {
-                NetCmd::Push(_) => refs.iter().map(|r| format!("{} {}", r.remote, r.summary)).collect::<Vec<_>>().join(", "),
+                c if c.is_push() => refs.iter().map(|r| format!("{} {}", r.remote, r.summary)).collect::<Vec<_>>().join(", "),
                 _ => detail.lines().last().unwrap_or("").to_string(),
             };
             return Outcome::Ok { summary };
@@ -527,6 +657,20 @@ mod tests {
         let r = parse_push_porcelain(out);
         assert_eq!(r.len(), 2);
         assert_eq!((r[1].flag, r[1].remote.as_str()), ('!', "refs/heads/x"));
+    }
+
+    #[test]
+    fn the_lease_names_the_remote_ref_and_the_expected_commit() {
+        let target = PushTarget { remote: "origin".into(), refspec: "refs/heads/feat:refs/heads/other".into(), set_upstream: false };
+        let cmd = NetCmd::ForcePush(ForcePush { branch: "feat".into(), target, expected: "abc".into(), tip: "def".into(), removal: None });
+        assert_eq!(cmd.args(), ["push", "--progress", "--porcelain", "--force-with-lease=refs/heads/other:abc", "origin", "refs/heads/feat:refs/heads/other"]);
+    }
+
+    #[test]
+    fn fetch_first_is_told_from_non_fast_forward() {
+        let r = |s: &str| PushRef { flag: '!', local: "a".into(), remote: "a".into(), summary: s.into() };
+        assert!(r("[rejected] (fetch first)").is_fetch_first() && r("[rejected] (fetch first)").needs_pull());
+        assert!(!r("[rejected] (non-fast-forward)").is_fetch_first());
     }
 
     #[test]

@@ -25,6 +25,16 @@ All notable changes to gitty are listed here. The format follows
   pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
   new-pull-request page.
 
+- A push rejected because the remote moved on (typically after amending a pushed commit or
+  rebasing) asks whether to force push with a lease. The question lists the remote commits you
+  don't have that the push would remove (and says so when git cannot tell). Enter runs
+  `git push --force-with-lease` with the commit you last fetched as the expected value, so the
+  remote branch is replaced only if nobody pushed to it since; a fetch in between (auto-fetch
+  included) makes git refuse instead of overwriting, and the refusal says to fetch first. A
+  rejection that says "fetch first" asks you to fetch instead. `main` and `master` (any case) and
+  the branch `origin/HEAD` points to are never force pushed, nor is a branch with no
+  remote-tracking branch to check against.
+
 ### Changed
 
 - The stash message prompt and the "stash and switch/merge" prompt say that untracked files are included, and how many when there are more than 500 (it can take a while).
