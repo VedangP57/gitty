@@ -26,7 +26,8 @@ All notable changes to gitty are listed here. The format follows
   new-pull-request page.
 
 - A push rejected because the remote moved on (typically after amending a pushed commit or
-  rebasing) asks whether to force push with a lease. Enter runs `git push --force-with-lease`
+  rebasing) asks whether to force push with a lease, listing the remote commits you don't have
+  that the push would remove. Enter runs `git push --force-with-lease`
   with the commit you last fetched as the expected value, so the remote branch is replaced only
   if nobody pushed to it since; a fetch in between (auto-fetch included) makes git refuse instead
   of overwriting. A refused lease says to fetch first and look at the new commits. `main`,

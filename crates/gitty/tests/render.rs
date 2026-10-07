@@ -1544,15 +1544,30 @@ fn dirty_switch_prompt_is_not_cut_off_with_a_long_branch_name() {
     }
 }
 
-#[test]
-fn the_force_push_question_says_what_gets_replaced() {
+fn force_question(overwritten: usize, top: &[&str]) -> String {
     let f = fixture();
-    let mut t = H::new(&f, "github-dark", (100, 30));
+    let mut t = H::new(&f, "github-dark", (80, 24));
     let target = gitty_core::net::PushTarget { remote: "origin".into(), refspec: "refs/heads/topic:refs/heads/topic".into(), set_upstream: false };
-    t.app.overlay = Some(gitty::app::Overlay::ForcePush { branch: "topic".into(), plan: gitty_core::net::ForcePush { target, expected: "a".repeat(40) } });
-    let s = text(&t.render(100, 30));
+    let plan = gitty_core::net::ForcePush { target, expected: "a".repeat(40), overwritten, overwritten_top: top.iter().map(|s| s.to_string()).collect() };
+    t.app.overlay = Some(gitty::app::Overlay::ForcePush { branch: "topic".into(), plan });
+    text(&t.render(80, 24))
+}
+
+#[test]
+fn the_force_push_question_for_a_plain_amend() {
+    let s = force_question(0, &[]);
     assert!(s.contains("Force push `topic` with lease?"), "{s}");
-    assert!(s.contains("replaces what is on origin/topic with your version"), "{s}");
-    assert!(s.contains("nobody has pushed to it since you last fetched"), "{s}");
+    assert!(s.contains("It replaces your earlier version of this branch."), "{s}");
+    assert!(s.contains("If anyone pushes after this screen, git refuses instead."), "{s}");
+    assert!(s.contains("Enter force push · Esc cancel"), "{s}");
+}
+
+#[test]
+fn the_force_push_question_lists_what_the_remote_loses() {
+    let s = force_question(5, &["abc1234 Ann: one", "def5678 Bob: two", "0123456 Cy: three"]);
+    assert!(s.contains("origin/topic has 5 commits you don't have"), "{s}");
+    assert!(s.contains("they will be removed from"), "{s}");
+    assert!(s.contains("  abc1234 Ann: one") && s.contains("  0123456 Cy: three"), "{s}");
+    assert!(s.contains("…and 2 more"), "{s}");
     assert!(s.contains("Enter force push · Esc cancel"), "{s}");
 }

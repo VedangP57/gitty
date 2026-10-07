@@ -293,8 +293,20 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
         }
         Overlay::ForcePush { branch, plan } => {
             let w = area.width.saturating_sub(8).clamp(40, 76);
-            let body = format!("This replaces what is on {}/{branch} with your version, but only if nobody has pushed to it since you last fetched.", plan.target.remote);
-            let lines = wrap_text(&body, w.saturating_sub(4) as usize);
+            let remote = format!("{}/{branch}", plan.target.remote);
+            let mut lines = match plan.overwritten {
+                0 => vec!["It replaces your earlier version of this branch.".to_string()],
+                n => {
+                    let s = if n == 1 { "" } else { "s" };
+                    let mut l = wrap_text(&format!("{remote} has {n} commit{s} you don't have, they will be removed from the remote:"), w.saturating_sub(4) as usize);
+                    l.extend(plan.overwritten_top.iter().map(|c| format!("  {c}")));
+                    if n > plan.overwritten_top.len() {
+                        l.push(format!("  …and {} more", n - plan.overwritten_top.len()));
+                    }
+                    l
+                }
+            };
+            lines.extend(wrap_text("If anyone pushes after this screen, git refuses instead.", w.saturating_sub(4) as usize));
             let inner = boxed(app, buf, area, w, lines.len() as u16 + 6, "Force push");
             text(buf, inner.x, inner.y, inner.right(), &format!("Force push `{branch}` with lease?"), st.fg(ui.warning).add_modifier(Modifier::BOLD));
             for (k, l) in lines.iter().enumerate() {

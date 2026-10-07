@@ -93,6 +93,11 @@ pub struct PushTarget {
 pub struct ForcePush {
     pub target: PushTarget,
     pub expected: String,
+    /// How many commits on the remote branch (at `expected`) the push would remove that the user
+    /// never had: not on the local branch, not in its reflog (an amend's earlier tip is).
+    pub overwritten: usize,
+    /// The newest few of them, as `<hash> <author>: <subject>`.
+    pub overwritten_top: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,7 +304,15 @@ pub fn force_push_plan(cli: &GitCli, branch: &str) -> anyhow::Result<ForcePush> 
     if expected.is_empty() {
         bail!("{branch} has no remote-tracking branch to check against: fetch (f) or push normally first")
     }
-    Ok(ForcePush { target, expected })
+    let read = |args: &[&str]| cli.run(cli.cmd(Kind::Read, args), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).into_owned()).unwrap_or_default();
+    // what the user had before (an amend's earlier tip is in the branch's reflog) is not news to them
+    let own = format!("refs/heads/{branch}");
+    let mine = read(&["log", "-g", "-n", "100", "--format=%H", &own]);
+    let tail: Vec<&str> = [expected.as_str(), "--not", own.as_str()].into_iter().chain(mine.lines()).collect();
+    let range = |head: &[&'static str]| -> String { read(&head.iter().copied().chain(tail.iter().copied()).collect::<Vec<_>>()) };
+    let overwritten = range(&["rev-list", "--count"]).trim().parse().unwrap_or(0);
+    let overwritten_top = if overwritten == 0 { Vec::new() } else { range(&["log", "-3", "--format=%h %an: %s"]).lines().map(str::to_string).collect() };
+    Ok(ForcePush { target, expected, overwritten, overwritten_top })
 }
 
 /// Cancels a running job by killing its process group: SIGTERM, then SIGKILL after 2 s.

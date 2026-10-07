@@ -350,3 +350,16 @@ fn force_push_needs_a_remote_tracking_branch() {
     let e = force_push_plan(&cli(&f), "fresh").unwrap_err().to_string();
     assert!(e.contains("no remote-tracking branch"), "{e}");
 }
+
+#[test]
+fn the_plan_lists_only_what_the_user_never_had() {
+    let (f, bare) = amended_topic();
+    let plan = force_push_plan(&cli(&f), "topic").unwrap();
+    assert_eq!((plan.overwritten, plan.overwritten_top.len()), (0, 0), "an amend replaces only the user's own commit");
+    // a teammate's commit comes in with an auto-fetch
+    someone_else_pushes_topic(&bare);
+    run(&f, NetCmd::Fetch { remote: "origin".into() }, Mode::Background);
+    let plan = force_push_plan(&cli(&f), "topic").unwrap();
+    assert_eq!(plan.overwritten, 1);
+    assert!(plan.overwritten_top[0].contains("O: theirs"), "{:?}", plan.overwritten_top);
+}
