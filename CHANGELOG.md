@@ -25,12 +25,12 @@ All notable changes to gitty are listed here. The format follows
   pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
   new-pull-request page.
 - The top bar shows `PR #<n>` after the branch when it has a pull request (GitHub only, needs the
-  `gh` CLI and a pushed branch). The colour is the state, as on GitHub: green open, grey draft,
+  `gh` CLI and a GitHub remote; a merged pull request still shows after its branch is deleted on the remote). The colour is the state, as on GitHub: green open, grey draft,
   purple merged, red closed; set `pr_open`, `pr_draft`, `pr_merged` and `pr_closed` under `[ui]` in
   a theme to change them. Clicking the badge opens the pull request in the browser. It is looked up
   in the background when gitty starts, when the branch changes and after fetches and pushes (at
   most every 30 seconds per branch), and every 5 minutes while the terminal has focus. Without
-  `gh`, a login or a network it is simply not shown.
+  `gh`, a login or a network it is simply not shown, and a failed lookup keeps the last badge.
 
 ### Changed
 

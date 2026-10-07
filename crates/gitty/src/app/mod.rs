@@ -712,7 +712,10 @@ impl App {
             Msg::PrBadge { branch, result } => {
                 // a reply for a branch no longer checked out is stale
                 if self.refs.as_ref().and_then(|r| r.head_branch()) == Some(branch.as_str()) {
-                    self.pr_badge = result.map(|info| (branch, info));
+                    // a failed lookup keeps what is shown: the answer is only unknown
+                    if let Ok(info) = result {
+                        self.pr_badge = info.map(|info| (branch, info));
+                    }
                 }
             }
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),

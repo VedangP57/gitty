@@ -269,7 +269,7 @@ fn find(b: &Buffer, needle: &str) -> Option<(u16, u16)> {
 fn with_pr(t: &mut H, number: u64, state: gitty_core::forge::PrState) {
     let branch = t.app.refs.as_ref().unwrap().head_branch().unwrap().to_string();
     let url = format!("https://github.com/o/r/pull/{number}");
-    t.app.handle_msg(Msg::PrBadge { branch, result: Some(gitty_core::forge::PrInfo { number, state, url }) });
+    t.app.handle_msg(Msg::PrBadge { branch, result: Ok(Some(gitty_core::forge::PrInfo { number, state, url })) });
 }
 
 #[test]

@@ -309,8 +309,8 @@ pub enum Msg {
     HeadMessage { result: Result<String, String> },
     /// The page to open, or the reason there is none (ready to show).
     PrUrl { result: Result<String, PrUrlError> },
-    /// `None`: no pull request, or no way to know.
-    PrBadge { branch: String, result: Option<gitty_core::forge::PrInfo> },
+    /// `Ok(None)`: no pull request. `Err`: gh could not say.
+    PrBadge { branch: String, result: Result<Option<gitty_core::forge::PrInfo>, gitty_core::forge::PrUnknown> },
     StashList { result: Result<Vec<gitty_core::stash::StashEntry>, String> },
     Error { what: String, detail: String },
 }

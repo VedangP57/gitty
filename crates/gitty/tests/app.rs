@@ -3507,11 +3507,24 @@ fn startup_asks_for_the_branchs_pull_request_and_the_reply_sets_the_badge() {
     }
     assert_eq!(t.app.pr_badge, None);
     assert!(t.app.toast.is_none());
-    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Some(pr_info(7, PrState::Open)) });
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
     assert_eq!(t.app.pr_badge, Some(("feat/x".into(), pr_info(7, PrState::Open))));
     // an answer of "none" (the PR went away, or gh failed) takes it off again
-    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: None });
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(None) });
     assert_eq!(t.app.pr_badge, None);
+}
+
+#[test]
+fn a_failed_lookup_keeps_the_badge_and_a_missing_pull_request_removes_it() {
+    use gitty_core::forge::PrState;
+    let f = pr_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Err(gitty_core::forge::PrUnknown) });
+    assert_eq!(t.app.pr_badge, Some(("feat/x".into(), pr_info(7, PrState::Open))), "timeout, offline: still the last answer");
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(None) });
+    assert_eq!(t.app.pr_badge, None, "gh said there is none");
 }
 
 #[test]
@@ -3520,7 +3533,7 @@ fn a_reply_for_another_branch_is_ignored() {
     let f = pr_fixture();
     let mut t = H::new(&f);
     t.pump();
-    t.app.handle_msg(Msg::PrBadge { branch: "main".into(), result: Some(pr_info(7, PrState::Merged)) });
+    t.app.handle_msg(Msg::PrBadge { branch: "main".into(), result: Ok(Some(pr_info(7, PrState::Merged))) });
     assert_eq!(t.app.pr_badge, None);
 }
 
@@ -3531,7 +3544,7 @@ fn switching_branches_clears_the_badge_and_asks_again() {
     f.git(&["branch", "other"]);
     let mut t = H::new(&f);
     t.pump();
-    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Some(pr_info(7, PrState::Open)) });
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
     f.git(&["switch", "-q", "other"]);
     t.app.handle_focus(true);
     let r = t.app.take_requests();
@@ -3540,7 +3553,7 @@ fn switching_branches_clears_the_badge_and_asks_again() {
     }
     assert_eq!(t.app.pr_badge, None, "gone as soon as the new HEAD is known");
     // a late answer for the old branch changes nothing
-    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Some(pr_info(7, PrState::Open)) });
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
     assert_eq!(t.app.pr_badge, None);
     assert_eq!(badge_requests(&t.app.take_requests()), ["other"]);
 }
