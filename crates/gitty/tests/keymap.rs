@@ -125,3 +125,14 @@ fn b_opens_the_branches_from_every_screen() {
         assert_eq!(m.resolve(&ev(KeyCode::Char('B')), s), Some(Action::Branches));
     }
 }
+
+#[test]
+fn stash_keys_resolve_where_they_should() {
+    let m = Keymap::default();
+    let changes = State { tab: Tab::Changes, focus: Focus::Files, compare: false };
+    let history = State { tab: Tab::History, focus: Focus::History, compare: false };
+    assert_eq!(m.resolve(&ev(KeyCode::Char('S')), changes), Some(Action::Stashes));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('S')), history), Some(Action::Stashes));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('Z')), changes), Some(Action::StashPush));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('Z')), history), None, "stashing is a Changes action");
+}

@@ -211,6 +211,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             let title = match kind {
                 crate::app::branches::NameKind::Create => "New branch".to_string(),
                 crate::app::branches::NameKind::Rename { old } => format!("Rename {old}"),
+                crate::app::branches::NameKind::Stash => "Stash changes".to_string(),
             };
             let inner = boxed(app, buf, area, 56, 6, &title);
             let x = spans(buf, inner.x, inner.y, inner.right(), &[("> ", st.fg(ui.accent)), (input.text(), st)]);
@@ -218,18 +219,36 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 buf[(x, inner.y)].set_style(st.add_modifier(Modifier::REVERSED));
             }
             if inner.height > 2 {
-                text(buf, inner.x, inner.y + 2, inner.right(), "Enter confirm · Esc cancel", st.fg(ui.muted));
+                let hint = if matches!(kind, crate::app::branches::NameKind::Stash) { "Enter confirm (empty: default message) · Esc cancel" } else { "Enter confirm · Esc cancel" };
+                text(buf, inner.x, inner.y + 2, inner.right(), hint, st.fg(ui.muted));
             }
         }
         Overlay::DirtySwitch { name, .. } => {
-            let inner = boxed(app, buf, area, 64, 7, "Switch branch");
+            let inner = boxed(app, buf, area, 72, 7, "Switch branch");
             text(buf, inner.x, inner.y, inner.right(), "You have uncommitted changes", st.fg(ui.warning).add_modifier(Modifier::BOLD));
             text(buf, inner.x, inner.y + 1, inner.right(), &format!("Switching to {name}: git carries them over, or refuses."), st.fg(ui.muted));
             if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 3, inner.right(), &[("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("s", st.fg(ui.accent)), (" stash and switch · ", st), ("w", st.fg(ui.accent)), (" switch anyway · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
-        Overlay::Stashes { .. } => {}
+        Overlay::Stashes { sel } => {
+            let h = (app.stashes.len() as u16).clamp(1, 12) + 5;
+            let inner = boxed(app, buf, area, 76, h, "Stashes");
+            if app.stashes.is_empty() {
+                text(buf, inner.x, inner.y, inner.right(), "No stashes", st.fg(ui.muted));
+            }
+            let rows = inner.height.saturating_sub(2) as usize;
+            let first = sel.saturating_sub(rows.saturating_sub(1));
+            for (k, (i, s)) in app.stashes.iter().enumerate().skip(first).take(rows).enumerate() {
+                let y = inner.y + k as u16;
+                let row = if i == *sel { st.bg(ui.selection).add_modifier(Modifier::BOLD) } else { st };
+                fill(buf, Rect::new(inner.x, y, inner.width, 1), row);
+                text(buf, inner.x + 1, y, inner.right(), &format!("stash@{{{}}}  {}  ({})", s.index, s.message, s.branch), row);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "a apply · p pop · d drop · n new · Esc close", st.fg(ui.muted));
+            }
+        }
         Overlay::Quit { label } => {
             let inner = boxed(app, buf, area, 56, 6, "Quit");
             text(buf, inner.x, inner.y, inner.right(), &format!("{label} is still running"), st.fg(ui.warning).add_modifier(Modifier::BOLD));

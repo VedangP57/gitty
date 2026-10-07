@@ -3156,3 +3156,84 @@ fn a_failed_stash_and_switch_puts_the_work_back() {
     assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "edited\n", "nothing lost");
     assert!(t.app.stashes.is_empty());
 }
+
+#[test]
+fn s_at_the_dirty_prompt_stashes_and_switches() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('B');
+    typed(&mut t, "topic");
+    t.key(KeyCode::Enter);
+    t.ch('s');
+    t.drain();
+    assert_eq!(current_branch(&f), "topic");
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+    assert_eq!(t.app.stashes[0].message, "gitty: auto-stash from main");
+}
+
+#[test]
+fn the_stash_list_applies_pops_and_drops() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "one\n");
+    t.app.write(WriteOp::StashPush { message: "one".into() });
+    t.pump();
+    f.write("a.txt", "two\n");
+    t.app.write(WriteOp::StashPush { message: "two".into() });
+    t.pump();
+    t.ch('S');
+    t.pump();
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Stashes { .. })));
+    assert_eq!(t.app.stashes.len(), 2);
+    t.ch('j');
+    t.ch('p');
+    t.pump();
+    assert!(t.app.overlay.is_none(), "pop closes the list");
+    assert_eq!(std::fs::read_to_string(f.path().join("a.txt")).unwrap(), "one\n", "the older stash came back");
+    assert_eq!(t.app.stashes.len(), 1);
+    t.ch('S');
+    t.pump();
+    t.ch('d');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Confirm { .. })), "drop asks");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.stashes.is_empty());
+}
+
+#[test]
+fn z_in_changes_asks_for_a_message_then_stashes() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('1');
+    t.ch('Z');
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::NameInput { kind: gitty::app::branches::NameKind::Stash, .. })));
+    typed(&mut t, "half done");
+    t.key(KeyCode::Enter);
+    t.drain();
+    assert_eq!(t.app.stashes[0].message, "half done");
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+}
+
+#[test]
+fn an_empty_stash_message_gets_a_default() {
+    let f = branch_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    f.write("a.txt", "edited\n");
+    t.app.handle_focus(true);
+    t.drain();
+    t.ch('1');
+    t.ch('Z');
+    t.key(KeyCode::Enter);
+    t.drain();
+    assert_eq!(t.app.stashes[0].message, "gitty: stash on main");
+}

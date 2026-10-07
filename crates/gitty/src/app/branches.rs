@@ -15,6 +15,8 @@ pub enum NameKind {
     /// A new branch at HEAD.
     Create,
     Rename { old: String },
+    /// A stash message; empty means the default.
+    Stash,
 }
 
 fn say(what: &str) -> Option<Toast> {
@@ -129,12 +131,21 @@ impl App {
             KeyCode::Esc => return,
             KeyCode::Enter => {
                 let name = input.text().trim().to_string();
-                if !name.is_empty() {
-                    self.write(match kind {
-                        NameKind::Create => WriteOp::CreateBranch { name },
-                        NameKind::Rename { old } => WriteOp::RenameBranch { old, new: name },
-                    });
-                    return;
+                match kind {
+                    NameKind::Stash => {
+                        let message = if name.is_empty() { format!("gitty: stash on {}", self.head_name()) } else { name };
+                        self.write(WriteOp::StashPush { message });
+                        return;
+                    }
+                    _ if name.is_empty() => {}
+                    NameKind::Create => {
+                        self.write(WriteOp::CreateBranch { name });
+                        return;
+                    }
+                    NameKind::Rename { old } => {
+                        self.write(WriteOp::RenameBranch { old, new: name });
+                        return;
+                    }
                 }
             }
             _ => {
@@ -147,10 +158,66 @@ impl App {
     /// Keys at the "uncommitted changes" prompt.
     pub(super) fn dirty_key(&mut self, name: String, remote: bool, k: KeyEvent) {
         match k.code {
+            KeyCode::Char('s') => {
+                let message = format!("gitty: auto-stash from {}", self.head_name());
+                self.write(WriteOp::StashAndSwitch { name, remote, message });
+            }
             KeyCode::Char('w') => self.write(WriteOp::SwitchBranch { name, remote }),
             KeyCode::Esc | KeyCode::Char('n' | 'q') => {}
             _ => self.overlay = Some(Overlay::DirtySwitch { name, remote }),
         }
+    }
+
+    fn head_name(&self) -> String {
+        self.refs.as_ref().and_then(|r| r.head_branch()).unwrap_or("HEAD").to_string()
+    }
+
+    pub fn open_stashes(&mut self) {
+        self.outbox.push(crate::msg::Request::StashList);
+        self.overlay = Some(Overlay::Stashes { sel: 0 });
+    }
+
+    pub fn open_stash_name(&mut self) {
+        self.overlay = Some(Overlay::NameInput { kind: NameKind::Stash, input: Editor::single() });
+    }
+
+    /// Keys in the stash list.
+    pub(super) fn stashes_key(&mut self, mut sel: usize, k: KeyEvent) {
+        let n = self.stashes.len();
+        let cur = self.stashes.get(sel).map(|s| s.index);
+        match k.code {
+            KeyCode::Esc | KeyCode::Char('q') => return,
+            KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(n.saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+            KeyCode::Char('a') => {
+                if let Some(index) = cur {
+                    self.write(WriteOp::StashApply { index });
+                    return;
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some(index) = cur {
+                    self.write(WriteOp::StashPop { index });
+                    return;
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(index) = cur {
+                    self.overlay = Some(Overlay::Confirm {
+                        title: "Drop stash".into(),
+                        body: format!("Drop stash@{{{index}}}? Its changes are lost."),
+                        op: WriteOp::StashDrop { index },
+                    });
+                    return;
+                }
+            }
+            KeyCode::Char('n') => {
+                self.open_stash_name();
+                return;
+            }
+            _ => {}
+        }
+        self.overlay = Some(Overlay::Stashes { sel });
     }
 
     /// A delete git refused for unmerged commits becomes a second, explicit question.

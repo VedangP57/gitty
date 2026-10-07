@@ -107,6 +107,8 @@ impl App {
             Action::Difftool => self.open_difftool(),
             Action::Theme => self.open_theme_picker(),
             Action::Branches => self.open_switcher(),
+            Action::Stashes => self.open_stashes(),
+            Action::StashPush => self.open_stash_name(),
             Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             Action::ErrorDetails => {
                 if self.toast.as_ref().is_none_or(|t| !t.error) {
@@ -307,7 +309,7 @@ impl App {
             Overlay::Switcher { query, sel } => self.switcher_key(query, sel, k),
             Overlay::NameInput { kind, input } => self.name_key(kind, input, k),
             Overlay::DirtySwitch { name, remote } => self.dirty_key(name, remote, k),
-            Overlay::Stashes { .. } => {}
+            Overlay::Stashes { sel } => self.stashes_key(sel, k),
             Overlay::Quit { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
                 KeyCode::Char('n') | KeyCode::Esc => {}

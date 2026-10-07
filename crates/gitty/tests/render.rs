@@ -1383,3 +1383,29 @@ fn dirty_switch_prompt_and_name_input_render() {
     let s = text(&t.render(140, 30));
     assert!(s.contains("New branch") && s.contains("Enter confirm"), "{s}");
 }
+
+#[test]
+fn stash_list_and_the_stash_choice_render() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    f.git(&["branch", "topic"]);
+    f.write("a.txt", "edited\n");
+    f.git(&["stash", "push", "-q", "-m", "half done"]);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE));
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("Stashes") && s.contains("stash@{0}") && s.contains("half done"), "{s}");
+    assert!(s.contains("a apply") && s.contains("p pop") && s.contains("d drop"), "{s}");
+    t.key(KeyCode::Esc);
+    f.write("a.txt", "dirty again\n");
+    t.app.handle_focus(true);
+    t.drain();
+    for c in "Btopic".chars() {
+        t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    t.app.handle_focus(false);
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("stash and switch"), "{s}");
+}
