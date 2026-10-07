@@ -16,7 +16,7 @@ All notable changes to gitty are listed here. The format follows
   so the repository is never left mid-merge. With uncommitted changes it offers "stash and merge":
   the changes are put back after the merge, and stay in the stash (with a notice) if they cannot be.
 - `S` opens the stash list: `a` applies, `p` pops, `d` drops (asks), `n` stashes the current
-  changes under a message. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
+  changes under a message. Each stash shows its age. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
   is kept.
 - Switching branches with uncommitted changes offers "stash and switch": the changes are stashed
   (untracked files included) under `gitty: auto-stash from <branch>`, and put back if the switch
@@ -24,6 +24,17 @@ All notable changes to gitty are listed here. The format follows
 - `R` opens the current branch's pull-request page (GitHub only) in the browser (the branch must be
   pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
   new-pull-request page.
+
+### Changed
+
+- The stash message prompt and the "stash and switch/merge" prompt say that untracked files are included, and how many when there are more than 500 (it can take a while).
+
+### Fixed
+
+- In compare mode the footer labels `b` "other branch" (it picks another branch to compare with) instead of "branch".
+- The footer no longer shows the hints of the pane underneath while a picker, prompt or confirmation is open.
+- Deleting an unmerged branch asks the force question under non-English git locales too, and judges "merged" against the branch's upstream (HEAD without one), as git does.
+- Outside a repository gitty prints `gitty: <dir> is not a git repository`, without the internal source path.
 
 ## [0.1.2] - 2026-10-05
 

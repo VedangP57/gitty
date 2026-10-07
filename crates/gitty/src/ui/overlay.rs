@@ -4,10 +4,12 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use super::paint::{fill, spans, text};
+use super::paint::{fill, spans, text, text_right};
 use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
+use crate::dates::{DateMode, format_date};
 use crate::keymap::Ctx;
+use gitty_core::status::EntryKind;
 
 /// Help sections, in display order, and the keys that are not rebindable.
 const SECTIONS: &[(Ctx, &str)] = &[
@@ -43,6 +45,27 @@ pub fn help_lines(app: &App) -> Vec<(Option<String>, String)> {
     out.push((None, "Fixed".into()));
     out.extend(FIXED.iter().map(|(k, w)| (Some(k.to_string()), w.to_string())));
     out
+}
+
+/// What a stash says about the untracked files it takes (`stash push -u`): a big pile is slow.
+fn untracked_note(app: &App) -> String {
+    const BIG: usize = 500;
+    match app.changes.entries().iter().filter(|e| e.kind == EntryKind::Untracked).count() {
+        n if n > BIG => format!("Stash includes {n} untracked files: this can take a while"),
+        _ => "Stash includes untracked files".to_string(),
+    }
+}
+
+/// What Enter does at a confirmation, as the label after "Enter".
+fn confirm_verb(op: &crate::msg::WriteOp) -> &'static str {
+    use crate::msg::WriteOp as W;
+    match op {
+        W::Merge { .. } => " merge · ",
+        W::DeleteBranch { .. } => " delete · ",
+        W::StashDrop { .. } => " drop · ",
+        W::RemoveIndexLock { .. } => " remove · ",
+        _ => " discard · ",
+    }
 }
 
 fn boxed(app: &App, buf: &mut Buffer, area: Rect, w: u16, h: u16, title: &str) -> Rect {
@@ -123,7 +146,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             text(buf, inner.x, inner.y, inner.right(), title, st.fg(ui.warning).add_modifier(Modifier::BOLD));
             text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
             if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (if matches!(op, crate::msg::WriteOp::Merge { .. }) { " merge · " } else { " discard · " }, st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (confirm_verb(op), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Prompt { ask, input } => {
@@ -213,10 +236,13 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 crate::app::branches::NameKind::Rename { old } => format!("Rename {old}"),
                 crate::app::branches::NameKind::Stash => "Stash changes".to_string(),
             };
-            let inner = boxed(app, buf, area, 56, 6, &title);
+            let inner = boxed(app, buf, area, 64, 6, &title);
             let x = spans(buf, inner.x, inner.y, inner.right(), &[("> ", st.fg(ui.accent)), (input.text(), st)]);
             if x < inner.right() {
                 buf[(x, inner.y)].set_style(st.add_modifier(Modifier::REVERSED));
+            }
+            if matches!(kind, crate::app::branches::NameKind::Stash) && inner.height > 3 {
+                text(buf, inner.x, inner.y + 1, inner.right(), &untracked_note(app), st.fg(ui.muted));
             }
             if inner.height > 2 {
                 let hint = if matches!(kind, crate::app::branches::NameKind::Stash) { "Enter confirm (empty: default message) · Esc cancel" } else { "Enter confirm · Esc cancel" };
@@ -233,6 +259,7 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             text(buf, inner.x, inner.y, inner.right(), "You have uncommitted changes", st.fg(ui.warning).add_modifier(Modifier::BOLD));
             text(buf, inner.x, inner.y + 1, inner.right(), &doing, st.fg(ui.muted));
             text(buf, inner.x, inner.y + 2, inner.right(), how, st.fg(ui.muted));
+            text(buf, inner.x, inner.y + 3, inner.right(), &untracked_note(app), st.fg(ui.muted));
             if inner.height > 4 {
                 spans(buf, inner.x, inner.y + 4, inner.right(), &[("s", st.fg(ui.accent)), (&format!(" stash and {verb} · "), st), ("w", st.fg(ui.accent)), (&format!(" {verb} anyway · "), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
@@ -249,7 +276,9 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 let y = inner.y + k as u16;
                 let row = if i == *sel { st.bg(ui.selection).add_modifier(Modifier::BOLD) } else { st };
                 fill(buf, Rect::new(inner.x, y, inner.width, 1), row);
-                text(buf, inner.x + 1, y, inner.right(), &format!("stash@{{{}}}  {}  ({})", s.index, s.message, s.branch), row);
+                let age = format_date(s.time, 0, app.now, DateMode::Relative);
+                let age_x = text_right(buf, inner.x + 1, inner.right(), y, &age, row.fg(ui.muted));
+                text(buf, inner.x + 1, y, age_x.saturating_sub(1), &format!("stash@{{{}}}  {}  ({})", s.index, s.message, s.branch), row);
             }
             if inner.height > 0 {
                 text(buf, inner.x, inner.bottom() - 1, inner.right(), "a apply · p pop · d drop · n new · Esc close", st.fg(ui.muted));
@@ -285,10 +314,13 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
         Overlay::ErrorDetail => {
             let Some(t) = &app.toast else { return };
             let lines: Vec<&str> = t.detail.lines().collect();
-            let inner = boxed(app, buf, area, area.width.saturating_sub(8).min(100), lines.len() as u16 + 4, "Error");
+            let inner = boxed(app, buf, area, area.width.saturating_sub(8).min(100), lines.len() as u16 + 6, "Error");
             text(buf, inner.x, inner.y, inner.right(), &t.what, st.fg(ui.error).add_modifier(Modifier::BOLD));
-            for (k, l) in lines.iter().enumerate().take(inner.height.saturating_sub(2) as usize) {
+            for (k, l) in lines.iter().enumerate().take(inner.height.saturating_sub(4) as usize) {
                 text(buf, inner.x, inner.y + 2 + k as u16, inner.right(), l, st);
+            }
+            if inner.height > 0 {
+                text(buf, inner.x, inner.bottom() - 1, inner.right(), "Esc close", st.fg(ui.muted));
             }
         }
     }

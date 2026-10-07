@@ -86,7 +86,7 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
         }
     } else {
         match app.focus {
-            Focus::History if app.compare.is_some() => &[(&[A::Down, A::Up], "move"), (&[A::CompareBehind, A::CompareAhead], "tab"), (&[A::Open], "files"), (&[A::Compare], "branch"), (&[A::Back], "leave"), (&[A::Help], "help")],
+            Focus::History if app.compare.is_some() => &[(&[A::Down, A::Up], "move"), (&[A::CompareBehind, A::CompareAhead], "tab"), (&[A::Open], "files"), (&[A::Compare], "other branch"), (&[A::Back], "leave"), (&[A::Help], "help")],
             Focus::History => &[(&[A::Down, A::Up], "move"), (&[A::Open], "files"), (&[A::Search], "search"), (&[A::Range], "range"), (&[A::Compare], "compare"), (&[A::NextPane], "pane"), (&[A::Scope], "scope"), (&[A::Help], "help"), (&[A::Quit], "quit")],
             Focus::Files => &[(&[A::Down, A::Up], "file"), (&[A::Open], "diff"), (&[A::Tree], "tree"), (&[A::Back], "back"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Help], "help"), (&[A::Quit], "quit")],
             Focus::Commit => &[],
@@ -133,7 +133,9 @@ pub fn bottom(app: &App, buf: &mut Buffer, r: Rect) {
         }
         x = end + 2;
     }
-    for (k, d) in hints(app) {
+    // an overlay has the keys: it prints its own hints, the pane's would mislead
+    let pane_hints = if app.overlay.is_some() { Vec::new() } else { hints(app) };
+    for (k, d) in pane_hints {
         if x + width(&k) + width(d) + 3 > max_x {
             break;
         }

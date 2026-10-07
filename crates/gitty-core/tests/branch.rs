@@ -2,7 +2,7 @@ mod common;
 
 use common::Fixture;
 use gitty_core::Repo;
-use gitty_core::branch::is_unmerged;
+use gitty_core::branch::{UNMERGED, Unmerged};
 use gitty_core::git_cli::GitCli;
 
 fn cli(f: &Fixture) -> GitCli {
@@ -43,6 +43,23 @@ fn create_from_head_and_from_a_start_point() {
 }
 
 #[test]
+fn a_start_point_is_a_commit_and_never_an_option() {
+    let f = base();
+    f.git(&["tag", "v1"]);
+    let sha = f.git(&["rev-parse", "HEAD"]);
+    f.add_bare_upstream();
+    let c = cli(&f);
+    for (name, start) in [("from-tag", "v1"), ("from-sha", sha.as_str()), ("from-remote", "origin/main")] {
+        c.create_branch(name, Some(start)).unwrap_or_else(|e| panic!("{start}: {e:#}"));
+        assert_eq!(f.git(&["rev-parse", "HEAD"]), sha);
+    }
+    for bad in ["", "--orphan", "-f", "main topic", "ma\nin", "HEAD\t", "nope", "v1:a.txt"] {
+        assert!(c.create_branch("never", Some(bad)).is_err(), "{bad:?} accepted as a start point");
+    }
+    assert_eq!(f.git(&["branch", "--list", "never"]), "", "no branch was created");
+}
+
+#[test]
 fn switching_to_a_remote_only_name_creates_a_tracking_branch() {
     let f = base();
     f.add_bare_upstream();
@@ -77,10 +94,74 @@ fn delete_merged_refuses_unmerged_then_forces() {
     f.commit("wip work", 1_700_000_100);
     f.git(&["switch", "-q", "main"]);
     let e = c.delete_branch("wip", false).unwrap_err();
-    assert!(is_unmerged(&e), "{e:#}");
+    assert!(e.downcast_ref::<Unmerged>().is_some_and(|u| u.0 == "wip"), "{e:#}");
+    assert!(e.to_string().ends_with(UNMERGED));
     assert!(f.git(&["branch", "--list", "wip"]).contains("wip"), "still there");
     c.delete_branch("wip", true).unwrap();
     assert_eq!(f.git(&["branch", "--list", "wip"]), "");
+}
+
+#[test]
+fn a_branch_is_compared_with_its_upstream_not_head() {
+    let f = base();
+    f.add_bare_upstream();
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.git(&["push", "-q", "-u", "origin", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("local only", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.git(&["merge", "-q", "--no-edit", "topic"]);
+    // merged into HEAD, but the upstream lacks the commit: git still calls it unmerged
+    let e = cli(&f).delete_branch("topic", false).unwrap_err();
+    assert!(e.downcast_ref::<Unmerged>().is_some(), "{e:#}");
+}
+
+#[test]
+fn a_gone_upstream_falls_back_to_head() {
+    let f = base();
+    f.add_bare_upstream();
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.git(&["push", "-q", "-u", "origin", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic work", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.git(&["update-ref", "-d", "refs/remotes/origin/topic"]);
+    let c = cli(&f);
+    let e = c.delete_branch("topic", false).unwrap_err();
+    assert!(e.downcast_ref::<Unmerged>().is_some(), "unmerged into HEAD: {e:#}");
+    f.git(&["merge", "-q", "--no-edit", "topic"]);
+    c.delete_branch("topic", false).unwrap();
+}
+
+#[test]
+fn from_a_detached_head_a_branch_is_judged_against_it() {
+    let f = base();
+    f.git(&["switch", "-q", "-c", "wip"]);
+    f.write("w.txt", "w\n");
+    f.commit("wip work", 1_700_000_100);
+    f.git(&["switch", "-q", "--detach", "main"]);
+    let c = cli(&f);
+    assert!(c.delete_branch("wip", false).unwrap_err().downcast_ref::<Unmerged>().is_some());
+    f.git(&["switch", "-q", "--detach", "wip"]);
+    c.delete_branch("wip", false).unwrap();
+}
+
+#[test]
+fn a_vanished_branch_is_git_s_own_error_not_unmerged() {
+    let f = base();
+    let e = cli(&f).delete_branch("ghost", false).unwrap_err();
+    assert!(e.downcast_ref::<Unmerged>().is_none(), "{e:#}");
+    assert!(e.downcast_ref::<gitty_core::GitError>().is_some(), "{e:#}");
+}
+
+#[test]
+fn a_remote_tracking_start_point_becomes_the_upstream() {
+    let f = base();
+    f.add_bare_upstream();
+    cli(&f).create_branch("from-origin", Some("origin/main")).unwrap();
+    assert_eq!(f.git(&["config", "branch.from-origin.remote"]), "origin");
+    cli(&f).create_branch("from-sha", Some(&f.git(&["rev-parse", "HEAD"]))).unwrap();
+    assert_eq!(f.git(&["for-each-ref", "--format=%(upstream)", "refs/heads/from-sha"]), "");
 }
 
 #[test]

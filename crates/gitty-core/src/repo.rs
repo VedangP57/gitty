@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Context;
-
 use crate::git_bin::GitBin;
 use crate::types::CommitId;
 
@@ -20,11 +18,26 @@ struct Inner {
     workdir: Option<PathBuf>,
 }
 
+/// Some directory from `path` upwards holds a repository (so a failure to open is not "not a repository").
+fn in_a_repository(path: &Path) -> bool {
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    abs.ancestors().any(|d| d.join(".git").exists() || gix::discover::is_git(d).is_ok())
+}
+
 impl Repo {
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<Repo> {
         let path = path.as_ref();
-        let ts = gix::ThreadSafeRepository::discover(path)
-            .with_context(|| format!("not a git repository: {}", path.display()))?;
+        let ts = gix::ThreadSafeRepository::discover(path).map_err(|e| {
+            let dir = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if !path.exists() {
+                anyhow::anyhow!("{} does not exist", path.display())
+            } else if in_a_repository(path) {
+                anyhow::Error::msg(format!("{e:#}")).context(format!("opening {}", dir.display()))
+            } else {
+                // gix's own message carries the build machine's source path
+                anyhow::anyhow!("{} is not a git repository", dir.display())
+            }
+        })?;
         let local = ts.to_thread_local();
         let git_dir = local.git_dir().to_path_buf();
         let common_dir = local.common_dir().to_path_buf();

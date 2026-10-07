@@ -1055,6 +1055,8 @@ fn compare_mode_shows_title_tabs_and_the_branch_commits() {
     assert!(s.contains("Behind (2)") && s.contains("Ahead (1)") && s.contains("Files"), "{s}");
     assert!(s.contains("topic two") && s.contains("topic one"), "{s}");
     assert!(!s.contains("on main"), "the Behind tab lists only the branch's commits\n{s}");
+    let footer = s.lines().last().unwrap_or_default();
+    assert!(footer.contains("b other branch") && footer.contains("esc leave"), "`b` picks another branch to compare with\n{footer}");
 }
 
 #[test]
@@ -1418,17 +1420,94 @@ fn merge_prompts_render_for_a_clean_and_a_dirty_tree() {
 }
 
 #[test]
+fn an_open_overlay_does_not_leave_the_pane_hints_in_the_footer() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    f.write("a.txt", "edited\n");
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    let footer = |t: &mut H| text(&t.render(140, 30)).lines().last().unwrap_or_default().to_string();
+    assert!(footer(&mut t).contains("quit"), "the pane's hints show without an overlay");
+    for key in ['B', 'S'] {
+        t.app.handle_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+        let s = footer(&mut t);
+        assert!(!s.contains("quit") && !s.contains("stage"), "{key}: {s}");
+        t.key(KeyCode::Esc);
+    }
+    assert!(footer(&mut t).contains("quit"), "the hints come back");
+}
+
+#[test]
+fn the_error_detail_says_how_to_close_it() {
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.toast = Some(gitty::app::Toast { what: "switching failed".into(), detail: "line one\nline two".into(), error: true });
+    t.app.overlay = Some(gitty::app::Overlay::ErrorDetail);
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("line two") && s.contains("Esc close"), "{s}");
+}
+
+#[test]
+fn a_confirmation_names_what_enter_does() {
+    use gitty::msg::WriteOp;
+    let f = Fixture::new();
+    f.write("a.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    let ops = [
+        (WriteOp::DeleteBranch { name: "x".into(), force: true }, "Enter delete"),
+        (WriteOp::StashDrop { index: 0, expect: String::new() }, "Enter drop"),
+        (WriteOp::Merge { name: "x".into(), remote: false }, "Enter merge"),
+        (WriteOp::DiscardFiles { restore: vec![], remove: vec![] }, "Enter discard"),
+    ];
+    for (op, label) in ops {
+        t.app.overlay = Some(gitty::app::Overlay::Confirm { title: "Sure".into(), body: "body".into(), op });
+        let s = text(&t.render(140, 30));
+        assert!(s.contains(label), "{label}\n{s}");
+    }
+}
+
+#[test]
+fn stash_prompts_say_untracked_files_are_included_and_count_a_big_pile() {
+    for (n, note) in [(1, "Stash includes untracked files"), (501, "Stash includes 502 untracked files: this can take a while")] {
+        let f = Fixture::new();
+        f.write("a.txt", "a\n");
+        f.commit("base", NOW - DAY);
+        f.git(&["branch", "topic"]);
+        f.write("a.txt", "edited\n");
+        for i in 0..n {
+            f.write(&format!("pile/f{i}.txt"), "x\n");
+        }
+        f.write("new.txt", "n\n");
+        let mut t = H::new(&f, "github-dark", (140, 30));
+        t.app.open_stash_name();
+        let s = text(&t.render(140, 30));
+        assert!(s.contains(note) && (n > 500) == s.contains("this can take a while"), "{n}\n{s}");
+        t.key(KeyCode::Esc);
+        for c in "Btopic".chars() {
+            t.app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = text(&t.render(140, 30));
+        assert!(s.contains("stash and switch") && s.contains(note), "{n}\n{s}");
+    }
+}
+
+#[test]
 fn stash_list_and_the_stash_choice_render() {
     let f = Fixture::new();
     f.write("a.txt", "a\n");
     f.commit("base", NOW - DAY);
     f.git(&["branch", "topic"]);
     f.write("a.txt", "edited\n");
-    f.git(&["stash", "push", "-q", "-m", "half done"]);
+    f.git_env(&["stash", "push", "-q", "-m", "half done"], &[("GIT_COMMITTER_DATE", format!("{}", NOW - 3 * HOUR))]);
     let mut t = H::new(&f, "github-dark", (140, 30));
     t.app.handle_key(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::NONE));
     let s = text(&t.render(140, 30));
     assert!(s.contains("Stashes") && s.contains("stash@{0}") && s.contains("half done"), "{s}");
+    assert!(s.lines().any(|l| l.contains("half done") && l.contains("(main)") && l.contains(" 3h")), "the row shows its age\n{s}");
     assert!(s.contains("a apply") && s.contains("p pop") && s.contains("d drop"), "{s}");
     t.key(KeyCode::Esc);
     f.write("a.txt", "dirty again\n");
