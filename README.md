@@ -21,8 +21,8 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
 - **Network:** fetch, pull (fast-forward, merge or rebase) and push with progress, cancel, and
   password or passphrase prompts inside the app. A background fetch runs every few minutes. A push
   rejected because the remote moved on (after an amend or rebase) offers a force push with lease,
-  which only replaces what you last fetched; `main`, `master` and the default branch are never
-  force pushed.
+  which only replaces what you last fetched and lists the remote commits it would remove; `main`,
+  `master` and the branch `origin/HEAD` points to are never force pushed.
 - **Branches:** switch, create, rename, delete and merge branches from a picker (`B`), and stash and
   restore work (`S`, `Z`).
 - **Search and compare:** `/` searches the whole history (text, author, `path:`) while you keep

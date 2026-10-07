@@ -316,10 +316,10 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc => {}
                 _ => self.overlay = Some(ov),
             },
-            Overlay::ForcePush { branch, plan } => match k.code {
+            Overlay::ForcePush { plan } => match k.code {
                 KeyCode::Enter => self.start_force_push(plan),
                 KeyCode::Esc | KeyCode::Char('n' | 'q') => {}
-                _ => self.overlay = Some(Overlay::ForcePush { branch, plan }),
+                _ => self.overlay = Some(Overlay::ForcePush { plan }),
             },
             Overlay::Diverged => match k.code {
                 KeyCode::Char('m') => self.start_net(crate::msg::NetOp::PullMerge),

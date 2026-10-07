@@ -1686,7 +1686,7 @@ fn shift_p_publishes_a_new_branch() {
 }
 
 #[test]
-fn rejected_push_says_pull_first() {
+fn a_fetch_first_rejection_says_to_fetch_and_offers_no_force_push() {
     let (f, bare) = remote_fixture();
     common::push_as_someone_else(&bare, "b.txt");
     f.write("c.txt", "mine\n");
@@ -1696,7 +1696,8 @@ fn rejected_push_says_pull_first() {
     t.ch('P');
     t.pump();
     let toast = t.app.toast.clone().unwrap();
-    assert!(toast.error && toast.what.contains("pull first"), "{toast:?}");
+    assert!(toast.error && toast.what == "The remote has new commits. Fetch first (f)", "{toast:?}");
+    assert!(t.app.overlay.is_none());
 }
 
 #[test]
@@ -3823,7 +3824,7 @@ fn a_rejected_push_offers_a_force_push_with_lease() {
     let mut t = H::new(&f);
     t.pump();
     push_rejected(&mut t);
-    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::ForcePush { branch, plan }) if branch == "topic" && plan.expected == f.git(&["rev-parse", "origin/topic"])), "{}", toast_text(&t));
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::ForcePush { plan }) if plan.branch == "topic" && plan.expected == f.git(&["rev-parse", "origin/topic"])), "{}", toast_text(&t));
     assert!(toast_text(&t).contains("pull first"), "the rejection stays under the question");
 }
 
@@ -3885,6 +3886,7 @@ fn a_force_push_the_lease_refuses_says_to_fetch_first() {
 fn main_is_never_offered_a_force_push() {
     let (f, bare) = remote_fixture();
     common::push_as_someone_else(&bare, "b.txt");
+    f.git(&["fetch", "-q"]);
     f.write("c.txt", "mine\n");
     f.commit("mine", 1_700_000_100);
     let mut t = H::new(&f);
@@ -3892,4 +3894,61 @@ fn main_is_never_offered_a_force_push() {
     push_rejected(&mut t);
     assert!(t.app.overlay.is_none());
     assert!(toast_text(&t).contains("Force pushing main is blocked in gitty"), "{}", toast_text(&t));
+}
+
+#[test]
+fn an_offer_that_finds_another_overlay_open_says_how_to_get_it_back() {
+    let (f, _bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('P');
+    let reqs = net_requests(&mut t);
+    t.app.overlay = Some(gitty::app::Overlay::Help { scroll: 0 });
+    run_net(&mut t, reqs);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })));
+    assert!(toast_text(&t).contains("press P to see the force push option"), "{}", toast_text(&t));
+}
+
+#[test]
+fn enter_during_an_auto_fetch_keeps_the_question() {
+    let (f, _bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    started(&mut t, gitty::msg::NetOp::Fetch, "Fetching", true);
+    t.key(KeyCode::Enter);
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::ForcePush { .. })));
+    assert!(toast_text(&t).contains("Fetch in progress"), "{}", toast_text(&t));
+    assert!(net_requests(&mut t).is_empty());
+}
+
+#[test]
+fn a_switch_during_the_push_does_not_change_the_offer() {
+    let (f, _bare) = amended_topic();
+    f.git(&["branch", "other", "main"]);
+    // the push is running when the user switches branches
+    let hook = f.path().join(".git/hooks/pre-push");
+    std::fs::write(&hook, "#!/bin/sh\nunset GIT_DIR GIT_INDEX_FILE\ngit checkout -q other\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    assert_eq!(f.git(&["rev-parse", "--abbrev-ref", "HEAD"]), "other", "the hook switched");
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::ForcePush { plan }) if plan.branch == "topic"), "{}", toast_text(&t));
+}
+
+#[test]
+fn a_force_push_confirmed_after_the_branch_changed_is_not_run() {
+    let (f, bare) = amended_topic();
+    let before = remote_rev(&bare, "topic");
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    f.git(&["checkout", "-q", "main"]);
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    assert!(toast_text(&t).contains("HEAD is no longer on topic"), "{}", toast_text(&t));
+    assert_eq!(remote_rev(&bare, "topic"), before);
 }

@@ -291,29 +291,38 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 spans(buf, inner.x, inner.y + 2, inner.right(), &[("Quit and cancel it? ", st), ("y", st.fg(ui.accent)), (" / ", st), ("n", st.fg(ui.accent))]);
             }
         }
-        Overlay::ForcePush { branch, plan } => {
+        Overlay::ForcePush { plan } => {
             let w = area.width.saturating_sub(8).clamp(40, 76);
-            let remote = format!("{}/{branch}", plan.target.remote);
-            let mut lines = match plan.overwritten {
-                0 => vec!["It replaces your earlier version of this branch.".to_string()],
-                n => {
-                    let s = if n == 1 { "" } else { "s" };
-                    let mut l = wrap_text(&format!("{remote} has {n} commit{s} you don't have, they will be removed from the remote:"), w.saturating_sub(4) as usize);
-                    l.extend(plan.overwritten_top.iter().map(|c| format!("  {c}")));
-                    if n > plan.overwritten_top.len() {
-                        l.push(format!("  …and {} more", n - plan.overwritten_top.len()));
+            let wrap = w.saturating_sub(4) as usize;
+            let remote = format!("{}/{}", plan.target.remote, plan.remote_branch());
+            let mut lines = match &plan.removal {
+                None => wrap_text(&format!("Could not tell which commits on {remote} would be lost."), wrap),
+                Some(r) if r.total == 0 => vec!["Nothing on the remote is lost.".to_string()],
+                Some(r) if r.others == 0 => {
+                    let s = if r.total == 1 { "" } else { "s" };
+                    vec![format!("It replaces your earlier version of this branch ({} commit{s}).", r.total)]
+                }
+                Some(r) => {
+                    let s = if r.others == 1 { "" } else { "s" };
+                    let mut l = wrap_text(&format!("{remote} has {} commit{s} you don't have, they will be removed from the remote:", r.others), wrap);
+                    l.extend(r.top.iter().map(|c| format!("  {c}")));
+                    if r.others > r.top.len() {
+                        l.push(format!("  …and {} more", r.others - r.top.len()));
                     }
                     l
                 }
             };
-            lines.extend(wrap_text("If anyone pushes after this screen, git refuses instead.", w.saturating_sub(4) as usize));
+            lines.extend(wrap_text("If anyone pushes after this screen, git refuses instead.", wrap));
             let inner = boxed(app, buf, area, w, lines.len() as u16 + 6, "Force push");
-            text(buf, inner.x, inner.y, inner.right(), &format!("Force push `{branch}` with lease?"), st.fg(ui.warning).add_modifier(Modifier::BOLD));
-            for (k, l) in lines.iter().enumerate() {
+            text(buf, inner.x, inner.y, inner.right(), &format!("Force push `{}` with lease?", plan.branch), st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            // a short terminal cuts the text, never the keys
+            let room = inner.height.saturating_sub(3) as usize;
+            for (k, l) in lines.iter().take(room).enumerate() {
                 text(buf, inner.x, inner.y + 1 + k as u16, inner.right(), l, st.fg(ui.muted));
             }
-            if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 2 + lines.len() as u16, inner.right(), &[("Enter", st.fg(ui.accent)), (" force push · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            if inner.height > 1 {
+                let y = (inner.y + 2 + lines.len().min(room) as u16).min(inner.bottom() - 1);
+                spans(buf, inner.x, y, inner.right(), &[("Enter", st.fg(ui.accent)), (" force push · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
             }
         }
         Overlay::Diverged => {

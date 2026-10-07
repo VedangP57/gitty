@@ -61,7 +61,7 @@ pub enum Overlay {
     /// git or ssh asks for input (masked unless it is a username).
     Prompt { ask: crate::askpass::Ask, input: crate::editor::Editor },
     /// A push was rejected because the remote moved on: force push `branch` with a lease, or cancel.
-    ForcePush { branch: String, plan: gitty_core::net::ForcePush },
+    ForcePush { plan: gitty_core::net::ForcePush },
     /// A pull found local and upstream commits: merge, rebase or cancel.
     Diverged,
     /// `B`: switch, create, rename or delete a branch.
@@ -705,7 +705,7 @@ impl App {
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
             Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
-            Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer { .. } | Msg::Ask(_) | Msg::Tuned { .. } => {}
+            Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer(_) | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
     }

@@ -26,12 +26,13 @@ All notable changes to gitty are listed here. The format follows
   new-pull-request page.
 
 - A push rejected because the remote moved on (typically after amending a pushed commit or
-  rebasing) asks whether to force push with a lease, listing the remote commits you don't have
-  that the push would remove. Enter runs `git push --force-with-lease`
-  with the commit you last fetched as the expected value, so the remote branch is replaced only
-  if nobody pushed to it since; a fetch in between (auto-fetch included) makes git refuse instead
-  of overwriting. A refused lease says to fetch first and look at the new commits. `main`,
-  `master` and the remote's default branch are never force pushed, nor is a branch with no
+  rebasing) asks whether to force push with a lease. The question lists the remote commits you
+  don't have that the push would remove (and says so when git cannot tell). Enter runs
+  `git push --force-with-lease` with the commit you last fetched as the expected value, so the
+  remote branch is replaced only if nobody pushed to it since; a fetch in between (auto-fetch
+  included) makes git refuse instead of overwriting, and the refusal says to fetch first. A
+  rejection that says "fetch first" asks you to fetch instead. `main` and `master` (any case) and
+  the branch `origin/HEAD` points to are never force pushed, nor is a branch with no
   remote-tracking branch to check against.
 
 ### Changed

@@ -53,57 +53,59 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
 }
 
 pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) {
-    let outcome = outcome(h, op, &mode, force, sink);
+    // the branch the job was started on: a switch while it runs changes neither the push nor its offer
+    let cli = GitCli::new(h.owner());
+    let branch = current_branch(&cli);
+    let outcome = outcome(&cli, branch.as_deref(), op, &mode, force, sink);
     // The lease is read now, at the rejection: a fetch before the confirm must make the push
-    // stale, not move what it is checked against.
-    let offer = match (&outcome, op) {
-        (Outcome::Rejected { refs, .. }, NetOp::Push) if refs.iter().any(|r| r.needs_pull()) => {
-            let cli = GitCli::new(h.owner());
-            current_branch(&cli).map(|b| (force_push_plan(&cli, &b).map_err(|e| format!("{e:#}")), b))
+    // stale, not move what it is checked against. A "fetch first" rejection means commits we
+    // do not have: look at them first.
+    let offer = match (&outcome, op, branch) {
+        (Outcome::Rejected { refs, .. }, NetOp::Push, Some(b)) if refs.iter().any(|r| r.needs_pull()) && !refs.iter().any(|r| r.is_fetch_first()) => {
+            Some(force_push_plan(&cli, &b).map_err(|e| format!("{e:#}")))
         }
         _ => None,
     };
     sink(Msg::NetDone { op, background, outcome });
-    if let Some((result, branch)) = offer {
-        sink(Msg::ForceOffer { branch, result });
+    if let Some(result) = offer {
+        sink(Msg::ForceOffer(result));
     }
 }
 
-fn outcome(h: &Handle, op: NetOp, mode: &Mode, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) -> Outcome {
-    let cli = GitCli::new(h.owner());
-    let branch = current_branch(&cli);
-    let remote = || remote_of(&cli, branch.as_deref());
+fn outcome(cli: &GitCli, branch: Option<&str>, op: NetOp, mode: &Mode, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) -> Outcome {
+    let remote = || remote_of(cli, branch);
     match op {
         NetOp::Fetch => match remote() {
-            Some(r) => step(&cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Fetching {r}"), true, mode, sink),
+            Some(r) => step(cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Fetching {r}"), true, mode, sink),
             None => failed("This repository has no remote to fetch from"),
         },
         NetOp::Pull => {
-            let Some(b) = branch.as_deref() else { return failed("HEAD is detached: check out a branch to pull") };
-            if !has_upstream(&cli, b) {
+            let Some(b) = branch else { return failed("HEAD is detached: check out a branch to pull") };
+            if !has_upstream(cli, b) {
                 return failed(format!("{b} has no upstream branch: push it first (P)"));
             }
             let Some(r) = remote() else { return failed("This repository has no remote to pull from") };
-            match step(&cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Pulling {r}"), true, mode, sink) {
-                Outcome::Ok { .. } => step(&cli, op, NetCmd::FfMerge, format!("Updating {b}"), false, mode, sink),
+            match step(cli, op, NetCmd::Fetch { remote: r.clone() }, format!("Pulling {r}"), true, mode, sink) {
+                Outcome::Ok { .. } => step(cli, op, NetCmd::FfMerge, format!("Updating {b}"), false, mode, sink),
                 o => o,
             }
         }
-        NetOp::PullMerge => step(&cli, op, NetCmd::Merge, "Merging the upstream".into(), false, mode, sink),
-        NetOp::PullRebase => step(&cli, op, NetCmd::Rebase, "Rebasing onto the upstream".into(), false, mode, sink),
-        NetOp::ForcePush => match (branch.as_deref(), force) {
-            (Some(b), Some(f)) => {
-                let label = format!("Force pushing {b} to {}", f.target.remote);
-                step(&cli, op, NetCmd::ForcePush(f), label, true, mode, sink)
+        NetOp::PullMerge => step(cli, op, NetCmd::Merge, "Merging the upstream".into(), false, mode, sink),
+        NetOp::PullRebase => step(cli, op, NetCmd::Rebase, "Rebasing onto the upstream".into(), false, mode, sink),
+        NetOp::ForcePush => match force {
+            Some(f) if branch == Some(f.branch.as_str()) => {
+                let label = format!("Force pushing {} to {}", f.remote_branch(), f.target.remote);
+                step(cli, op, NetCmd::ForcePush(f), label, true, mode, sink)
             }
-            _ => failed("HEAD is detached: check out a branch to push"),
+            Some(f) => failed(format!("HEAD is no longer on {}: check it out and push again (P)", f.branch)),
+            None => failed("There is nothing to force push"),
         },
         NetOp::Push => {
-            let Some(b) = branch.as_deref() else { return failed("HEAD is detached: check out a branch to push") };
-            match push_target(&cli, b) {
+            let Some(b) = branch else { return failed("HEAD is detached: check out a branch to push") };
+            match push_target(cli, b) {
                 Ok(t) => {
                     let label = format!("Pushing {b} to {}", t.remote);
-                    step(&cli, op, NetCmd::Push(t), label, true, mode, sink)
+                    step(cli, op, NetCmd::Push(t), label, true, mode, sink)
                 }
                 Err(e) => failed(format!("{e:#}")),
             }

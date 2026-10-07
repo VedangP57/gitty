@@ -300,7 +300,7 @@ pub enum Msg {
     NetDone { op: NetOp, background: bool, outcome: gitty_core::net::Outcome },
     /// After a push rejected because the remote moved on: what a force push with lease would be,
     /// or why gitty will not offer it.
-    ForceOffer { branch: String, result: Result<gitty_core::net::ForcePush, String> },
+    ForceOffer(Result<gitty_core::net::ForcePush, String>),
     /// git or ssh asks for a username, password, passphrase or yes/no through the trampoline.
     Ask(crate::askpass::Ask),
     /// What auto-tuning applied (empty when nothing was needed).
@@ -353,7 +353,7 @@ impl std::fmt::Debug for Msg {
             Msg::NetStarted { op, label, cancel, .. } => write!(f, "NetStarted {{ {op:?}: {label}, cancellable: {} }}", cancel.is_some()),
             Msg::NetProgress { op, fraction } => write!(f, "NetProgress {{ {op:?}: {fraction:.2} }}"),
             Msg::NetDone { op, background, outcome } => write!(f, "NetDone {{ {op:?}, background: {background}, {outcome:?} }}"),
-            Msg::ForceOffer { branch, result } => write!(f, "ForceOffer {{ {branch}: {:?} }}", result.as_ref().map(|p| &p.expected)),
+            Msg::ForceOffer(result) => write!(f, "ForceOffer {{ {:?} }}", result.as_ref().map(|p| (&p.branch, &p.expected))),
             Msg::Tuned { applied, error } => write!(f, "Tuned {{ {applied:?}, error: {} }}", error.is_some()),
             Msg::Ask(a) => write!(f, "Ask {{ {}: {:?} }}", a.prompt, a.kind),
             Msg::HeadMessage { result } => write!(f, "HeadMessage {{ ok: {} }}", result.is_ok()),

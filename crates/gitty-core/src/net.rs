@@ -87,17 +87,36 @@ pub struct PushTarget {
     pub set_upstream: bool,
 }
 
+/// What a force push would take off the remote branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+    /// Every commit at `expected` that the local branch does not have.
+    pub total: usize,
+    /// Those that are not the user's own earlier work (not in the branch's reflog, or by someone
+    /// else): news to the user.
+    pub others: usize,
+    /// The newest few of `others`, as `<hash> <author>: <subject>`.
+    pub top: Vec<String>,
+}
+
 /// A force push guarded by a lease: the remote branch is replaced only while it is still at
 /// `expected`, the commit the user last saw there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForcePush {
+    /// The local branch the question was asked for.
+    pub branch: String,
     pub target: PushTarget,
     pub expected: String,
-    /// How many commits on the remote branch (at `expected`) the push would remove that the user
-    /// never had: not on the local branch, not in its reflog (an amend's earlier tip is).
-    pub overwritten: usize,
-    /// The newest few of them, as `<hash> <author>: <subject>`.
-    pub overwritten_top: Vec<String>,
+    /// None: git could not tell, and the user is told so.
+    pub removal: Option<Removal>,
+}
+
+impl ForcePush {
+    /// The branch name on the remote (`topic` in `refs/heads/feat:refs/heads/topic`).
+    pub fn remote_branch(&self) -> &str {
+        let to = self.target.refspec.rsplit_once(':').map_or(self.target.refspec.as_str(), |(_, to)| to);
+        to.strip_prefix("refs/heads/").unwrap_or(to)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,9 +196,12 @@ impl PushRef {
     pub fn needs_pull(&self) -> bool {
         self.flag == '!' && !self.summary.contains("remote rejected") && ["fetch first", "non-fast-forward", "stale info"].iter().any(|s| self.summary.contains(s))
     }
-}
 
-impl PushRef {
+    /// The remote has commits whose objects we do not have: a fetch comes first.
+    pub fn is_fetch_first(&self) -> bool {
+        self.flag == '!' && self.summary.contains("fetch first")
+    }
+
     /// A lease that did not hold: the remote moved after the user's last look.
     pub fn is_stale(&self) -> bool {
         self.flag == '!' && self.summary.contains("stale info")
@@ -284,35 +306,56 @@ fn default_branch(cli: &GitCli, remote: &str) -> Option<String> {
     s.strip_prefix(&format!("{remote}/")).map(str::to_string)
 }
 
-/// What a force push of `branch` would do, or why gitty refuses: never `main`, `master` or the
-/// remote's default branch, and only with a remote-tracking ref to lease against. `expected` is
-/// that ref's commit right now; the caller keeps it, so a later fetch makes the push stale
-/// instead of moving the goalposts.
+/// What a force push of `branch` would do, or why gitty refuses: never `main` or `master` (any
+/// case) or the branch the remote's HEAD points to, and only with a remote-tracking ref to lease
+/// against. `expected` is that ref's commit right now; the caller keeps it, so a later fetch
+/// makes the push stale instead of moving the goalposts.
 pub fn force_push_plan(cli: &GitCli, branch: &str) -> anyhow::Result<ForcePush> {
     let target = push_target(cli, branch)?;
-    let to = target.refspec.rsplit_once(':').map_or(target.refspec.as_str(), |(_, to)| to);
-    let remote_branch = to.strip_prefix("refs/heads/").unwrap_or(to);
-    let default = default_branch(cli, &target.remote);
-    for b in [branch, remote_branch] {
-        if b == "main" || b == "master" || default.as_deref() == Some(b) {
+    let mut plan = ForcePush { branch: branch.to_string(), target, expected: String::new(), removal: None };
+    let remote_branch = plan.remote_branch().to_string();
+    let default = default_branch(cli, &plan.target.remote);
+    for b in [branch, remote_branch.as_str()] {
+        if b.eq_ignore_ascii_case("main") || b.eq_ignore_ascii_case("master") || default.as_deref() == Some(b) {
             bail!("Force pushing {b} is blocked in gitty")
         }
     }
-    let tracking = format!("refs/remotes/{}/{remote_branch}", target.remote);
+    let tracking = format!("refs/remotes/{}/{remote_branch}", plan.target.remote);
     let out = cli.run(cli.cmd(Kind::Read, &["rev-parse", "--verify", "-q", &format!("{tracking}^{{commit}}")]), None, &mut |_| {});
-    let expected = out.map(|o| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
-    if expected.is_empty() {
+    plan.expected = out.map(|o| String::from_utf8_lossy(&o).trim().to_string()).unwrap_or_default();
+    if plan.expected.is_empty() {
         bail!("{branch} has no remote-tracking branch to check against: fetch (f) or push normally first")
     }
-    let read = |args: &[&str]| cli.run(cli.cmd(Kind::Read, args), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).into_owned()).unwrap_or_default();
-    // what the user had before (an amend's earlier tip is in the branch's reflog) is not news to them
+    plan.removal = removal(cli, branch, &plan.expected);
+    Ok(plan)
+}
+
+/// The commits at `expected` that `branch` lacks. Each one the user once had (it is in the
+/// branch's reflog, as an amend's earlier tip is) and wrote counts as their own; the rest are
+/// `others`. None when git cannot say.
+pub fn removal(cli: &GitCli, branch: &str, expected: &str) -> Option<Removal> {
+    let read = |args: &[&str]| cli.run(cli.cmd(Kind::Read, args), None, &mut |_| {}).map(|o| String::from_utf8_lossy(&o).into_owned());
     let own = format!("refs/heads/{branch}");
-    let mine = read(&["log", "-g", "-n", "100", "--format=%H", &own]);
-    let tail: Vec<&str> = [expected.as_str(), "--not", own.as_str()].into_iter().chain(mine.lines()).collect();
-    let range = |head: &[&'static str]| -> String { read(&head.iter().copied().chain(tail.iter().copied()).collect::<Vec<_>>()) };
-    let overwritten = range(&["rev-list", "--count"]).trim().parse().unwrap_or(0);
-    let overwritten_top = if overwritten == 0 { Vec::new() } else { range(&["log", "-3", "--format=%h %an: %s"]).lines().map(str::to_string).collect() };
-    Ok(ForcePush { target, expected, overwritten, overwritten_top })
+    let total: usize = read(&["rev-list", "--count", expected, "--not", &own]).ok()?.trim().parse().ok()?;
+    if total == 0 {
+        return Some(Removal { total, others: 0, top: Vec::new() });
+    }
+    let listed = read(&["log", "-n", "200", "--format=%H%x09%ae%x09%h %an: %s", expected, "--not", &own]).ok()?;
+    let reflog = read(&["log", "-g", "-n", "100", "--format=%H", &own]).unwrap_or_default();
+    let me = config(cli, "user.email").map(|e| e.to_lowercase());
+    let mut mine = 0;
+    let mut top = Vec::new();
+    for l in listed.lines() {
+        let mut f = l.splitn(3, '\t');
+        let (Some(hash), Some(email), Some(line)) = (f.next(), f.next(), f.next()) else { return None };
+        if me.as_deref() == Some(email.to_lowercase().as_str()) && reflog.lines().any(|h| h == hash) {
+            mine += 1;
+        } else if top.len() < 3 {
+            top.push(line.to_string());
+        }
+    }
+    // commits past the 200 listed are not vouched for
+    Some(Removal { total, others: total.saturating_sub(mine), top })
 }
 
 /// Cancels a running job by killing its process group: SIGTERM, then SIGKILL after 2 s.
@@ -600,6 +643,20 @@ mod tests {
         let r = parse_push_porcelain(out);
         assert_eq!(r.len(), 2);
         assert_eq!((r[1].flag, r[1].remote.as_str()), ('!', "refs/heads/x"));
+    }
+
+    #[test]
+    fn the_lease_names_the_remote_ref_and_the_expected_commit() {
+        let target = PushTarget { remote: "origin".into(), refspec: "refs/heads/feat:refs/heads/other".into(), set_upstream: false };
+        let cmd = NetCmd::ForcePush(ForcePush { branch: "feat".into(), target, expected: "abc".into(), removal: None });
+        assert_eq!(cmd.args(), ["push", "--progress", "--porcelain", "--force-with-lease=refs/heads/other:abc", "origin", "refs/heads/feat:refs/heads/other"]);
+    }
+
+    #[test]
+    fn fetch_first_is_told_from_non_fast_forward() {
+        let r = |s: &str| PushRef { flag: '!', local: "a".into(), remote: "a".into(), summary: s.into() };
+        assert!(r("[rejected] (fetch first)").is_fetch_first() && r("[rejected] (fetch first)").needs_pull());
+        assert!(!r("[rejected] (non-fast-forward)").is_fetch_first());
     }
 
     #[test]
