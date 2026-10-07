@@ -2,7 +2,7 @@ mod common;
 
 use common::Fixture;
 use gitty_core::Repo;
-use gitty_core::branch::is_unmerged;
+use gitty_core::branch::{UNMERGED, Unmerged};
 use gitty_core::git_cli::GitCli;
 
 fn cli(f: &Fixture) -> GitCli {
@@ -77,10 +77,26 @@ fn delete_merged_refuses_unmerged_then_forces() {
     f.commit("wip work", 1_700_000_100);
     f.git(&["switch", "-q", "main"]);
     let e = c.delete_branch("wip", false).unwrap_err();
-    assert!(is_unmerged(&e), "{e:#}");
+    assert!(e.downcast_ref::<Unmerged>().is_some_and(|u| u.0 == "wip"), "{e:#}");
+    assert!(e.to_string().ends_with(UNMERGED));
     assert!(f.git(&["branch", "--list", "wip"]).contains("wip"), "still there");
     c.delete_branch("wip", true).unwrap();
     assert_eq!(f.git(&["branch", "--list", "wip"]), "");
+}
+
+#[test]
+fn a_branch_is_compared_with_its_upstream_not_head() {
+    let f = base();
+    f.add_bare_upstream();
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.git(&["push", "-q", "-u", "origin", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("local only", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.git(&["merge", "-q", "--no-edit", "topic"]);
+    // merged into HEAD, but the upstream lacks the commit: git still calls it unmerged
+    let e = cli(&f).delete_branch("topic", false).unwrap_err();
+    assert!(e.downcast_ref::<Unmerged>().is_some(), "{e:#}");
 }
 
 #[test]

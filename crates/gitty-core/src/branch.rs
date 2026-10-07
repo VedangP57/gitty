@@ -6,10 +6,14 @@ use anyhow::bail;
 use crate::GitError;
 use crate::git_cli::{GitCli, Kind};
 
-/// `delete_branch` without `force` refused: the branch has commits no other branch has.
-pub fn is_unmerged(e: &anyhow::Error) -> bool {
-    e.downcast_ref::<GitError>().is_some_and(|g| g.stderr.contains("not fully merged"))
-}
+/// What an [`Unmerged`] says after the branch name.
+pub const UNMERGED: &str = "has commits no other branch has";
+
+/// `delete_branch` without `force` refused: the branch has commits no other branch has. Found
+/// by asking git about ancestry, not by reading its (possibly translated) message.
+#[derive(Debug, thiserror::Error)]
+#[error("`{0}` {UNMERGED}")]
+pub struct Unmerged(pub String);
 
 impl GitCli {
     /// The checked-out branch; None when HEAD is detached.
@@ -61,13 +65,25 @@ impl GitCli {
         self.quiet(Kind::Write, &["branch", "-m", old, new], None).map(|_| ())
     }
 
-    /// `-d` refuses a branch with unmerged commits ([`is_unmerged`]); `force` is `-D`. The
+    /// `-d` refuses a branch with unmerged commits ([`Unmerged`]); `force` is `-D`. The
     /// checked-out branch is never deleted.
     pub fn delete_branch(&self, name: &str, force: bool) -> anyhow::Result<()> {
         self.check_branch_name(name)?;
         if self.current_branch().as_deref() == Some(name) {
             bail!("`{name}` is checked out; switch to another branch first");
         }
-        self.quiet(Kind::Write, &["branch", if force { "-D" } else { "-d" }, name], None).map(|_| ())
+        match self.quiet(Kind::Write, &["branch", if force { "-D" } else { "-d" }, name], None) {
+            Err(_) if !force && self.unmerged(name) => Err(Unmerged(name.to_string()).into()),
+            r => r.map(|_| ()),
+        }
+    }
+
+    /// `name` is not an ancestor of what `branch -d` compares it with: its upstream, else HEAD.
+    fn unmerged(&self, name: &str) -> bool {
+        let branch = format!("refs/heads/{name}");
+        let upstream = format!("{name}@{{upstream}}");
+        let against = if self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", &upstream], None).is_ok() { upstream } else { "HEAD".to_string() };
+        // exit 1 is "not an ancestor"; anything else (128) is an error, not an answer
+        matches!(self.quiet(Kind::Read, &["merge-base", "--is-ancestor", &branch, &against], None), Err(e) if e.downcast_ref::<GitError>().is_some_and(|g| g.code == Some(1)))
     }
 }

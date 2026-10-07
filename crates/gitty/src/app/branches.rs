@@ -248,7 +248,7 @@ impl App {
     /// A delete git refused for unmerged commits becomes a second, explicit question.
     pub(super) fn offer_force_delete(&mut self, op: &WriteOp, detail: &str) -> bool {
         let WriteOp::DeleteBranch { name, force: false } = op else { return false };
-        if !detail.contains("not fully merged") {
+        if !detail.ends_with(gitty_core::branch::UNMERGED) {
             return false;
         }
         self.overlay = Some(Overlay::Confirm {
