@@ -79,6 +79,7 @@ actions! {
     Cancel "cancel" Global ["x"] "cancel the running fetch, pull or push",
     Difftool "difftool" Global ["O"] "open the diff in the difftool",
     Theme "theme" Global ["T"] "theme picker",
+    Branches "branches" Global ["B"] "branches: switch, create, rename, delete",
     Help "help" Global ["?"] "this help",
     ErrorDetails "error_details" Global ["!"] "details of the last error",
     CompareBehind "compare_prev_tab" Compare ["h", "left"] "compare: previous tab",

@@ -128,6 +128,7 @@ reported at startup:
 | `x` | cancel the running fetch, pull or push | `cancel` |
 | `O` | open the diff in the difftool | `difftool` |
 | `T` | theme picker | `theme` |
+| `B` | branches: switch, create, rename, delete | `branches` |
 | `?` | this help | `help` |
 | `!` | details of the last error | `error_details` |
 | `h` `←` | compare: previous tab | `compare_prev_tab` |

@@ -106,6 +106,7 @@ impl App {
             Action::Cancel => self.cancel_net(),
             Action::Difftool => self.open_difftool(),
             Action::Theme => self.open_theme_picker(),
+            Action::Branches => self.open_switcher(),
             Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             Action::ErrorDetails => {
                 if self.toast.as_ref().is_none_or(|t| !t.error) {

@@ -116,3 +116,12 @@ fn binding_a_fixed_key_warns_and_is_dropped() {
     assert_eq!(labels("fetch"), ["F5"]);
     assert_eq!(labels("push"), ["P"], "a binding with only fixed keys keeps the default");
 }
+
+#[test]
+fn b_opens_the_branches_from_every_screen() {
+    let m = Keymap::default();
+    let changes = State { tab: Tab::Changes, focus: Focus::Files, compare: false };
+    for s in [changes, history()] {
+        assert_eq!(m.resolve(&ev(KeyCode::Char('B')), s), Some(Action::Branches));
+    }
+}

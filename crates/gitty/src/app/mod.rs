@@ -1159,6 +1159,9 @@ impl App {
         self.osc_out.push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
         self.toast = Some(Toast { what: format!("Copied {text}"), detail: String::new(), error: false });
     }
+
+    /// Opens the branch picker; filled in by the picker task.
+    pub fn open_switcher(&mut self) {}
 }
 
 fn is_large(t: &gitty_core::diff::text::Text) -> bool {
