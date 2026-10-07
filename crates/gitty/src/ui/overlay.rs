@@ -291,6 +291,19 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
                 spans(buf, inner.x, inner.y + 2, inner.right(), &[("Quit and cancel it? ", st), ("y", st.fg(ui.accent)), (" / ", st), ("n", st.fg(ui.accent))]);
             }
         }
+        Overlay::ForcePush { branch, plan } => {
+            let w = area.width.saturating_sub(8).clamp(40, 76);
+            let body = format!("This replaces what is on {}/{branch} with your version, but only if nobody has pushed to it since you last fetched.", plan.target.remote);
+            let lines = wrap_text(&body, w.saturating_sub(4) as usize);
+            let inner = boxed(app, buf, area, w, lines.len() as u16 + 6, "Force push");
+            text(buf, inner.x, inner.y, inner.right(), &format!("Force push `{branch}` with lease?"), st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            for (k, l) in lines.iter().enumerate() {
+                text(buf, inner.x, inner.y + 1 + k as u16, inner.right(), l, st.fg(ui.muted));
+            }
+            if inner.height > 3 {
+                spans(buf, inner.x, inner.y + 2 + lines.len() as u16, inner.right(), &[("Enter", st.fg(ui.accent)), (" force push · ", st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            }
+        }
         Overlay::Diverged => {
             let inner = boxed(app, buf, area, 60, 6, "Pull");
             text(buf, inner.x, inner.y, inner.right(), "Your branch and its upstream have both moved on", st.fg(ui.warning).add_modifier(Modifier::BOLD));

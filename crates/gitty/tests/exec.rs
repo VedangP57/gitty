@@ -550,7 +550,7 @@ fn local_pull_steps_wait_for_the_writer() {
     let path = f.path();
     std::thread::spawn(move || {
         let h = gitty_core::Repo::open(&path).unwrap().handle();
-        let req = Request::Net { op: gitty::msg::NetOp::Pull, mode: gitty_core::net::Mode::Background, background: false };
+        let req = Request::Net { op: gitty::msg::NetOp::Pull, mode: gitty_core::net::Mode::Background, background: false, force: None };
         exec(&h, req, &mut |m| {
             let _ = tx.send(m);
         }, &Gens::default());

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gitty_core::Handle;
 use gitty_core::git_cli::{GitCli, Kind};
-use gitty_core::net::{Job, Mode, NetCmd, Outcome, push_target, remote_of};
+use gitty_core::net::{ForcePush, Job, Mode, NetCmd, Outcome, force_push_plan, push_target, remote_of};
 
 use crate::msg::{Msg, NetOp};
 
@@ -31,6 +31,7 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     let remote = match &cmd {
         NetCmd::Fetch { remote } => Some(remote.clone()),
         NetCmd::Push(t) => Some(t.remote.clone()),
+        NetCmd::ForcePush(f) => Some(f.target.remote.clone()),
         _ => None,
     };
     // fast-forward, merge and rebase write the index and worktree: never alongside the writer
@@ -51,12 +52,24 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     })
 }
 
-pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, sink: &mut dyn FnMut(Msg)) {
-    let outcome = outcome(h, op, &mode, sink);
+pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) {
+    let outcome = outcome(h, op, &mode, force, sink);
+    // The lease is read now, at the rejection: a fetch before the confirm must make the push
+    // stale, not move what it is checked against.
+    let offer = match (&outcome, op) {
+        (Outcome::Rejected { refs, .. }, NetOp::Push) if refs.iter().any(|r| r.needs_pull()) => {
+            let cli = GitCli::new(h.owner());
+            current_branch(&cli).map(|b| (force_push_plan(&cli, &b).map_err(|e| format!("{e:#}")), b))
+        }
+        _ => None,
+    };
     sink(Msg::NetDone { op, background, outcome });
+    if let Some((result, branch)) = offer {
+        sink(Msg::ForceOffer { branch, result });
+    }
 }
 
-fn outcome(h: &Handle, op: NetOp, mode: &Mode, sink: &mut dyn FnMut(Msg)) -> Outcome {
+fn outcome(h: &Handle, op: NetOp, mode: &Mode, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) -> Outcome {
     let cli = GitCli::new(h.owner());
     let branch = current_branch(&cli);
     let remote = || remote_of(&cli, branch.as_deref());
@@ -78,6 +91,13 @@ fn outcome(h: &Handle, op: NetOp, mode: &Mode, sink: &mut dyn FnMut(Msg)) -> Out
         }
         NetOp::PullMerge => step(&cli, op, NetCmd::Merge, "Merging the upstream".into(), false, mode, sink),
         NetOp::PullRebase => step(&cli, op, NetCmd::Rebase, "Rebasing onto the upstream".into(), false, mode, sink),
+        NetOp::ForcePush => match (branch.as_deref(), force) {
+            (Some(b), Some(f)) => {
+                let label = format!("Force pushing {b} to {}", f.target.remote);
+                step(&cli, op, NetCmd::ForcePush(f), label, true, mode, sink)
+            }
+            _ => failed("HEAD is detached: check out a branch to push"),
+        },
         NetOp::Push => {
             let Some(b) = branch.as_deref() else { return failed("HEAD is detached: check out a branch to push") };
             match push_target(&cli, b) {

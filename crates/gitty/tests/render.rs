@@ -1543,3 +1543,16 @@ fn dirty_switch_prompt_is_not_cut_off_with_a_long_branch_name() {
         assert!(s.contains("stash and switch"), "{w}x{h}\n{s}");
     }
 }
+
+#[test]
+fn the_force_push_question_says_what_gets_replaced() {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (100, 30));
+    let target = gitty_core::net::PushTarget { remote: "origin".into(), refspec: "refs/heads/topic:refs/heads/topic".into(), set_upstream: false };
+    t.app.overlay = Some(gitty::app::Overlay::ForcePush { branch: "topic".into(), plan: gitty_core::net::ForcePush { target, expected: "a".repeat(40) } });
+    let s = text(&t.render(100, 30));
+    assert!(s.contains("Force push `topic` with lease?"), "{s}");
+    assert!(s.contains("replaces what is on origin/topic with your version"), "{s}");
+    assert!(s.contains("nobody has pushed to it since you last fetched"), "{s}");
+    assert!(s.contains("Enter force push · Esc cancel"), "{s}");
+}

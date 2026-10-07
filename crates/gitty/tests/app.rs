@@ -3790,3 +3790,106 @@ fn stash_and_merge_puts_the_changes_back_when_the_merge_hits_conflicts_or_fails(
     assert_eq!(std::fs::read_to_string(f.path().join("m.txt")).unwrap(), "edited again\n");
     assert!(t.app.stashes.is_empty());
 }
+
+// ---- force push with lease ----
+
+/// `topic` is pushed, then its tip is amended: a normal push is rejected.
+fn amended_topic() -> (Fixture, std::path::PathBuf) {
+    let (f, bare) = remote_fixture();
+    f.git(&["checkout", "-q", "-b", "topic"]);
+    f.write("t.txt", "t\n");
+    f.commit("topic", 1_700_000_100);
+    f.git(&["push", "-q", "-u", "origin", "topic"]);
+    f.write("t.txt", "t amended\n");
+    f.git_env(&["commit", "-q", "-a", "--amend", "-m", "topic amended"], &[("GIT_COMMITTER_DATE", "1700000200 +0000".into())]);
+    (f, bare)
+}
+
+fn remote_rev(bare: &std::path::Path, branch: &str) -> String {
+    let out = std::process::Command::new("git").arg("--git-dir").arg(bare).args(["rev-parse", branch]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Pushes `P` and runs it; the rejection arrives with the force-push question.
+fn push_rejected(t: &mut H) {
+    t.ch('P');
+    let reqs = net_requests(t);
+    run_net(t, reqs);
+}
+
+#[test]
+fn a_rejected_push_offers_a_force_push_with_lease() {
+    let (f, _bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::ForcePush { branch, plan }) if branch == "topic" && plan.expected == f.git(&["rev-parse", "origin/topic"])), "{}", toast_text(&t));
+    assert!(toast_text(&t).contains("pull first"), "the rejection stays under the question");
+}
+
+#[test]
+fn esc_cancels_the_force_push_and_runs_nothing() {
+    let (f, bare) = amended_topic();
+    let before = remote_rev(&bare, "topic");
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    t.key(KeyCode::Esc);
+    assert!(t.app.overlay.is_none());
+    assert!(net_requests(&mut t).is_empty());
+    assert_eq!(remote_rev(&bare, "topic"), before);
+}
+
+#[test]
+fn enter_force_pushes_with_the_lease() {
+    let (f, bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    assert!(matches!(reqs.as_slice(), [Request::Net { op: gitty::msg::NetOp::ForcePush, force: Some(_), .. }]), "{} requests", reqs.len());
+    run_net(&mut t, reqs);
+    assert_eq!(remote_rev(&bare, "topic"), f.git(&["rev-parse", "HEAD"]));
+    assert!(toast_text(&t).contains("Force pushed topic"), "{}", toast_text(&t));
+}
+
+#[test]
+fn a_force_push_the_lease_refuses_says_to_fetch_first() {
+    let (f, bare) = amended_topic();
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    // someone pushes after the question came up
+    let tmp = tempfile::tempdir().unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(tmp.path(), &["clone", "-q", "-b", "topic", bare.to_str().unwrap(), "o"]);
+    let o = tmp.path().join("o");
+    std::fs::write(o.join("theirs.txt"), "theirs\n").unwrap();
+    git(&o, &["add", "-A"]);
+    git(&o, &["-c", "user.name=O", "-c", "user.email=o@example.com", "commit", "-qm", "theirs"]);
+    git(&o, &["push", "-q", "origin", "topic"]);
+    let theirs = remote_rev(&bare, "topic");
+    t.key(KeyCode::Enter);
+    let reqs = net_requests(&mut t);
+    run_net(&mut t, reqs);
+    let s = toast_text(&t);
+    assert!(s.contains("The remote has new commits you haven't seen. Fetch first (f) and look at them."), "{s}");
+    assert_eq!(remote_rev(&bare, "topic"), theirs);
+}
+
+#[test]
+fn main_is_never_offered_a_force_push() {
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "b.txt");
+    f.write("c.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    let mut t = H::new(&f);
+    t.pump();
+    push_rejected(&mut t);
+    assert!(t.app.overlay.is_none());
+    assert!(toast_text(&t).contains("Force pushing main is blocked in gitty"), "{}", toast_text(&t));
+}
