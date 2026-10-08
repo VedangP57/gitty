@@ -8,6 +8,9 @@ All notable changes to gitty are listed here. The format follows
 
 ### Added
 
+- Twelve more built-in themes: `nord`, `one-dark`, `one-light`, `gruvbox-light`, `catppuccin-frappe`,
+  `catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`, `everforest-dark`,
+  `ayu-mirage` and `nightfox`. Each is credited, with its licence, in `THIRD-PARTY-LICENSES.md`.
 - `B` opens a branch picker: Enter switches (a remote-only branch gets a local tracking branch),
   `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
   branch with unmerged commits asks twice. With uncommitted changes, switching asks first.
