@@ -9,16 +9,77 @@ fn user_dir(files: &[(&str, &str)]) -> tempfile::TempDir {
     d
 }
 
+const ORIGINAL: [&str; 11] = [
+    "github-dark", "github-light", "rose-pine", "rose-pine-dawn", "catppuccin-mocha", "catppuccin-latte",
+    "tokyo-night", "dracula", "gruvbox-dark", "solarized-dark", "solarized-light",
+];
+const ADDED: [&str; 12] = [
+    "nord", "one-dark", "one-light", "gruvbox-light", "catppuccin-frappe", "catppuccin-macchiato",
+    "tokyo-night-storm", "tokyo-night-day", "kanagawa", "everforest-dark", "ayu-mirage", "nightfox",
+];
+
 #[test]
 fn builtin_names_complete() {
-    let want = [
-        "github-dark", "github-light", "rose-pine", "rose-pine-dawn", "catppuccin-mocha", "catppuccin-latte",
-        "tokyo-night", "dracula", "gruvbox-dark", "solarized-dark", "solarized-light",
-    ];
-    assert_eq!(BUILTIN_NAMES, want);
+    let want: Vec<String> = ORIGINAL.iter().chain(ADDED.iter()).map(|s| s.to_string()).collect();
+    assert_eq!(BUILTIN_NAMES.map(String::from).to_vec(), want);
     let r = Registry::load(None);
-    assert_eq!(r.names()[..11], want.map(String::from));
+    assert_eq!(r.names()[..want.len()], want[..]);
     assert!(r.errors().is_empty(), "{:?}", r.errors());
+}
+
+#[test]
+fn theme_picker_lists_the_added_themes() {
+    // the `T` picker is built from `Registry::names()`
+    let names = Registry::load(None).names();
+    for n in ADDED {
+        assert!(names.iter().any(|x| x == n), "{n} missing from the picker list");
+    }
+}
+
+fn luminance(c: Color) -> f64 {
+    let Color::Rgb(r, g, b) = c else { panic!("not truecolor: {c:?}") };
+    let lin = |v: u8| {
+        let v = v as f64 / 255.0;
+        if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+fn contrast(a: Color, b: Color) -> f64 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+#[test]
+fn added_themes_are_legible_and_flagged_by_their_background() {
+    let r = Registry::load(None);
+    let reference = r.resolve("github-dark", ColorDepth::True, None).unwrap();
+    for name in ADDED {
+        let t = r.resolve(name, ColorDepth::True, None).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        assert_eq!(t.is_light, luminance(t.ui.bg) > 0.18, "{name}: kind flag disagrees with the background");
+        assert_eq!(t.is_light, ["one-light", "gruvbox-light", "tokyo-night-day"].contains(&name), "{name}");
+        let body = contrast(t.ui.fg, t.ui.bg);
+        assert!(body >= 4.5, "{name}: fg/bg contrast {body:.2}");
+        let muted = contrast(t.ui.muted, t.ui.bg);
+        assert!(muted >= 3.0, "{name}: muted/bg contrast {muted:.2}");
+        let mut keys: Vec<_> = t.syntax.keys().collect();
+        let mut want: Vec<_> = reference.syntax.keys().collect();
+        keys.sort();
+        want.sort();
+        assert_eq!(keys, want, "{name}: syntax captures differ from the other builtins");
+        for (cap, style) in &t.syntax {
+            assert!(style.fg.is_some(), "{name}: {cap} has no colour");
+        }
+    }
+}
+
+#[test]
+fn builtin_kind_flag_matches_background_luminance() {
+    let r = Registry::load(None);
+    for name in BUILTIN_NAMES {
+        let t = r.resolve(name, ColorDepth::True, None).unwrap();
+        assert_eq!(t.is_light, luminance(t.ui.bg) > 0.18, "{name}");
+    }
 }
 
 #[test]
