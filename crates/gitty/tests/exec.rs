@@ -366,7 +366,7 @@ fn highlight_returns_spans_and_honours_cancel() {
     let gens = Gens::default();
     let text = Arc::new(Text::new(b"fn main() {}\n".to_vec()));
     let key = HlKey { blob: BlobId([1; 20]), path: "src/a.rs".into() };
-    let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key: key.clone(), text: text.clone() });
+    let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key: key.clone(), text: text.clone(), files_view: false });
     match &out[..] {
         [Msg::Highlighted { key: k, spans: Some(h), cancelled: false }] => {
             assert_eq!(k, &key);
@@ -375,7 +375,7 @@ fn highlight_returns_spans_and_honours_cancel() {
         m => panic!("{m:?}"),
     }
     Gens::bump(&gens.file);
-    let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key, text });
+    let out = run_with(&f.path(), &gens, Request::Highlight { generation: 0, key, text, files_view: false });
     assert!(matches!(&out[..], [Msg::Highlighted { spans: None, cancelled: true, .. }]), "{out:?}");
 }
 

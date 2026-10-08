@@ -42,7 +42,7 @@ pub enum Sep {
     Files,
     /// The diff title row below the file list (medium layout).
     FilesBelow,
-    /// Vertical line right of the Changes tab's left column.
+    /// Vertical line right of the left column of the Changes and Files tabs.
     Changes,
 }
 
@@ -191,6 +191,30 @@ pub fn compute_changes(i: &LayoutInput) -> Panes {
     p
 }
 
+/// Files tab: the tree on the left, the viewer on the right (the same split as Changes, whose
+/// width the separator drags). Narrow terminals show one of them.
+pub fn compute_files(i: &LayoutInput) -> Panes {
+    let (w, h) = (i.width, i.height);
+    let top = Rect::new(0, 0, w, h.min(1));
+    let bottom = Rect::new(0, h.saturating_sub(1), w, u16::from(h >= 2));
+    let body = Rect::new(0, top.height, w, h.saturating_sub(top.height + bottom.height));
+    let mut p = Panes { top, bottom, body, ..Panes::default() };
+    if body.height == 0 || body.width == 0 {
+        return p;
+    }
+    if i.fullscreen || (Mode::of(w) == Mode::Narrow && i.focus == Focus::Diff) {
+        p.diff = Some(body);
+    } else if Mode::of(w) == Mode::Narrow {
+        p.files = Some(body);
+    } else {
+        let (left, sep, right) = split_h(body, changes_width(w, i.ui));
+        p.seps.push((sep, Sep::Changes));
+        p.files = Some(left);
+        p.diff = Some(right);
+    }
+    p
+}
+
 /// (left `w` cols, 1-col separator, rest).
 fn split_h(r: Rect, w: u16) -> (Rect, Rect, Rect) {
     let w = w.min(r.width);
@@ -302,6 +326,27 @@ mod tests {
             for h in 0..=8 {
                 let p = compute_changes(&LayoutInput { width: w, height: h, focus: Focus::Files, fullscreen: false, header_height: 3, file_count: 0, ui: &UiState::default() });
                 for r in [p.files, p.commit, p.diff].into_iter().flatten() {
+                    assert!(r.right() <= w && r.bottom() <= h);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn files_layout_tiles_and_drills() {
+        let inp = |w, h, focus| compute_files(&LayoutInput { width: w, height: h, focus, fullscreen: false, header_height: 3, file_count: 0, ui: &UiState::default() });
+        let p = inp(140, 30, Focus::Files);
+        let (files, diff) = (p.files.unwrap(), p.diff.unwrap());
+        assert_eq!(files.width + 1 + diff.width, 140);
+        assert_eq!((files.y, files.bottom()), (diff.y, diff.bottom()));
+        let p = inp(100, 30, Focus::Files);
+        assert!(p.diff.is_none() && p.files.unwrap().width == 100);
+        let p = inp(100, 30, Focus::Diff);
+        assert!(p.files.is_none() && p.diff.unwrap().width == 100);
+        for w in 0..=45 {
+            for h in 0..=8 {
+                let p = inp(w, h, Focus::Files);
+                for r in [p.files, p.diff].into_iter().flatten() {
                     assert!(r.right() <= w && r.bottom() <= h);
                 }
             }

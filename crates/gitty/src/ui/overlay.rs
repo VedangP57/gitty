@@ -17,6 +17,8 @@ const SECTIONS: &[(Ctx, &str)] = &[
     (Ctx::Nav, "Moving"),
     (Ctx::History, "History"),
     (Ctx::Compare, "Compare mode"),
+    (Ctx::Files, "Files"),
+    (Ctx::FilesTree, "Files tree"),
     (Ctx::Diff, "Diff"),
     (Ctx::Changes, "Changes"),
     (Ctx::ChangesList, "Changes file list"),

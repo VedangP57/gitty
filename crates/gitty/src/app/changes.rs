@@ -178,21 +178,36 @@ impl App {
         if tab == self.tab {
             return;
         }
+        if tab == Tab::Files && self.workdir.is_none() {
+            self.toast = Some(Toast { what: "Files needs a working tree (this is a bare repository)".into(), detail: String::new(), error: false });
+            return;
+        }
         // a half-typed query belongs to the History tab: the bar must not swallow keys here
         self.search.bar = None;
+        let from = self.tab;
         self.tab = tab;
+        if from == Tab::Files {
+            self.files_leave();
+        }
         // the diff pane belongs to the active tab; the other tab reloads from its cache
         self.diff = None;
         self.diff_wanted = None;
         self.diff_error = None;
         self.changes.current = None;
         self.file_gen = crate::msg::Gens::bump(&self.gens.file);
+        // History's pane focus comes back when leaving the other two tabs for it
+        if from == Tab::History {
+            self.history_focus = self.focus;
+        }
         match tab {
             Tab::Changes => {
-                self.history_focus = self.focus;
                 self.focus = super::Focus::Files;
                 self.request_status();
                 self.request_change_diff();
+            }
+            Tab::Files => {
+                self.focus = super::Focus::Files;
+                self.files_enter();
             }
             Tab::History => {
                 self.focus = self.history_focus;
@@ -351,6 +366,9 @@ impl App {
             Msg::Changed(c) => {
                 if c.intersects(Changed::WORKTREE | Changed::INDEX | Changed::IGNORE_RULES | Changed::STATE) {
                     self.request_status();
+                }
+                if self.tab == Tab::Files && c.intersects(Changed::WORKTREE | Changed::INDEX | Changed::IGNORE_RULES) {
+                    self.refresh_files();
                 }
                 if c.intersects(Changed::REFS | Changed::REMOTE | Changed::CONFIG | Changed::STASH) {
                     self.outbox.push(Request::Refs);
