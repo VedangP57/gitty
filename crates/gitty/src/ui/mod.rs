@@ -5,6 +5,7 @@ pub mod changes;
 pub mod commit_list;
 pub mod diff;
 pub mod file_list;
+pub mod files;
 pub mod header;
 pub mod layout;
 pub mod overlay;
@@ -41,6 +42,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if let Some(r) = panes.files {
         if app.tab == Tab::Changes {
             changes::draw_files(app, buf, r);
+        } else if app.tab == Tab::Files {
+            files::draw_tree(app, buf, r);
         } else {
             file_list::draw(app, buf, r);
         }
@@ -49,7 +52,11 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         changes::draw_commit(app, buf, r);
     }
     if let Some(r) = panes.diff {
-        diff::draw(app, buf, r);
+        if app.tab == Tab::Files {
+            files::draw_viewer(app, buf, r);
+        } else {
+            diff::draw(app, buf, r);
+        }
     }
     for (r, sep) in &panes.seps {
         if *sep == Sep::FilesBelow {

@@ -22,7 +22,9 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
         0 => "[1] Changes".to_string(),
         n => format!("[1] Changes ({n})"),
     };
-    let tabs = [(Tab::Changes, changes.as_str()), (Tab::History, "[2] History")];
+    // a bare repository has no working tree to browse
+    let files = (Tab::Files, "[3] Files");
+    let tabs: Vec<(Tab, &str)> = [Some((Tab::Changes, changes.as_str())), Some((Tab::History, "[2] History")), app.workdir.is_some().then_some(files)].into_iter().flatten().collect();
     let tabs_w: u16 = tabs.iter().map(|t| width(t.1) + 2).sum();
     let right = r.right();
     let mut tx = right.saturating_sub(tabs_w);
@@ -78,7 +80,12 @@ fn hint_label(k: &crate::keymap::Key) -> String {
 /// fixed).
 fn hints(app: &App) -> Vec<(String, &'static str)> {
     use crate::keymap::Action as A;
-    let list: &[(&[A], &str)] = if app.tab == Tab::Changes {
+    let list: &[(&[A], &str)] = if app.tab == Tab::Files {
+        match app.focus {
+            Focus::Diff => &[(&[A::Down, A::Up], "scroll"), (&[A::ScrollLeft, A::ScrollRight], "sideways"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::Back], "back"), (&[A::Help], "help")],
+            _ => &[(&[A::Down, A::Up], "move"), (&[A::FilesCollapse, A::FilesExpand], "fold"), (&[A::Open], "open"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit")],
+        }
+    } else if app.tab == Tab::Changes {
         match app.focus {
             Focus::Diff => &[(&[A::Stage], "stage line"), (&[A::LineRange], "range"), (&[A::StageHunk], "hunk"), (&[A::StageAll], "file"), (&[A::Discard], "discard"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Back], "back")],
             Focus::Commit => return vec![("alt+enter".into(), "commit"), ("tab".into(), "field"), ("esc".into(), "leave")],

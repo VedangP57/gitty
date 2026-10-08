@@ -8,6 +8,10 @@ All notable changes to gitty are listed here. The format follows
 
 ### Added
 
+- A Files tab (`3`): the working tree as a lazily loaded tree (ignored files dimmed, symlinks and
+  submodules as leaves) with a read-only, syntax-coloured viewer. `Enter`/`l` open a directory,
+  `h` closes it, `e` or a double-click opens the file in `$EDITOR`. Files named like secrets
+  (`.env`, keys, tokens) are not read until you press `v`.
 - `B` opens a branch picker: Enter switches (a remote-only branch gets a local tracking branch),
   `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
   branch with unmerged commits asks twice. With uncommitted changes, switching asks first.

@@ -82,10 +82,25 @@ gitty --theme dracula
 gitty untune [PATH]
 ```
 
-The window has a History tab (`2`) and a Changes tab (`1`). `Tab` moves between panes and `?`
-shows every key. The mouse works throughout: click to select, scroll any pane, drag the diff
+The window has a History tab (`2`), a Changes tab (`1`) and a Files tab (`3`). `Tab` moves between
+panes and `?` shows every key. The mouse works throughout: click to select, scroll any pane, drag the diff
 gutter to pick lines, Shift-click for a commit range, and double-click a file or diff line to
 open it in `$EDITOR` at that line.
+
+### Files
+
+The Files tab (`3`) browses the working tree, ignored files included, and shows the selected file
+read-only with line numbers and syntax colours. Directories load when opened (`Enter` or `l`; `h`
+closes one, or goes to the parent), so a large tree costs nothing until you go into it. Symlinks are
+shown as `name -> target` and never followed; submodules and nested repositories are leaves. Files
+over 2 MiB and binary files are not loaded (`e` opens them in `$EDITOR`).
+
+Files that look like secrets (`.env` and `.env.*` except the `.example`, `.sample`, `.template`
+and `.dist` ones, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `id_rsa`
+and the other SSH keys, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `credentials*`,
+`secrets.*`, `service-account*.json`) are marked `(secret)` and are not read from disk until you
+press `v` on them. The reveal ends when you select another file or leave the tab, and is never
+saved.
 
 ### In herdr
 
@@ -127,6 +142,7 @@ reported at startup:
 | `q` | quit | `quit` |
 | `1` | Changes tab | `changes_tab` |
 | `2` | History tab | `history_tab` |
+| `3` | Files tab | `files_tab` |
 | `f` | fetch | `fetch` |
 | `p` | pull | `pull` |
 | `P` | push | `push` |
@@ -150,6 +166,10 @@ reported at startup:
 | `F` | Changes: filter the file list | `filter` |
 | `v` | Changes: select a range of lines | `line_range` |
 | `H` | Changes: stage the hunk | `stage_hunk` |
+| `v` | Files: show or hide a secret file (.env, keys…) | `reveal_secret` |
+| `e` | Files: open the file in $EDITOR | `open_editor` |
+| `h` `←` | Files: close the directory (or go to its parent) | `files_collapse` |
+| `l` `→` | Files: open the directory | `files_expand` |
 | `/` | search history (text, path:dir) | `search` |
 | `n` | next search match | `next_match` |
 | `N` | previous search match | `prev_match` |

@@ -94,12 +94,18 @@ impl App {
         }
         let split = self.split_active();
         let changes = self.tab == Tab::Changes;
+        let files_tab = self.tab == Tab::Files;
         let in_diff = self.focus == Focus::Diff;
         let comparing = self.compare.is_some();
         match a {
             Action::Quit => self.request_quit(),
             Action::ChangesTab => self.set_tab(Tab::Changes),
             Action::HistoryTab => self.set_tab(Tab::History),
+            Action::FilesTab => self.set_tab(Tab::Files),
+            Action::RevealSecret => self.toggle_reveal(),
+            Action::OpenEditor => self.files_edit(),
+            Action::FilesCollapse => self.files_collapse(),
+            Action::FilesExpand => self.files_expand(),
             Action::Fetch => self.start_net(crate::msg::NetOp::Fetch),
             Action::Pull => self.start_net(crate::msg::NetOp::Pull),
             Action::Push => self.start_net(crate::msg::NetOp::Push),
@@ -233,9 +239,14 @@ impl App {
             Action::Top => self.move_any(Move::Top),
             Action::Bottom => self.move_any(Move::Bottom),
             // Changes has two panes: Tab flips between them
-            Action::NextPane | Action::PrevPane if changes => self.focus = if in_diff { Focus::Files } else { Focus::Diff },
+            Action::NextPane | Action::PrevPane if changes || files_tab => self.focus = if in_diff { Focus::Files } else { Focus::Diff },
             Action::NextPane => self.cycle_focus(1),
             Action::PrevPane => self.cycle_focus(-1),
+            Action::Open if files_tab => {
+                if !in_diff {
+                    self.files_open();
+                }
+            }
             Action::Open if changes && in_diff => {
                 let hidden = self.diff.as_ref().is_some_and(|d| {
                     matches!(d.diff.class, gitty_core::diff::classify::FileClass::LargeText { .. } | gitty_core::diff::classify::FileClass::Generated { .. })
@@ -253,7 +264,7 @@ impl App {
             }
             Action::Back if changes && in_diff && self.changes.visual.is_some() => self.changes.visual = None,
             Action::Back if changes && in_diff && !self.fullscreen => self.focus = Focus::Files,
-            Action::Back if changes && !in_diff => {}
+            Action::Back if (changes || files_tab) && !in_diff => {}
             Action::Back if self.focus == Focus::History && comparing => self.leave_compare(),
             Action::Back if self.focus == Focus::History && self.range_anchor.is_some() => self.end_range(),
             Action::Back if self.focus == Focus::History && self.search_active() => self.clear_search(),
@@ -263,6 +274,10 @@ impl App {
 
     /// Moves in the Changes file list, or in the focused pane.
     fn move_any(&mut self, m: Move) {
+        if self.tab == Tab::Files && self.focus != Focus::Diff {
+            let t = target(self.files_tab.sel, self.files_tab.rows.len(), self.files_capacity(), m);
+            return self.select_files_row(t);
+        }
         if self.tab == Tab::Changes && self.focus != Focus::Diff {
             let n = self.changes.visible().len();
             let t = target(self.changes.sel, n, self.files_capacity(), m);
@@ -371,6 +386,11 @@ impl App {
                 self.select_file_row(t);
             }
             Focus::Commit => {}
+            // the Files viewer scrolls by lines; it has no cursor
+            Focus::Diff if self.tab == Tab::Files => {
+                let max = self.view_lines().saturating_sub(self.diff_capacity());
+                self.files_tab.vscroll = target(self.files_tab.vscroll, max + 1, self.diff_capacity(), m);
+            }
             Focus::Diff => {
                 let split = self.split_active();
                 let (cap, wrap) = (self.diff_capacity(), self.diff_wrap());
@@ -391,7 +411,7 @@ impl App {
     fn cycle_focus(&mut self, dir: i64) {
         let order: &[Focus] = match self.tab {
             Tab::Changes if self.fullscreen => &[Focus::Diff],
-            Tab::Changes => &[Focus::Files, Focus::Diff],
+            Tab::Changes | Tab::Files => &[Focus::Files, Focus::Diff],
             Tab::History => layout::tab_order(self.mode(), self.fullscreen),
         };
         let i = order.iter().position(|f| *f == self.focus).unwrap_or(0) as i64;
@@ -420,6 +440,11 @@ impl App {
     }
 
     fn hscroll(&mut self, by: i32) {
+        // the Files viewer clips long lines (no wrapping) and scrolls sideways instead
+        if self.tab == Tab::Files {
+            self.files_tab.hscroll = (i32::from(self.files_tab.hscroll) + by).clamp(0, 10_000) as u16;
+            return;
+        }
         if let Some(d) = self.diff.as_mut().filter(|_| !self.wrap) {
             d.hscroll = (i32::from(d.hscroll) + by).clamp(0, 10_000) as u16;
         }
@@ -486,6 +511,10 @@ impl App {
         }
         self.search.bar = None;
         let double = self.note_click(x, y);
+        // a double-click on the Files tab edits the file: its first click already selected it
+        if double && self.tab == Tab::Files {
+            return self.files_double_click(x, y);
+        }
         self.click_once(x, y, mods);
         if !double {
             return;
@@ -509,6 +538,9 @@ impl App {
         if let Some(sep) = self.hits.panes.seps.iter().find(|(r, _)| r.contains(Position { x, y })).map(|s| s.1) {
             self.hits.dragging = Some(sep);
             return;
+        }
+        if self.tab == Tab::Files {
+            return self.files_click(x, y);
         }
         if self.tab == Tab::Changes {
             return self.changes_click(x, y);
@@ -670,6 +702,16 @@ impl App {
 
     fn wheel(&mut self, x: u16, y: u16, by: i64) {
         let scroll = |v: usize, max: usize| (v as i64 + by).clamp(0, max as i64) as usize;
+        if self.tab == Tab::Files {
+            if inside(self.hits.panes.files, x, y).is_some() {
+                let max = self.files_tab.rows.len().saturating_sub(self.files_capacity());
+                self.files_tab.scroll = scroll(self.files_tab.scroll, max);
+            } else if inside(self.hits.panes.diff, x, y).is_some() {
+                let max = self.view_lines().saturating_sub(self.diff_capacity());
+                self.files_tab.vscroll = scroll(self.files_tab.vscroll, max);
+            }
+            return;
+        }
         if inside(self.hits.panes.history, x, y).is_some() {
             let max = self.history_len.saturating_sub(self.list_capacity());
             self.list_scroll = scroll(self.list_scroll, max);

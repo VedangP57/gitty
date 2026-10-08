@@ -7,6 +7,7 @@ pub mod branches;
 pub mod compare;
 pub mod net;
 pub mod diffstate;
+pub mod files;
 mod input;
 pub mod search;
 mod tools;
@@ -48,6 +49,8 @@ const ROWS_BATCH: usize = 256;
 pub enum Tab {
     Changes,
     History,
+    /// The working tree as a file tree with a read-only viewer.
+    Files,
 }
 
 pub enum Overlay {
@@ -262,6 +265,7 @@ pub struct App {
     pub hits: Hits,
 
     pub changes: changes::Changes,
+    pub files_tab: files::FilesState,
     /// The terminal has focus (FocusGained/FocusLost); the status backstop runs only then.
     pub focused: bool,
     index_mark: Option<gitty_core::watch::IndexMark>,
@@ -386,6 +390,7 @@ impl App {
             osc_out: Vec::new(),
             hits: Hits::default(),
             changes: changes::Changes::default(),
+            files_tab: files::FilesState::default(),
             focused: false,
             index_mark: None,
             net: None,
@@ -490,6 +495,7 @@ impl App {
         match self.tab {
             Tab::History => layout::compute(&input),
             Tab::Changes => layout::compute_changes(&input),
+            Tab::Files => layout::compute_files(&input),
         }
     }
 
@@ -550,6 +556,7 @@ impl App {
     pub fn handle_msg(&mut self, m: Msg) {
         self.dirty = true;
         let Some(m) = self.handle_changes_msg(m) else { return };
+        let Some(m) = self.handle_files_msg(m) else { return };
         let Some(m) = self.handle_net_msg(m) else { return };
         let Some(m) = self.handle_search_msg(m) else { return };
         let Some(m) = self.handle_compare_msg(m) else { return };
@@ -704,9 +711,9 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer(_) | Msg::Ask(_) | Msg::Tuned { .. } => {}
-            Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
+            Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
     }
 

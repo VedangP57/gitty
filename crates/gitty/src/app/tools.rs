@@ -108,5 +108,8 @@ impl App {
         }
         // an editor may have changed files
         self.request_status();
+        if self.tab == Tab::Files {
+            self.refresh_files();
+        }
     }
 }
