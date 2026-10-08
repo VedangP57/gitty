@@ -52,6 +52,27 @@ fn relative(rel: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Refuses a path that goes through a symlink in `dirs` (each prefix of `rel`, and `rel` itself
+/// when `whole`): a link swapped in for a directory must not lead the listing or the reader out of
+/// the work tree. A check by `lstat` per level, so a swap between the check and the open is a
+/// narrow race that the final `O_NOFOLLOW` open only covers for the last component.
+fn no_symlinks(root: &Path, rel: &Path, whole: bool) -> anyhow::Result<()> {
+    let n = rel.components().count();
+    let mut p = root.to_path_buf();
+    for (i, c) in rel.components().enumerate() {
+        p.push(c);
+        if i + 1 == n && !whole {
+            break;
+        }
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => anyhow::bail!("{} goes through a symlink", rel.display()),
+            Ok(_) => {}
+            Err(e) => anyhow::bail!("reading {}: {e}", rel.display()),
+        }
+    }
+    Ok(())
+}
+
 /// What the index knows about the children of one directory: (name, is a gitlink, is a directory).
 fn tracked_children(h: &Handle, rel: &Path) -> Vec<(Vec<u8>, bool, bool)> {
     use gix::bstr::BString;
@@ -98,6 +119,7 @@ impl Handle {
         use std::os::unix::ffi::OsStrExt;
         relative(rel)?;
         let root = self.owner().workdir().ok_or_else(|| anyhow::anyhow!("bare repository"))?;
+        no_symlinks(root, rel, true)?;
         let abs = root.join(rel);
         let tracked = tracked_children(self, rel);
         let is_tracked = |name: &OsString| tracked.binary_search_by(|(n, ..)| n.as_slice().cmp(name.as_bytes())).is_ok();
@@ -131,30 +153,73 @@ impl Handle {
     }
 }
 
-/// Whether a file's name says it holds secrets (keys, tokens, `.env`). Case-insensitive, on the
-/// last component only. The Files tab never reads such a file for display until the user asks.
-pub fn is_secret(path: &Path) -> bool {
-    let Some(name) = path.file_name() else { return false };
-    let n = name.to_string_lossy().to_lowercase();
-    if n == ".env" {
+/// Directories whose whole content is secret.
+const SECRET_DIRS: [&str; 6] = [".env", "secrets", ".secrets", ".ssh", ".aws", ".gnupg"];
+/// Names with these stripped (one after another) are matched as what they back up.
+const BACKUP_SUFFIXES: [&str; 8] = ["~", ".bak", ".orig", ".old", ".swp", ".swo", ".save", ".tmp"];
+const EXAMPLES: [&str; 4] = [".env.example", ".env.sample", ".env.template", ".env.dist"];
+
+/// Lowercase, without trailing spaces and dots (Windows-style tricks), editor lock forms
+/// (`#name#`, `.#name`) and backup suffixes.
+fn normalise(name: &str) -> String {
+    let mut n = name.to_lowercase();
+    loop {
+        let before = n.len();
+        n = n.trim_end_matches([' ', '.']).to_string();
+        if n.len() > 2 && n.starts_with('#') && n.ends_with('#') {
+            n = n[1..n.len() - 1].to_string();
+        }
+        if let Some(r) = n.strip_prefix(".#") {
+            n = r.to_string();
+        }
+        for s in BACKUP_SUFFIXES {
+            if let Some(r) = n.strip_suffix(s).filter(|r| !r.is_empty()) {
+                n = r.to_string();
+            }
+        }
+        if n.len() == before {
+            return n;
+        }
+    }
+}
+
+fn secret_name(n: &str) -> bool {
+    const EXT: [&str; 14] = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ppk", ".tfvars", ".gpg", ".token", ".secret", ".secrets", ".env"];
+    if n == ".env" || n == ".envrc" || [".env.", ".env-", ".env_"].iter().any(|p| n.starts_with(p)) {
         return true;
     }
-    if n.starts_with(".env.") {
-        return !matches!(n.as_str(), ".env.example" | ".env.sample" | ".env.template" | ".env.dist");
-    }
-    const EXT: [&str; 7] = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx"];
-    if EXT.iter().any(|e| n.ends_with(e)) {
+    if EXT.iter().any(|e| n.ends_with(e)) || n.contains(".tfstate") || (n.ends_with(".asc") && n.contains("secret")) {
         return true;
     }
     // a public key is masked too: cheaper to press `v` than to guess wrong
-    let stem = n.strip_suffix(".pub").unwrap_or(&n);
-    if matches!(stem, "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519") {
+    let stem = n.strip_suffix(".pub").unwrap_or(n);
+    if matches!(stem, "id_rsa" | "id_dsa" | "id_ecdsa" | "id_ed25519") || (stem.starts_with("id_") && stem.ends_with("_sk")) {
         return true;
     }
-    matches!(n.as_str(), ".netrc" | ".npmrc" | ".pypirc" | ".git-credentials" | "credentials")
+    matches!(n, ".netrc" | ".npmrc" | ".pypirc" | ".git-credentials" | "credentials" | ".pgpass" | ".htpasswd" | ".vault-token")
         || n.starts_with("credentials.")
         || n.starts_with("secrets.")
         || (n.starts_with("service-account") && n.ends_with(".json"))
+}
+
+/// Whether a path says its file holds secrets (keys, tokens, `.env`). Case-insensitive; the file
+/// name is matched after dropping backup and editor suffixes, and a file inside a secret
+/// directory (`.ssh`, `.aws`, `secrets`, …) is secret whatever it is called. Only the exact names
+/// `.env.example`, `.env.sample`, `.env.template` and `.env.dist` are let through. Limits: a secret
+/// under an innocent name is not recognised. The Files tab never reads a secret file for display
+/// until the user asks.
+pub fn is_secret(path: &Path) -> bool {
+    let names: Vec<String> = path.components().filter_map(|c| if let Component::Normal(n) = c { Some(n.to_string_lossy().into_owned()) } else { None }).collect();
+    let Some((name, dirs)) = names.split_last() else { return false };
+    let dirs: Vec<String> = dirs.iter().map(|d| normalise(d)).collect();
+    if dirs.iter().any(|d| SECRET_DIRS.contains(&d.as_str()) || d == ".kube") {
+        return true;
+    }
+    let lower = name.to_lowercase();
+    if dirs.iter().any(|d| d == ".docker") && normalise(name) == "config.json" {
+        return true;
+    }
+    !EXAMPLES.contains(&lower.as_str()) && secret_name(&normalise(name))
 }
 
 /// What the viewer shows for a file.
@@ -173,30 +238,39 @@ pub enum FileContent {
 }
 
 /// Reads `rel` of the work tree at `root` for display. A secret file is not opened unless
-/// `reveal`. Only regular files are opened, and at most [`MAX_VIEW_BYTES`] are read.
+/// `reveal`. Only regular files are opened (without following a link, and without blocking on a
+/// FIFO), the type is checked on the open handle, and at most [`MAX_VIEW_BYTES`] are read.
 pub fn read_file(root: &Path, rel: &Path, reveal: bool) -> anyhow::Result<FileContent> {
     use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     relative(rel)?;
     if is_secret(rel) && !reveal {
         return Ok(FileContent::Masked);
     }
+    no_symlinks(root, rel, false)?;
     let abs = root.join(rel);
     let meta = std::fs::symlink_metadata(&abs).map_err(|e| anyhow::anyhow!("reading {}: {e}", rel.display()))?;
-    let ft = meta.file_type();
-    if ft.is_symlink() {
+    if meta.file_type().is_symlink() {
         return Ok(FileContent::Symlink { target: std::fs::read_link(&abs).unwrap_or_default() });
     }
-    if !ft.is_file() {
+    if !meta.file_type().is_file() {
         return Ok(FileContent::Special);
     }
-    if meta.len() > MAX_VIEW_BYTES {
-        return Ok(FileContent::TooLarge { size: meta.len() });
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(&abs).map_err(|e| match e.raw_os_error() {
+        Some(libc::ELOOP) | Some(libc::ENXIO) => anyhow::anyhow!("{} changed while it was being opened", rel.display()),
+        _ => anyhow::anyhow!("reading {}: {e}", rel.display()),
+    })?;
+    // what was opened, not what the path was a moment ago
+    let meta = file.metadata().map_err(|e| anyhow::anyhow!("reading {}: {e}", rel.display()))?;
+    if !meta.file_type().is_file() {
+        return Ok(FileContent::Special);
+    }
+    if meta.size() > MAX_VIEW_BYTES {
+        return Ok(FileContent::TooLarge { size: meta.size() });
     }
     // the file may have grown since the stat: `take` keeps the read bounded anyway
-    let mut bytes = Vec::with_capacity(meta.len() as usize);
-    std::fs::File::open(&abs)
-        .and_then(|f| f.take(MAX_VIEW_BYTES + 1).read_to_end(&mut bytes))
-        .map_err(|e| anyhow::anyhow!("reading {}: {e}", rel.display()))?;
+    let mut bytes = Vec::with_capacity(meta.size() as usize);
+    file.take(MAX_VIEW_BYTES + 1).read_to_end(&mut bytes).map_err(|e| anyhow::anyhow!("reading {}: {e}", rel.display()))?;
     let size = bytes.len() as u64;
     Ok(if size > MAX_VIEW_BYTES {
         FileContent::TooLarge { size }

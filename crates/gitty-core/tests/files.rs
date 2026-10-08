@@ -271,3 +271,79 @@ fn read_file_classifies() {
     assert!(read_file(&root, Path::new("../x"), false).is_err());
     assert!(read_file(&root, Path::new("nope"), false).is_err());
 }
+
+#[test]
+fn secret_names_by_directory_suffix_and_pattern() {
+    use gitty_core::files::is_secret;
+    for yes in [
+        // inside a secret directory
+        ".env/anything.txt", "app/secrets/db.yml", ".secrets/x", "home/.ssh/config", ".aws/config", ".gnupg/pubring.kbx", ".kube/config", ".docker/config.json", "a/.SSH/known_hosts",
+        // backups, swap and lock forms of a secret
+        ".env~", ".env.bak", ".env.orig", ".env.swp", ".env.swo", ".env.old", ".env.save", ".env.tmp", "#.env#", ".#.env", ".env.", ".env ", "id_rsa.bak", "server.pem~", ".env.bak.bak", "ID_RSA.Pub.OLD",
+        // new patterns
+        ".envrc", "prod.env", ".env-prod", ".env_local", "id_ed25519_sk", "id_ecdsa_sk.pub", "putty.ppk", ".pgpass", ".htpasswd", "prod.tfvars", "terraform.tfstate", "terraform.tfstate.backup",
+        ".vault-token", "backup.gpg", "my-secret-key.asc", "api.token", "db.secret", "db.secrets",
+        // the allow-list is for the exact names only
+        ".env.example.local", ".env.example.bak", ".env.sample.old", ".env.examples", ".ENV.EXAMPLE.LOCAL",
+    ] {
+        assert!(is_secret(Path::new(yes)), "{yes} should be secret");
+    }
+    for no in [
+        ".env.example", ".ENV.SAMPLE", "src/.env.template", ".env.dist", ".docker/other.json", "docker/config.json", "foo.asc", "environment.env.rs", "tokenizer.rs", "secretary.txt",
+        "my.environment", "README.md", "notes.old", "a.swp", "config.json", "kube/config", "ssh/config",
+    ] {
+        assert!(!is_secret(Path::new(no)), "{no} should not be secret");
+    }
+}
+
+#[test]
+fn a_directory_swapped_for_a_symlink_is_neither_listed_nor_read() {
+    use gitty_core::files::read_file;
+    let f = Fixture::new();
+    f.write("a.txt", "a");
+    f.commit("one", 1_700_000_000);
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("leak.txt"), "outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), f.path().join("evil")).unwrap();
+    let h = Repo::open(f.path()).unwrap().handle();
+    let e = h.list_dir(Path::new("evil")).unwrap_err();
+    assert!(format!("{e:#}").contains("symlink"), "{e:#}");
+    let e = read_file(&f.path(), Path::new("evil/leak.txt"), false).unwrap_err();
+    assert!(format!("{e:#}").contains("symlink"), "{e:#}");
+    // a nested link too
+    std::fs::create_dir(f.path().join("real")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), f.path().join("real/inner")).unwrap();
+    assert!(h.list_dir(Path::new("real/inner")).is_err());
+    assert!(read_file(&f.path(), Path::new("real/inner/leak.txt"), false).is_err());
+    // the link itself is still a leaf in its parent's listing
+    assert!(h.list_dir(Path::new("")).unwrap().iter().any(|e| e.name == "evil" && matches!(e.kind, EntryKind::Symlink { .. })));
+}
+
+#[test]
+fn a_symlink_to_a_secret_shows_only_its_target_name() {
+    use gitty_core::files::{FileContent, read_file};
+    let f = Fixture::new();
+    f.write(".env", "TOKEN=fake-secret-value\n");
+    std::os::unix::fs::symlink(".env", f.path().join("notes.txt")).unwrap();
+    assert_eq!(read_file(&f.path(), Path::new("notes.txt"), false).unwrap(), FileContent::Symlink { target: ".env".into() });
+}
+
+#[test]
+fn a_fifo_with_an_ordinary_name_is_not_opened() {
+    use gitty_core::files::{FileContent, read_file};
+    let f = Fixture::new();
+    let fifo = f.path().join("pipe.txt");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    // a hang here is the failure: read it on a thread and wait a bounded time
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = f.path();
+    std::thread::spawn(move || {
+        let _ = tx.send(read_file(&root, Path::new("pipe.txt"), false));
+    });
+    let got = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("read_file hung on a FIFO");
+    assert_eq!(got.unwrap(), FileContent::Special);
+    // and it lists as a plain entry without being opened
+    let listed = Repo::open(f.path()).unwrap().handle().list_dir(Path::new("")).unwrap();
+    assert_eq!(listed.len(), 1);
+}
