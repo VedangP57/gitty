@@ -74,6 +74,20 @@ fn palette_names_usable_as_values() {
 }
 
 #[test]
+fn pull_request_colours_follow_the_palette_and_can_be_set() {
+    let d = user_dir(&[("p.toml", "name = \"p\"\ninherit = \"github-dark\"\n[ui]\npr_merged = \"#112233\"\npr_draft = \"cyan\"\n")]);
+    let r = Registry::load(Some(d.path()));
+    let base = r.resolve("github-dark", ColorDepth::True, None).unwrap();
+    let p = r.resolve("p", ColorDepth::True, None).unwrap();
+    assert_eq!(base.ui.pr_open, base.ui.status_added);
+    assert_eq!(base.ui.pr_closed, base.ui.error);
+    assert_eq!(base.ui.pr_draft, base.ui.muted);
+    assert_eq!(p.ui.pr_merged, Color::Rgb(0x11, 0x22, 0x33));
+    assert_ne!(p.ui.pr_draft, base.ui.pr_draft);
+    assert_eq!(p.ui.pr_open, base.ui.pr_open);
+}
+
+#[test]
 fn inherit_cycle_errors() {
     let d = user_dir(&[
         ("a.toml", "name = \"a\"\ninherit = \"b\"\n"),

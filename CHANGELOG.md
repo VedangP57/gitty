@@ -28,6 +28,16 @@ All notable changes to gitty are listed here. The format follows
 - `R` opens the current branch's pull-request page (GitHub only) in the browser (the branch must be
   pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
   new-pull-request page.
+- The top bar shows `PR #<n>` after the branch when it has a pull request (GitHub only, needs the
+  `gh` CLI and a GitHub remote; a merged pull request still shows after its branch is deleted on the remote). The colour is the state, as on GitHub: green open, grey draft,
+  purple merged, red closed; set `pr_open`, `pr_draft`, `pr_merged` and `pr_closed` under `[ui]` in
+  a theme to change them. Clicking the badge opens the pull request in the browser. Pull requests
+  from forks that share the branch name are ignored (also by `R`). The badge is looked up in the
+  background whenever the refs refresh (focus regained, commits, branch changes, fetch, push), at
+  most every 30 seconds per branch, and every 5 minutes while the terminal has focus. Without
+  `gh`, a login or a network the badge is not added, and when a lookup fails (offline, timeout) the
+  badge already shown for that branch stays; it goes when the branch changes or `gh` reports that
+  there is no pull request.
 
 - A push rejected because the remote moved on (typically after amending a pushed commit or
   rebasing) asks whether to force push with a lease. The question lists the remote commits you

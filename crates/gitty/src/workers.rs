@@ -40,7 +40,8 @@ pub fn route(req: &Request) -> Pool {
         Request::Highlight { .. } => Pool::Highlighters,
         Request::Write(_) => Pool::Writer,
         Request::Net { .. } => Pool::Net,
-        Request::Tune { .. } => Pool::Maintenance,
+        // gh can take seconds: not on the readers the UI waits on
+        Request::Tune { .. } | Request::PrBadge { .. } => Pool::Maintenance,
         _ => Pool::Readers,
     }
 }
@@ -121,6 +122,10 @@ pub fn panic_reply(req: &Request) -> Box<dyn FnOnce(String) -> Msg + Send> {
             Box::new(move |d| Msg::File { generation, path, result: Err(internal(d)) })
         }
         &Request::Status { generation, .. } => Box::new(move |d| Msg::Status { generation, result: Err(internal(d)) }),
+        Request::PrBadge { branch } => {
+            let branch = branch.clone();
+            Box::new(move |_| Msg::PrBadge { branch, result: Err(gitty_core::forge::PrUnknown) })
+        }
         _ => Box::new(|detail| Msg::Error { what: "internal error in a worker".into(), detail }),
     }
 }

@@ -3483,6 +3483,144 @@ fn r_on_a_pushed_branch_asks_to_open_its_pull_request_page() {
     assert_eq!(url.as_deref(), Some("https://github.com/o/r/pull/new/feat/x"), "{toast}");
 }
 
+fn pr_info(number: u64, state: gitty_core::forge::PrState) -> gitty_core::forge::PrInfo {
+    gitty_core::forge::PrInfo { number, state, url: format!("https://github.com/o/r/pull/{number}") }
+}
+
+fn badge_requests(reqs: &[Request]) -> Vec<&str> {
+    reqs.iter().filter_map(|r| if let Request::PrBadge { branch } = r { Some(branch.as_str()) } else { None }).collect()
+}
+
+#[test]
+fn startup_asks_for_the_branchs_pull_request_and_the_reply_sets_the_badge() {
+    use gitty_core::forge::PrState;
+    let f = pr_fixture();
+    let mut t = H::new(&f);
+    let r = t.app.take_requests();
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    let r = t.app.take_requests();
+    assert_eq!(badge_requests(&r), ["feat/x"]);
+    // this repository has no remote: gh is never asked, and there is no badge
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(t.app.pr_badge, None);
+    assert!(t.app.toast.is_none());
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
+    assert_eq!(t.app.pr_badge, Some(("feat/x".into(), pr_info(7, PrState::Open))));
+    // an answer of "none" (gh says the PR is gone) takes it off again
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(None) });
+    assert_eq!(t.app.pr_badge, None);
+}
+
+#[test]
+fn a_failed_lookup_keeps_the_badge_and_a_missing_pull_request_removes_it() {
+    use gitty_core::forge::PrState;
+    let f = pr_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Err(gitty_core::forge::PrUnknown) });
+    assert_eq!(t.app.pr_badge, Some(("feat/x".into(), pr_info(7, PrState::Open))), "timeout, offline: still the last answer");
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(None) });
+    assert_eq!(t.app.pr_badge, None, "gh said there is none");
+}
+
+#[test]
+fn a_reply_for_another_branch_is_ignored() {
+    use gitty_core::forge::PrState;
+    let f = pr_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.handle_msg(Msg::PrBadge { branch: "main".into(), result: Ok(Some(pr_info(7, PrState::Merged))) });
+    assert_eq!(t.app.pr_badge, None);
+}
+
+#[test]
+fn switching_branches_clears_the_badge_and_asks_again() {
+    use gitty_core::forge::PrState;
+    let f = pr_fixture();
+    f.git(&["branch", "other"]);
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
+    f.git(&["switch", "-q", "other"]);
+    t.app.handle_focus(true);
+    let r = t.app.take_requests();
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(t.app.pr_badge, None, "gone as soon as the new HEAD is known");
+    // a late answer for the old branch changes nothing
+    t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
+    assert_eq!(t.app.pr_badge, None);
+    assert_eq!(badge_requests(&t.app.take_requests()), ["other"]);
+}
+
+#[test]
+fn the_pull_request_is_not_asked_for_more_than_every_30_seconds() {
+    let f = pr_fixture();
+    let mut t = H::new(&f);
+    t.drain();
+    // every refresh of the refs (focus, fetch, push, commit) passes by the question
+    for _ in 0..3 {
+        t.app.handle_focus(true);
+        let r = t.app.take_requests();
+        assert!(badge_requests(&r).is_empty(), "asked again at once");
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+        let r = t.app.take_requests();
+        assert!(badge_requests(&r).is_empty());
+    }
+    t.app.tick(t.clock + Duration::from_secs(31));
+    t.app.handle_focus(true);
+    let r = t.app.take_requests();
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    t.app.tick(t.clock + Duration::from_secs(31));
+    assert_eq!(badge_requests(&t.app.take_requests()), ["feat/x"], "after the minimum, a refresh asks again");
+}
+
+#[test]
+fn switching_back_does_not_queue_a_second_lookup_while_one_is_out() {
+    let f = pr_fixture();
+    f.git(&["branch", "other"]);
+    let mut t = H::new(&f);
+    let r = t.app.take_requests();
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(badge_requests(&t.app.take_requests()), ["feat/x"], "out, no reply yet");
+    for branch in ["other", "feat/x"] {
+        f.git(&["switch", "-q", branch]);
+        t.app.handle_focus(true);
+        let r = t.app.take_requests();
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+        let r = t.app.take_requests();
+        assert_eq!(badge_requests(&r), if branch == "other" { vec!["other"] } else { vec![] }, "{branch}");
+    }
+    assert_eq!(gitty::workers::route(&Request::PrBadge { branch: "x".into() }), gitty::workers::Pool::Maintenance);
+}
+
+#[test]
+fn the_badge_refreshes_by_itself_every_5_minutes_while_focused() {
+    let f = pr_fixture();
+    let mut t = H::new(&f);
+    t.drain();
+    assert_eq!(t.app.next_deadline(), None, "unfocused: no timer");
+    t.app.handle_focus(true);
+    t.drain();
+    let at = t.clock + Duration::from_secs(301);
+    t.app.tick(at);
+    assert_eq!(badge_requests(&t.app.take_requests()), ["feat/x"]);
+}
+
 /// branch_fixture, but topic and main also edit a.txt differently.
 fn conflicting_fixture() -> Fixture {
     let f = branch_fixture();

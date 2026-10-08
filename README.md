@@ -25,6 +25,9 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
   `master` and the branch `origin/HEAD` points to are never force pushed.
 - **Branches:** switch, create, rename, delete and merge branches from a picker (`B`), and stash and
   restore work (`S`, `Z`).
+- **Pull requests:** the top bar shows `PR #<n>` when the branch has one on GitHub, coloured by
+  state (green open, grey draft, purple merged, red closed); click it to open the page. It needs the
+  [`gh` CLI](https://cli.github.com/) logged in and is left out otherwise.
 - **Search and compare:** `/` searches the whole history (text, author, `path:`) while you keep
   working; `b` compares HEAD with any branch (behind, ahead, and the files that differ).
 
