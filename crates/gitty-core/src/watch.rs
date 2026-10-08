@@ -2,7 +2,6 @@
 //! over the worktree (and the git dir when it lives elsewhere), a path classifier, an ignore
 //! check and a debouncer. The owner gets a [`Changed`] mask per burst and decides what to refresh.
 
-use std::collections::HashMap;
 use std::ops::{BitOr, BitOrAssign};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -11,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use notify::Watcher as _;
 
+use crate::ignores::Ignores;
 use crate::repo::Repo;
 
 /// What changed, as a bit set.
@@ -164,58 +164,6 @@ impl IndexMark {
     pub fn is_seen(&self) -> bool {
         let now = IndexFingerprint::of(&self.path);
         now.is_some() && *self.seen.lock().unwrap_or_else(|e| e.into_inner()) == now
-    }
-}
-
-/// gitignore checks with a cache of directory verdicts (a build in an ignored directory sends
-/// thousands of events).
-struct Ignores {
-    repo: gix::Repository,
-    dirs: HashMap<PathBuf, bool>,
-}
-
-impl Ignores {
-    fn new(repo: gix::Repository) -> Ignores {
-        Ignores { repo, dirs: HashMap::new() }
-    }
-    fn reset(&mut self) {
-        self.dirs.clear();
-    }
-    fn is_ignored(&mut self, rel: &Path) -> bool {
-        let comps: Vec<_> = rel.components().collect();
-        let dirs = || {
-            comps[..comps.len().saturating_sub(1)].iter().scan(PathBuf::new(), |d, c| {
-                d.push(c);
-                Some(d.clone())
-            })
-        };
-        // fast path: an ignored ancestor already known (a build in `target/`)
-        for d in dirs() {
-            match self.dirs.get(&d) {
-                Some(true) => return true,
-                Some(false) => continue,
-                None => break,
-            }
-        }
-        let Ok(index) = self.repo.index_or_empty() else { return false };
-        let Ok(mut stack) = self.repo.excludes(&index, None, Default::default()) else { return false };
-        if self.dirs.len() > 50_000 {
-            self.dirs.clear();
-        }
-        for d in dirs() {
-            let v = match self.dirs.get(&d) {
-                Some(&v) => v,
-                None => {
-                    let v = stack.at_path(&d, Some(gix::index::entry::Mode::DIR)).is_ok_and(|p| p.is_excluded());
-                    self.dirs.insert(d, v);
-                    v
-                }
-            };
-            if v {
-                return true;
-            }
-        }
-        stack.at_path(rel, None).is_ok_and(|p| p.is_excluded())
     }
 }
 
