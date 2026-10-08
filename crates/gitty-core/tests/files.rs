@@ -233,7 +233,7 @@ fn secret_names() {
     }
     for no in [
         ".env.example", ".env.sample", ".env.template", ".env.dist", ".ENV.EXAMPLE", "environment.rs", "env", "main.rs", "README.md", "keyboard.rs", "monkey", "id_rsa_notes.txt",
-        "secrets", "my-credentials-guide.md", "service-account.txt", "pem", "key.rs", "Cargo.toml", ".gitignore",
+        "my-credentials-guide.md", "service-account.txt", "pem", "key.rs", "Cargo.toml", ".gitignore",
     ] {
         assert!(!is_secret(Path::new(no)), "{no} should not be secret");
     }
@@ -289,7 +289,7 @@ fn secret_names_by_directory_suffix_and_pattern() {
         assert!(is_secret(Path::new(yes)), "{yes} should be secret");
     }
     for no in [
-        ".env.example", ".ENV.SAMPLE", "src/.env.template", ".env.dist", ".docker/other.json", "docker/config.json", "foo.asc", "environment.env.rs", "tokenizer.rs", "secretary.txt",
+        ".env.example", ".ENV.SAMPLE", "src/.env.template", ".env.dist", ".docker/other.json", "docker/config.json", "foo.asc", "tokenizer.rs", "secretary.txt",
         "my.environment", "README.md", "notes.old", "a.swp", "config.json", "kube/config", "ssh/config",
     ] {
         assert!(!is_secret(Path::new(no)), "{no} should not be secret");
@@ -346,4 +346,19 @@ fn a_fifo_with_an_ordinary_name_is_not_opened() {
     // and it lists as a plain entry without being opened
     let listed = Repo::open(f.path()).unwrap().handle().list_dir(Path::new("")).unwrap();
     assert_eq!(listed.len(), 1);
+}
+
+#[test]
+fn every_stripped_form_of_a_name_counts() {
+    use gitty_core::files::is_secret;
+    for yes in [
+        "secrets", "secrets.bak", "secrets.old", "secrets.tmp", "secrets.orig", "secrets.save", "secrets.swp", "credentials.bak", "secrets.yaml.bak", ".env.bak.bak", "#secrets.yaml#",
+        // *.env.*, .envrc.*, and directories named like secret files
+        "app.env.local", "prod.env.production", ".envrc.local", ".env.d/prod", "secrets.d/x", "credentials.d/y.txt", "a/.env-prod/b", ".env.d.bak/x",
+    ] {
+        assert!(is_secret(Path::new(yes)), "{yes} should be secret");
+    }
+    for no in [".env.example", "env.d/prod", "secrets_notes/x.md", "notes.bak", "src/main.rs"] {
+        assert!(!is_secret(Path::new(no)), "{no} should not be secret");
+    }
 }

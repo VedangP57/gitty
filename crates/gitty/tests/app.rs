@@ -4606,3 +4606,41 @@ fn a_huge_listing_is_rebuilt_once_per_batch() {
         assert!(took < Duration::from_secs(2), "{took:?}");
     }
 }
+
+#[test]
+fn a_late_listing_of_a_closed_directory_is_not_kept() {
+    use gitty_core::files::{DirEntry, EntryKind};
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.ch('h');
+    t.app.refresh_files();
+    let generation = t.app.take_requests().iter().find_map(|r| match r {
+        Request::ReadDir { generation, .. } => Some(*generation),
+        _ => None,
+    });
+    let ghost = DirEntry { name: "ghost".into(), kind: EntryKind::File, tracked: false, ignored: false, size: 0 };
+    t.app.handle_msg(Msg::Dir { generation: generation.unwrap(), dir: "src".into(), result: Ok(vec![ghost]) });
+    t.app.take_requests();
+    t.ch('l');
+    assert!(!rows(&t).contains(&"  ghost".to_string()), "{:?}", rows(&t));
+}
+
+#[test]
+fn leaving_the_tab_cancels_the_read_of_a_revealed_file() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    drain_files(&mut t);
+    t.ch('v');
+    let read = t.app.take_requests();
+    assert_eq!(labels(&read), ["file .env (reveal)"]);
+    t.ch('1');
+    let out = t.exec_all(read);
+    assert!(out.iter().all(|m| !matches!(m, Msg::File { .. })), "the worker answered a cancelled read");
+    t.ch('3');
+    drain_files(&mut t);
+    assert!(t.app.files_tab.masked());
+    assert!(viewing_text(&t).is_none());
+}

@@ -180,7 +180,7 @@ impl App {
     /// Applies listings that arrived since the rows were built (once per batch of messages: the
     /// main loop asks for requests after each one, and the draw calls this first).
     pub fn settle_files(&mut self) {
-        if !self.files_tab.dirty {
+        if self.tab != Tab::Files || !self.files_tab.dirty {
             return;
         }
         self.files_tab.rebuild();
@@ -203,6 +203,9 @@ impl App {
         self.files_tab.reveal = false;
         self.files_tab.shown = None;
         self.files_tab.viewing = Viewing::Nothing;
+        // in-flight reads and highlights of the file are cancelled
+        self.files_tab.view_gen = Gens::bump(&self.gens.files_view);
+        self.hl_pending.clear();
     }
 
     /// Lists the root and every expanded directory again (the old listing stays on screen until
@@ -240,7 +243,9 @@ impl App {
     pub(super) fn handle_files_msg(&mut self, m: Msg) -> Option<Msg> {
         match m {
             Msg::Dir { generation, dir, result } => {
-                if generation == self.files_tab.dir_gen && self.tab == Tab::Files {
+                // a late reply for a directory that was pruned or closed for good is not kept
+                let wanted = dir.as_os_str().is_empty() || self.files_tab.expanded.contains(&dir);
+                if generation == self.files_tab.dir_gen && self.tab == Tab::Files && wanted {
                     self.files_tab.loading.remove(&dir);
                     if let Ok(entries) = &result {
                         self.files_tab.prune(&dir, entries);

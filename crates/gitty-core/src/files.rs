@@ -159,33 +159,36 @@ const SECRET_DIRS: [&str; 6] = [".env", "secrets", ".secrets", ".ssh", ".aws", "
 const BACKUP_SUFFIXES: [&str; 8] = ["~", ".bak", ".orig", ".old", ".swp", ".swo", ".save", ".tmp"];
 const EXAMPLES: [&str; 4] = [".env.example", ".env.sample", ".env.template", ".env.dist"];
 
-/// Lowercase, without trailing spaces and dots (Windows-style tricks), editor lock forms
-/// (`#name#`, `.#name`) and backup suffixes.
-fn normalise(name: &str) -> String {
+/// The lowercase name and every form it takes while trailing spaces and dots, editor lock forms
+/// (`#name#`, `.#name`) and backup suffixes are taken off one at a time. A name is secret if any
+/// of them is: `secrets.bak` is one although its stripped form `secrets` alone would not be.
+fn forms(name: &str) -> Vec<String> {
     let mut n = name.to_lowercase();
-    loop {
-        let before = n.len();
-        n = n.trim_end_matches([' ', '.']).to_string();
+    let mut out = vec![n.clone()];
+    // one step at a time; each change is a form of its own
+    let next = |n: &str| -> Option<String> {
+        let t = n.trim_end_matches([' ', '.']);
+        if t.len() != n.len() {
+            return Some(t.to_string());
+        }
         if n.len() > 2 && n.starts_with('#') && n.ends_with('#') {
-            n = n[1..n.len() - 1].to_string();
+            return Some(n[1..n.len() - 1].to_string());
         }
         if let Some(r) = n.strip_prefix(".#") {
-            n = r.to_string();
+            return Some(r.to_string());
         }
-        for s in BACKUP_SUFFIXES {
-            if let Some(r) = n.strip_suffix(s).filter(|r| !r.is_empty()) {
-                n = r.to_string();
-            }
-        }
-        if n.len() == before {
-            return n;
-        }
+        BACKUP_SUFFIXES.iter().find_map(|s| n.strip_suffix(s).filter(|r| !r.is_empty()).map(str::to_string))
+    };
+    while let Some(m) = next(&n) {
+        out.push(m.clone());
+        n = m;
     }
+    out
 }
 
 fn secret_name(n: &str) -> bool {
     const EXT: [&str; 14] = [".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx", ".ppk", ".tfvars", ".gpg", ".token", ".secret", ".secrets", ".env"];
-    if n == ".env" || n == ".envrc" || [".env.", ".env-", ".env_"].iter().any(|p| n.starts_with(p)) {
+    if n == ".env" || n == ".envrc" || n == "secrets" || [".env.", ".env-", ".env_", ".envrc."].iter().any(|p| n.starts_with(p)) || n.contains(".env.") {
         return true;
     }
     if EXT.iter().any(|e| n.ends_with(e)) || n.contains(".tfstate") || (n.ends_with(".asc") && n.contains("secret")) {
@@ -211,15 +214,16 @@ fn secret_name(n: &str) -> bool {
 pub fn is_secret(path: &Path) -> bool {
     let names: Vec<String> = path.components().filter_map(|c| if let Component::Normal(n) = c { Some(n.to_string_lossy().into_owned()) } else { None }).collect();
     let Some((name, dirs)) = names.split_last() else { return false };
-    let dirs: Vec<String> = dirs.iter().map(|d| normalise(d)).collect();
-    if dirs.iter().any(|d| SECRET_DIRS.contains(&d.as_str()) || d == ".kube") {
+    let dir_forms: Vec<Vec<String>> = dirs.iter().map(|d| forms(d)).collect();
+    // a directory is secret by its name like a file is, or is one of the known secret places
+    if dir_forms.iter().flatten().any(|d| SECRET_DIRS.contains(&d.as_str()) || d == ".kube" || secret_name(d)) {
         return true;
     }
-    let lower = name.to_lowercase();
-    if dirs.iter().any(|d| d == ".docker") && normalise(name) == "config.json" {
+    let name_forms = forms(name);
+    if dir_forms.iter().any(|d| d.iter().any(|f| f == ".docker")) && name_forms.iter().any(|f| f == "config.json") {
         return true;
     }
-    !EXAMPLES.contains(&lower.as_str()) && secret_name(&normalise(name))
+    !EXAMPLES.contains(&name_forms[0].as_str()) && name_forms.iter().any(|f| secret_name(f))
 }
 
 /// What the viewer shows for a file.
