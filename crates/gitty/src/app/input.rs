@@ -45,6 +45,7 @@ impl App {
             return;
         }
         self.dirty = true;
+        self.settle_files();
         if self.toast.as_ref().is_some_and(|t| !t.error) {
             self.toast = None;
         }
@@ -96,6 +97,10 @@ impl App {
         let changes = self.tab == Tab::Changes;
         let files_tab = self.tab == Tab::Files;
         let in_diff = self.focus == Focus::Diff;
+        // these act on the diff and History state, which the Files tab hides
+        if files_tab && matches!(a, Action::Difftool | Action::Split | Action::Wrap | Action::Whitespace | Action::PrevHunk | Action::NextHunk | Action::PrevFile | Action::NextFile | Action::Expand | Action::ExpandFile) {
+            return;
+        }
         let comparing = self.compare.is_some();
         match a {
             Action::Quit => self.request_quit(),
@@ -482,6 +487,7 @@ impl App {
     pub fn handle_mouse(&mut self, m: MouseEvent) {
         let (x, y) = (m.column, m.row);
         self.dirty = true;
+        self.settle_files();
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(x, y, m.modifiers),
             MouseEventKind::Drag(MouseButton::Left) if self.changes.gutter_drag => self.gutter_drag(y),
@@ -512,11 +518,12 @@ impl App {
         self.search.bar = None;
         let double = self.note_click(x, y);
         // a double-click on the Files tab edits the file: its first click already selected it
-        if double && self.tab == Tab::Files {
+        // (only on a row: elsewhere it is two ordinary clicks, e.g. on a tab)
+        if double && self.tab == Tab::Files && self.files_row_at(x, y).is_some() {
             return self.files_double_click(x, y);
         }
         self.click_once(x, y, mods);
-        if !double {
+        if !double || self.tab == Tab::Files {
             return;
         }
         // double-click: open the file, except on Changes' checkboxes and gutters (they toggle)

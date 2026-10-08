@@ -1930,3 +1930,49 @@ fn the_wheel_scrolls_the_pane_under_the_pointer_in_files() {
     t.key(KeyCode::Char('G'));
     assert!(t.app.files_tab.vscroll > 10);
 }
+
+#[test]
+fn a_double_click_off_the_file_rows_is_ordinary_clicks() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    t.key(KeyCode::Enter);
+    pick(&mut t, "main.rs");
+    let b = t.render(140, 30);
+    // the tab bar: two clicks on [3] Files while a file is selected
+    let (x, y) = find(&b, "[3] Files").unwrap();
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, None);
+    assert_eq!(t.app.tab, gitty::app::Tab::Files);
+    // two clicks on [1] Changes switch the tab, and edit nothing
+    let (x, y) = find(&b, "[1] Changes").unwrap();
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, None);
+    assert_eq!(t.app.tab, gitty::app::Tab::Changes);
+    t.key(KeyCode::Char('3'));
+    t.render(140, 30);
+    // the viewer, the separator, the bottom bar and the title row
+    let b = t.render(140, 30);
+    let (vx, vy) = find(&b, "fn main").unwrap();
+    for (x, y) in [(vx, vy), (42, 20), (5, 29), (3, 1)] {
+        t.clock += Duration::from_secs(1);
+        t.app.tick(t.clock);
+        t.click(x, y);
+        t.click(x, y);
+        assert_eq!(t.app.external, None, "({x},{y})");
+    }
+    assert_eq!(t.app.tab, gitty::app::Tab::Files);
+}
+
+#[test]
+fn a_symlink_to_a_secret_shows_only_the_target_name() {
+    let f = files_fixture();
+    std::os::unix::fs::symlink(".env", f.path().join("notes-link")).unwrap();
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, "notes-link");
+    let b = t.render(140, 30);
+    assert!(text(&b).contains("symlink -> .env"), "{}", text(&b));
+    assert_absent(&b, FAKE_SECRET);
+    assert_absent(&b, "TOKEN=");
+}

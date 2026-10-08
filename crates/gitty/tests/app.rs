@@ -4465,3 +4465,144 @@ fn an_unreadable_directory_is_an_inline_error_row() {
         assert!(viewing_text(&t).is_some());
     }
 }
+
+#[test]
+fn a_history_generation_bump_during_a_read_does_not_drop_the_viewer() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    let read = t.app.take_requests();
+    // what a refs move, a walk or a diff schedule does on the History side
+    Gens::bump(&t.gens.file);
+    Gens::bump(&t.gens.session);
+    Gens::bump(&t.gens.commit);
+    for m in t.exec_all(read) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(viewing_text(&t).as_deref(), Some("# readme\n"));
+    // and the highlight of a file with a language is not cancelled either
+    select(&mut t, "big.txt");
+    drain_files(&mut t);
+    t.key(KeyCode::Enter);
+    t.key(KeyCode::Esc);
+    let reqs = t.app.take_requests();
+    assert!(reqs.iter().all(|r| !matches!(r, Request::Diff { .. } | Request::Walk { .. })));
+}
+
+#[test]
+fn diff_keys_do_nothing_on_the_files_tab() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    let ws = t.app.ws;
+    let wrap = t.app.wrap;
+    for c in ['w', 's', 'W', 'O', '{', '}', '[', ']', 'E'] {
+        t.ch(c);
+        assert!(t.app.take_requests_peek().is_empty(), "{c} sent a request");
+    }
+    t.app.focus = Focus::Diff;
+    for c in ['w', 's', 'W', 'O', '{', '}', 'E'] {
+        t.ch(c);
+        assert!(t.app.take_requests_peek().is_empty(), "{c} sent a request");
+    }
+    assert_eq!((t.app.ws, t.app.wrap), (ws, wrap));
+    assert_eq!(viewing_text(&t).as_deref(), Some("# readme\n"));
+    assert!(t.app.external.is_none());
+    assert!(t.app.diff.is_none());
+}
+
+#[test]
+fn a_burst_of_changes_asks_once_per_directory_and_the_old_asks_are_dropped() {
+    use gitty_core::watch::Changed;
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    for _ in 0..4 {
+        t.app.handle_msg(Msg::Changed(Changed::WORKTREE));
+    }
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir ", "dir src", "file README.md"]);
+    // a request that went out before the newest refresh is dropped by the worker
+    let older = t.app.take_requests();
+    t.app.handle_msg(Msg::Changed(Changed::WORKTREE));
+    let out = t.exec_all(older);
+    assert!(out.iter().all(|m| !matches!(m, Msg::Dir { .. } | Msg::File { .. })), "stale requests answered: {out:?}");
+}
+
+#[test]
+fn directories_that_vanish_are_forgotten_when_their_parent_lists_again() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "deep");
+    t.key(KeyCode::Enter);
+    t.pump();
+    std::fs::remove_dir_all(f.path().join("src/deep")).unwrap();
+    t.app.refresh_files();
+    t.pump();
+    assert!(!rows(&t).contains(&"  deep".to_string()));
+    // a new directory of that name starts closed
+    f.write("src/deep/new.rs", "x\n");
+    t.app.refresh_files();
+    t.pump();
+    let deep = t.app.files_tab.rows.iter().find(|r| r.name == "deep").unwrap();
+    assert!(matches!(deep.kind, gitty::app::files::RowKind::Dir { open: false, .. }), "{:?}", deep.kind);
+}
+
+#[test]
+fn a_listing_arriving_does_not_snap_a_scrolled_tree_back() {
+    let f = Fixture::new();
+    for i in 0..80 {
+        f.write(&format!("f{i:02}.txt"), "x\n");
+    }
+    f.commit("many", 1_700_000_000);
+    let mut t = files_tab(&f);
+    t.app.files_tab.scroll = 20;
+    assert_eq!(t.app.files_tab.sel, 0);
+    t.app.refresh_files();
+    t.pump();
+    assert_eq!(t.app.files_tab.scroll, 20, "the user's scroll stays");
+    // moving the selection does bring it into view
+    t.ch('j');
+    assert_eq!(t.app.files_tab.scroll, 1);
+}
+
+#[test]
+fn a_huge_listing_is_rebuilt_once_per_batch() {
+    use gitty_core::files::{DirEntry, EntryKind};
+    let f = files_fixture();
+    let mut t = H::new(&f);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.pump();
+    t.ch('3');
+    let generation = match t.app.take_requests().as_slice() {
+        [Request::ReadDir { generation, .. }] => *generation,
+        _ => panic!("one ReadDir"),
+    };
+    let entries = |n: usize| -> Vec<DirEntry> {
+        (0..n).map(|i| DirEntry { name: format!("file{i:06}.txt").into(), kind: EntryKind::File, tracked: true, ignored: false, size: 1 }).collect()
+    };
+    // five replies in one batch cost one rebuild
+    let start = Instant::now();
+    for _ in 0..5 {
+        t.app.handle_msg(Msg::Dir { generation, dir: std::path::PathBuf::new(), result: Ok(entries(20_000)) });
+    }
+    assert!(t.app.files_tab.rows.is_empty(), "not rebuilt per message");
+    t.app.take_requests();
+    assert_eq!(t.app.files_tab.rows.len(), 20_000);
+    t.app.handle_msg(Msg::Dir { generation, dir: std::path::PathBuf::new(), result: Ok(entries(100_000)) });
+    let rebuild = Instant::now();
+    t.app.take_requests();
+    let took = rebuild.elapsed();
+    assert_eq!(t.app.files_tab.rows.len(), 100_000);
+    eprintln!("100k-entry rebuild: {took:?} (whole test {:?})", start.elapsed());
+    // generous: unoptimised builds on a loaded machine
+    if std::env::var_os("GITTY_SKIP_TIMING").is_none() {
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+}

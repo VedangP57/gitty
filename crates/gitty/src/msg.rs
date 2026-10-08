@@ -48,6 +48,10 @@ pub struct Gens {
     pub commit: AtomicU64,
     pub file: AtomicU64,
     pub search: AtomicU64,
+    /// Files tab: the directory listings wanted now.
+    pub files_dirs: AtomicU64,
+    /// Files tab: the file in the viewer (and its highlight). Only the Files tab moves it.
+    pub files_view: AtomicU64,
 }
 
 impl Gens {
@@ -219,7 +223,8 @@ pub enum Request {
     /// Finish intraline for a cached diff whose computation was cut short.
     Intraline { generation: u64, key: DiffKey, diff: Arc<FileDiff> },
     /// Whole-file syntax highlighting of one side; cancelled when the file generation moves on.
-    Highlight { generation: u64, key: HlKey, text: Arc<Text> },
+    /// `files_view`: the Files viewer's (its generation is `Gens::files_view`).
+    Highlight { generation: u64, key: HlKey, text: Arc<Text>, files_view: bool },
     /// Working-tree status. `mark` is noted just before status reads the index, so the watcher
     /// drops the event for exactly that state and nothing later.
     Status { generation: u64, mark: Option<gitty_core::watch::IndexMark> },

@@ -98,12 +98,21 @@ closes one, or goes to the parent), so a large tree costs nothing until you go i
 shown as `name -> target` and never followed; submodules and nested repositories are leaves. Files
 over 2 MiB and binary files are not loaded (`e` opens them in `$EDITOR`).
 
-Files that look like secrets (`.env` and `.env.*` except the `.example`, `.sample`, `.template`
-and `.dist` ones, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `id_rsa`
-and the other SSH keys, `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `credentials*`,
-`secrets.*`, `service-account*.json`) are marked `(secret)` and are not read from disk until you
-press `v` on them. The reveal ends when you select another file or leave the tab, and is never
+Files that look like secrets are marked `(secret)` and are not read from disk until you press `v`
+on them: `.env` and its variants (`.env.*`, `.env-*`, `*.env`, `.envrc`; only the exact names
+`.env.example`, `.env.sample`, `.env.template` and `.env.dist` are shown), private keys and
+certificates (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.ppk`, `*.gpg`, the SSH
+`id_*` keys), password stores and tokens (`*.kdbx`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`,
+`.htpasswd`, `.git-credentials`, `.vault-token`, `credentials*`, `secrets.*`, `*.token`,
+`*.secret`, `service-account*.json`), Terraform `*.tfvars` and `*.tfstate`, and anything inside
+`.ssh`, `.aws`, `.gnupg`, `.kube`, `secrets` or `.env` directories (and `.docker/config.json`).
+Case, trailing dots and spaces, and backup or editor suffixes (`~`, `.bak`, `.orig`, `.swp`, …)
+do not hide a match. The reveal ends when you select another file or leave the tab, and is never
 saved.
+
+Limits: the match is by name, so a secret under an innocent name (or a hard link to one, or a name
+that only looks like one through Unicode lookalikes) is shown as any file. Masking applies to the
+Files tab only: an untracked `.env` still appears in the Changes tab's diff.
 
 ### In herdr
 

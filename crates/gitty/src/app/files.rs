@@ -61,8 +61,12 @@ pub struct FilesState {
     expanded: HashSet<PathBuf>,
     dirs: HashMap<PathBuf, Result<Vec<DirEntry>, String>>,
     loading: HashSet<PathBuf>,
-    /// Replies to ReadDir requests of an older generation are dropped.
+    /// Replies to ReadDir requests of an older generation are dropped (`Gens::files_dirs`).
     dir_gen: u64,
+    /// The viewer's own generation (`Gens::files_view`): only Files-tab actions move it.
+    view_gen: u64,
+    /// Listings changed since `rows` was built; rebuilt once per batch of messages.
+    dirty: bool,
     /// The file the viewer is for, and what it has of it.
     pub shown: Option<PathBuf>,
     pub viewing: Viewing,
@@ -82,6 +86,8 @@ impl Default for FilesState {
             dirs: HashMap::new(),
             loading: HashSet::new(),
             dir_gen: 0,
+            view_gen: 0,
+            dirty: false,
             shown: None,
             viewing: Viewing::Nothing,
             reveal: false,
@@ -110,48 +116,81 @@ impl FilesState {
         self.rows.iter().position(|r| r.path == path)
     }
 
-    fn push_dir(&mut self, rel: &Path, depth: u16) {
-        match self.dirs.get(rel) {
-            Some(Ok(entries)) => {
-                if entries.is_empty() && depth > 0 {
-                    self.rows.push(Row { path: rel.join("(empty)"), name: "(empty)".into(), depth, kind: RowKind::Note { error: false }, ignored: false, secret: false });
-                }
-                let entries = entries.clone();
-                for e in &entries {
-                    let path = rel.join(&e.name);
-                    let name = e.name.to_string_lossy().into_owned();
-                    let secret = matches!(e.kind, EntryKind::File | EntryKind::Symlink { .. }) && is_secret(&path);
-                    let kind = match &e.kind {
-                        EntryKind::File => RowKind::File,
-                        EntryKind::Dir => RowKind::Dir { open: self.expanded.contains(&path), loading: self.loading.contains(&path) },
-                        EntryKind::Symlink { target } => RowKind::Symlink { target: target.to_string_lossy().into_owned() },
-                        EntryKind::Submodule => RowKind::Submodule,
-                    };
-                    let open = matches!(kind, RowKind::Dir { open: true, .. });
-                    self.rows.push(Row { path: path.clone(), name, depth, kind, ignored: e.ignored, secret });
-                    if open {
-                        self.push_dir(&path, depth + 1);
-                    }
-                }
-            }
-            Some(Err(e)) => {
-                let text = format!("cannot read: {}", e.lines().next().unwrap_or(""));
-                self.rows.push(Row { path: rel.join("(error)"), name: text, depth, kind: RowKind::Note { error: true }, ignored: false, secret: false });
-            }
-            None => {}
-        }
-    }
-
     /// Rebuilds `rows` from the loaded directories, keeping the selection on the same path.
     fn rebuild(&mut self) {
         let keep = self.selected().map(|r| r.path.clone());
-        self.rows.clear();
-        self.push_dir(Path::new(""), 0);
+        let mut rows = std::mem::take(&mut self.rows);
+        rows.clear();
+        push_dir(&mut rows, self, Path::new(""), 0);
+        self.rows = rows;
+        self.dirty = false;
         self.sel = keep.and_then(|p| self.row_at(&p)).unwrap_or(self.sel).min(self.rows.len().saturating_sub(1));
+    }
+
+    /// Drops what is remembered of the directories below `dir` that `entries` no longer has.
+    fn prune(&mut self, dir: &Path, entries: &[DirEntry]) {
+        let gone: Vec<PathBuf> = self
+            .expanded
+            .iter()
+            .chain(self.dirs.keys())
+            .filter(|p| p.parent() == Some(dir) && !entries.iter().any(|e| e.kind == EntryKind::Dir && p.file_name() == Some(e.name.as_os_str())))
+            .cloned()
+            .collect();
+        for g in gone {
+            self.expanded.retain(|p| !p.starts_with(&g));
+            self.dirs.retain(|p, _| !p.starts_with(&g));
+            self.loading.retain(|p| !p.starts_with(&g));
+        }
+    }
+}
+
+/// Appends the rows of `rel` and of its open subdirectories, by reference to the listings.
+fn push_dir(rows: &mut Vec<Row>, f: &FilesState, rel: &Path, depth: u16) {
+    match f.dirs.get(rel) {
+        Some(Ok(entries)) => {
+            if entries.is_empty() && depth > 0 {
+                rows.push(Row { path: rel.join("(empty)"), name: "(empty)".into(), depth, kind: RowKind::Note { error: false }, ignored: false, secret: false });
+            }
+            for e in entries {
+                let path = rel.join(&e.name);
+                let name = e.name.to_string_lossy().into_owned();
+                let secret = matches!(e.kind, EntryKind::File | EntryKind::Symlink { .. }) && is_secret(&path);
+                let kind = match &e.kind {
+                    EntryKind::File => RowKind::File,
+                    EntryKind::Dir => RowKind::Dir { open: f.expanded.contains(&path), loading: f.loading.contains(&path) },
+                    EntryKind::Symlink { target } => RowKind::Symlink { target: target.to_string_lossy().into_owned() },
+                    EntryKind::Submodule => RowKind::Submodule,
+                };
+                let open = matches!(kind, RowKind::Dir { open: true, .. });
+                rows.push(Row { path: path.clone(), name, depth, kind, ignored: e.ignored, secret });
+                if open {
+                    push_dir(rows, f, &path, depth + 1);
+                }
+            }
+        }
+        Some(Err(e)) => {
+            let text = format!("cannot read: {}", e.lines().next().unwrap_or(""));
+            rows.push(Row { path: rel.join("(error)"), name: text, depth, kind: RowKind::Note { error: true }, ignored: false, secret: false });
+        }
+        None => {}
     }
 }
 
 impl App {
+    /// Applies listings that arrived since the rows were built (once per batch of messages: the
+    /// main loop asks for requests after each one, and the draw calls this first).
+    pub fn settle_files(&mut self) {
+        if !self.files_tab.dirty {
+            return;
+        }
+        self.files_tab.rebuild();
+        // a scrolled tree stays where the user left it; only a shorter list pulls it back
+        let cap = self.files_capacity();
+        let f = &mut self.files_tab;
+        f.scroll = f.scroll.min(f.rows.len().saturating_sub(cap));
+        self.sync_viewer();
+    }
+
     /// Entering the tab: list the root (and what was expanded) afresh.
     pub(super) fn files_enter(&mut self) {
         self.files_tab.reveal = false;
@@ -169,7 +208,10 @@ impl App {
     /// Lists the root and every expanded directory again (the old listing stays on screen until
     /// the new one arrives), and re-reads the open file.
     pub fn refresh_files(&mut self) {
-        self.files_tab.dir_gen += 1;
+        // one burst, one request per directory: queued ones are superseded, and so are the ones
+        // already running (the worker checks the generation)
+        self.outbox.retain(|r| !matches!(r, Request::ReadDir { .. } | Request::ReadFile { .. }));
+        self.files_tab.dir_gen = Gens::bump(&self.gens.files_dirs);
         self.files_tab.loading.clear();
         let mut dirs: Vec<PathBuf> = self.files_tab.expanded.iter().cloned().collect();
         dirs.sort();
@@ -191,8 +233,8 @@ impl App {
 
     fn request_file(&mut self) {
         let Some(path) = self.files_tab.shown.clone() else { return };
-        self.file_gen = Gens::bump(&self.gens.file);
-        self.outbox.push(Request::ReadFile { generation: self.file_gen, path, reveal: self.files_tab.reveal });
+        self.files_tab.view_gen = Gens::bump(&self.gens.files_view);
+        self.outbox.push(Request::ReadFile { generation: self.files_tab.view_gen, path, reveal: self.files_tab.reveal });
     }
 
     pub(super) fn handle_files_msg(&mut self, m: Msg) -> Option<Msg> {
@@ -200,15 +242,16 @@ impl App {
             Msg::Dir { generation, dir, result } => {
                 if generation == self.files_tab.dir_gen && self.tab == Tab::Files {
                     self.files_tab.loading.remove(&dir);
+                    if let Ok(entries) = &result {
+                        self.files_tab.prune(&dir, entries);
+                    }
                     self.files_tab.dirs.insert(dir, result);
-                    self.files_tab.rebuild();
-                    self.ensure_files_visible_sel();
-                    self.sync_viewer();
+                    self.files_tab.dirty = true;
                 }
             }
             Msg::File { generation, path, result } => {
                 // a secret that is not revealed never takes content, whatever arrives
-                if generation == self.file_gen && self.tab == Tab::Files && self.files_tab.shown.as_ref() == Some(&path) && !self.files_tab.masked() {
+                if generation == self.files_tab.view_gen && self.tab == Tab::Files && self.files_tab.shown.as_ref() == Some(&path) && !self.files_tab.masked() {
                     self.files_tab.viewing = match result {
                         Ok(view) => {
                             if let FileView::Text { text, key } = &view {
@@ -227,7 +270,7 @@ impl App {
 
     fn request_file_highlight(&mut self, key: HlKey, text: std::sync::Arc<gitty_core::diff::text::Text>) {
         if !self.hl_cache.contains(&key) && self.hl_pending.insert(key.clone()) {
-            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text });
+            self.outbox.push(Request::Highlight { generation: self.files_tab.view_gen, key, text, files_view: true });
         }
     }
 
@@ -244,7 +287,7 @@ impl App {
         self.files_tab.viewing = Viewing::Nothing;
         self.files_tab.shown = want;
         // the bump also cancels the highlight of the file left behind
-        self.file_gen = Gens::bump(&self.gens.file);
+        self.files_tab.view_gen = Gens::bump(&self.gens.files_view);
         self.hl_pending.clear();
         if self.files_tab.shown.is_some() && !self.files_tab.masked() {
             self.files_tab.viewing = Viewing::Loading;
@@ -334,7 +377,7 @@ impl App {
             self.files_tab.viewing = Viewing::Nothing;
             self.files_tab.vscroll = 0;
             self.files_tab.hscroll = 0;
-            self.file_gen = Gens::bump(&self.gens.file);
+            self.files_tab.view_gen = Gens::bump(&self.gens.files_view);
             self.hl_pending.clear();
         }
     }

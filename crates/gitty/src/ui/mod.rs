@@ -30,6 +30,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         text(buf, area.x, area.y, area.right(), "gitty: terminal too small", base);
         return;
     }
+    app.settle_files();
     let panes = app.panes();
     bars::top(app, buf, panes.top);
     bars::bottom(app, buf, panes.bottom);

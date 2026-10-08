@@ -434,6 +434,7 @@ impl App {
     }
 
     pub fn take_requests(&mut self) -> Vec<Request> {
+        self.settle_files();
         std::mem::take(&mut self.outbox)
     }
     pub fn take_requests_peek(&self) -> &[Request] {
@@ -1109,6 +1110,10 @@ impl App {
     }
 
     fn schedule_diff(&mut self) {
+        // the Files tab hides the History diff: nothing of it moves meanwhile (set_tab reloads it)
+        if self.tab == Tab::Files {
+            return;
+        }
         self.file_gen = Gens::bump(&self.gens.file);
         // the bump cancels in-flight highlights; their replies only clear pending entries
         self.hl_pending.clear();
@@ -1124,6 +1129,9 @@ impl App {
 
     fn fire_diff(&mut self) {
         self.diff_deadline = None;
+        if self.tab == Tab::Files {
+            return;
+        }
         let Some(file) = self.current_file().cloned() else { return };
         let opts = self.diff_opts();
         let key = DiffKey::of(&file, opts, self.force_text);
@@ -1168,7 +1176,7 @@ impl App {
             if text.is_empty() || self.hl_cache.contains(&key) || !self.hl_pending.insert(key.clone()) {
                 continue;
             }
-            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text: text.clone() });
+            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text: text.clone(), files_view: false });
         }
     }
 
@@ -1182,6 +1190,9 @@ impl App {
 
     /// Re-requests the current file's diff with new options (whitespace mode, force text).
     pub fn refresh_diff(&mut self) {
+        if self.tab == Tab::Files {
+            return;
+        }
         if self.tab == Tab::Changes {
             self.request_change_diff();
         } else if self.current_file().is_some() {

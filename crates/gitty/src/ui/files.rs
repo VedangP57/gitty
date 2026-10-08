@@ -138,7 +138,8 @@ pub fn draw_viewer(app: &mut App, buf: &mut Buffer, r: Rect) {
     }
     app.files_tab.vscroll = app.files_tab.vscroll.min(lines.saturating_sub(1));
     let hl = app.view_highlights();
-    let syntax: Vec<Option<Style>> = CAPTURES.iter().map(|c| theme.syntax.get(*c).map(|s| Style { bg: None, ..*s })).collect();
+    // only a highlighted file needs the capture styles
+    let syntax: Vec<Option<Style>> = if hl.is_some() { CAPTURES.iter().map(|c| theme.syntax.get(*c).map(|s| Style { bg: None, ..*s })).collect() } else { Vec::new() };
     let digits = digits(lines as u32) as u16;
     let gutter = base.fg(theme.diff.lineno);
     let (hscroll, tab) = (u32::from(app.files_tab.hscroll), app.config.tab_size);
