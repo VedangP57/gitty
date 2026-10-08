@@ -74,6 +74,8 @@ pub struct FilesState {
     pub reveal: bool,
     pub vscroll: usize,
     pub hscroll: u16,
+    /// Display width of the longest line of the loaded text: sideways scrolling stops there.
+    pub max_width: usize,
 }
 
 impl Default for FilesState {
@@ -93,11 +95,18 @@ impl Default for FilesState {
             reveal: false,
             vscroll: 0,
             hscroll: 0,
+            max_width: 0,
         }
     }
 }
 
 impl FilesState {
+    /// Scrolls the viewer sideways by `by` columns, between the left edge and the longest line.
+    pub fn scroll_sideways(&mut self, by: i32) {
+        let max = self.max_width.saturating_sub(1).min(10_000) as i32;
+        self.hscroll = (i32::from(self.hscroll) + by).clamp(0, max) as u16;
+    }
+
     /// The root has not been listed yet.
     pub fn loading_root(&self) -> bool {
         !self.dirs.contains_key(Path::new(""))
@@ -260,6 +269,7 @@ impl App {
                     self.files_tab.viewing = match result {
                         Ok(view) => {
                             if let FileView::Text { text, key } = &view {
+                                self.files_tab.max_width = widest(text, self.config.tab_size);
                                 self.request_file_highlight(key.clone(), text.clone());
                             }
                             Viewing::Ready(view)
@@ -442,4 +452,16 @@ impl App {
             self.files_edit();
         }
     }
+}
+
+/// Display columns of the longest line (tabs expanded at their widest).
+fn widest(text: &gitty_core::diff::text::Text, tab: u8) -> usize {
+    (0..text.len())
+        .map(|i| {
+            let l = text.line(i);
+            let tabs = l.iter().filter(|&&b| b == b'\t').count();
+            crate::text::display_width(&String::from_utf8_lossy(l)) + tabs * usize::from(tab.saturating_sub(1))
+        })
+        .max()
+        .unwrap_or(0)
 }

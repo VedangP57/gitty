@@ -447,7 +447,7 @@ impl App {
     fn hscroll(&mut self, by: i32) {
         // the Files viewer clips long lines (no wrapping) and scrolls sideways instead
         if self.tab == Tab::Files {
-            self.files_tab.hscroll = (i32::from(self.files_tab.hscroll) + by).clamp(0, 10_000) as u16;
+            self.files_tab.scroll_sideways(by);
             return;
         }
         if let Some(d) = self.diff.as_mut().filter(|_| !self.wrap) {
@@ -500,10 +500,23 @@ impl App {
                     self.toggle_lines();
                 }
             }
+            // sideways swipes, and Shift+wheel for terminals that report none
+            MouseEventKind::ScrollLeft => self.hwheel(x, y, -8),
+            MouseEventKind::ScrollRight => self.hwheel(x, y, 8),
+            MouseEventKind::ScrollDown if m.modifiers.contains(KeyModifiers::SHIFT) => self.hwheel(x, y, 8),
+            MouseEventKind::ScrollUp if m.modifiers.contains(KeyModifiers::SHIFT) => self.hwheel(x, y, -8),
             MouseEventKind::ScrollDown => self.wheel(x, y, 3),
             MouseEventKind::ScrollUp => self.wheel(x, y, -3),
             _ => {}
         }
+    }
+
+    /// Sideways wheel over the Files viewer or the diff: the same step as `h` and `l`.
+    fn hwheel(&mut self, x: u16, y: u16, by: i32) {
+        if inside(self.hits.panes.diff, x, y).is_none() {
+            return;
+        }
+        self.hscroll(by);
     }
 
     fn click(&mut self, x: u16, y: u16, mods: KeyModifiers) {
