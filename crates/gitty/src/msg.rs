@@ -94,6 +94,19 @@ pub struct HlKey {
     pub path: String,
 }
 
+/// What the Files tab's viewer shows for one file (see `gitty_core::files::read_file`).
+pub enum FileView {
+    /// `key` is a hash of the content: worktree files have no blob id to key their highlights by.
+    Text { text: Arc<Text>, key: HlKey },
+    Binary { size: u64 },
+    TooLarge { size: u64 },
+    Lfs { size: u64 },
+    Symlink { target: std::path::PathBuf },
+    Special,
+    /// A secret by name, not revealed: the file was not read.
+    Masked,
+}
+
 /// A mutating git operation, run in order on the writer thread.
 #[derive(Clone)]
 pub enum WriteOp {
@@ -212,6 +225,11 @@ pub enum Request {
     Status { generation: u64, mark: Option<gitty_core::watch::IndexMark> },
     /// HEAD → worktree diff of one status entry, with its staged lines.
     ChangeDiff { generation: u64, entry: StatusEntry, opts: DiffOptions, force_text: bool },
+    /// Files tab: one directory of the working tree (`dir` relative to its root, empty for the root).
+    ReadDir { generation: u64, dir: std::path::PathBuf },
+    /// Files tab: one file for the viewer; the file generation is `Gens::file`. A secret file is
+    /// read only when `reveal`.
+    ReadFile { generation: u64, path: std::path::PathBuf, reveal: bool },
     Write(WriteOp),
     /// HEAD's full message, for amend.
     HeadMessage,
@@ -288,6 +306,8 @@ pub enum Msg {
     /// content of its own: `divergent`).
     ChangeDiff { generation: u64, entry: StatusEntry, key: DiffKey, diff: Arc<FileDiff>, texts: Texts, staged: Option<Vec<bool>>, divergent: bool },
     ChangeDiffError { generation: u64, path: String, detail: String },
+    Dir { generation: u64, dir: std::path::PathBuf, result: Result<Vec<gitty_core::files::DirEntry>, String> },
+    File { generation: u64, path: std::path::PathBuf, result: Result<FileView, String> },
     /// A line of hook or git output from the running write.
     WriteLog { line: String },
     /// `Ok(Some(head))` after a commit; `Ok(Some(message))` after an undo: the undone commit's message.
@@ -345,6 +365,8 @@ impl std::fmt::Debug for Msg {
                 write!(f, "ChangeDiff {{ generation: {generation}, {}: staged {:?}, divergent: {divergent} }}", entry.path, staged.as_ref().map(|s| s.iter().filter(|b| **b).count()))
             }
             Msg::ChangeDiffError { path, detail, .. } => write!(f, "ChangeDiffError {{ {path}: {detail} }}"),
+            Msg::Dir { generation, dir, result } => write!(f, "Dir {{ generation: {generation}, {}: {:?} }}", dir.display(), result.as_ref().map(Vec::len)),
+            Msg::File { generation, path, result } => write!(f, "File {{ generation: {generation}, {}: {} }}", path.display(), if result.is_ok() { "ok" } else { "error" }),
             Msg::WriteLog { line } => write!(f, "WriteLog {{ {line} }}"),
             Msg::WriteDone { op, result } => write!(f, "WriteDone {{ {}: {:?} }}", op.label(), result.as_ref().map(|m| m.is_some())),
             Msg::Changed(c) => write!(f, "Changed({:#x})", c.0),

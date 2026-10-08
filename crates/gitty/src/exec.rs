@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use gitty_core::Handle;
 
-use crate::msg::{DiffKey, FilesOf, Gens, Msg, Request};
+use crate::msg::{DiffKey, FileView, FilesOf, Gens, HlKey, Msg, Request};
 
 /// History entries appended per write-lock hold; the first chunk is small so the first screen
 /// of rows appears quickly even without a commit-graph.
@@ -58,6 +58,19 @@ fn change_diff(h: &Handle, e: &gitty_core::status::StatusEntry, opts: gitty_core
         force_text,
     };
     Ok((key, Arc::new(diff), texts, derived.flatten(), divergent))
+}
+
+fn file_view(c: gitty_core::files::FileContent, path: &std::path::Path) -> FileView {
+    use gitty_core::files::FileContent as C;
+    match c {
+        C::Text(bytes) => FileView::Text { key: HlKey { blob: gitty_core::commit_files::BlobId::hash_of(&bytes), path: path.to_string_lossy().into_owned() }, text: Arc::new(gitty_core::diff::text::Text::new(bytes)) },
+        C::Binary { size } => FileView::Binary { size },
+        C::TooLarge { size } => FileView::TooLarge { size },
+        C::Lfs { size } => FileView::Lfs { size },
+        C::Symlink { target } => FileView::Symlink { target },
+        C::Special => FileView::Special,
+        C::Masked => FileView::Masked,
+    }
 }
 
 /// A clean status this slow usually means racily clean index entries being re-hashed each run.
@@ -257,6 +270,20 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             Ok((key, diff, texts, staged, divergent)) => sink(Msg::ChangeDiff { generation, entry, key, diff, texts, staged, divergent }),
             Err(e) => sink(Msg::ChangeDiffError { generation, path: entry.path, detail: format!("{e:#}") }),
         },
+        Request::ReadDir { generation, dir } => {
+            let result = h.list_dir(&dir).map_err(|e| format!("{e:#}"));
+            sink(Msg::Dir { generation, dir, result });
+        }
+        Request::ReadFile { generation, path, reveal } => {
+            if !Gens::is(&gens.file, generation) {
+                return;
+            }
+            let result = match h.owner().workdir() {
+                Some(root) => gitty_core::files::read_file(root, &path, reveal).map(|c| file_view(c, &path)).map_err(|e| format!("{e:#}")),
+                None => Err("bare repository".to_string()),
+            };
+            sink(Msg::File { generation, path, result });
+        }
         Request::Write(op) => {
             let result = {
                 let _write = crate::write::lock();

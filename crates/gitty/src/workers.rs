@@ -112,6 +112,14 @@ pub fn panic_reply(req: &Request) -> Box<dyn FnOnce(String) -> Msg + Send> {
             Box::new(move |d| Msg::WriteDone { op, result: Err(internal(d)) })
         }
         &Request::Net { op, background, .. } => Box::new(move |d| Msg::NetDone { op, background, outcome: gitty_core::net::Outcome::Failed { detail: internal(d) } }),
+        Request::ReadDir { generation, dir } => {
+            let (generation, dir) = (*generation, dir.clone());
+            Box::new(move |d| Msg::Dir { generation, dir, result: Err(internal(d)) })
+        }
+        Request::ReadFile { generation, path, .. } => {
+            let (generation, path) = (*generation, path.clone());
+            Box::new(move |d| Msg::File { generation, path, result: Err(internal(d)) })
+        }
         &Request::Status { generation, .. } => Box::new(move |d| Msg::Status { generation, result: Err(internal(d)) }),
         _ => Box::new(|detail| Msg::Error { what: "internal error in a worker".into(), detail }),
     }
