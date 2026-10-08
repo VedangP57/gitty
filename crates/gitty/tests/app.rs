@@ -3510,7 +3510,7 @@ fn startup_asks_for_the_branchs_pull_request_and_the_reply_sets_the_badge() {
     assert!(t.app.toast.is_none());
     t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(Some(pr_info(7, PrState::Open))) });
     assert_eq!(t.app.pr_badge, Some(("feat/x".into(), pr_info(7, PrState::Open))));
-    // an answer of "none" (the PR went away, or gh failed) takes it off again
+    // an answer of "none" (gh says the PR is gone) takes it off again
     t.app.handle_msg(Msg::PrBadge { branch: "feat/x".into(), result: Ok(None) });
     assert_eq!(t.app.pr_badge, None);
 }
@@ -3583,6 +3583,29 @@ fn the_pull_request_is_not_asked_for_more_than_every_30_seconds() {
     }
     t.app.tick(t.clock + Duration::from_secs(31));
     assert_eq!(badge_requests(&t.app.take_requests()), ["feat/x"], "after the minimum, a refresh asks again");
+}
+
+#[test]
+fn switching_back_does_not_queue_a_second_lookup_while_one_is_out() {
+    let f = pr_fixture();
+    f.git(&["branch", "other"]);
+    let mut t = H::new(&f);
+    let r = t.app.take_requests();
+    for m in t.exec_all(r) {
+        t.app.handle_msg(m);
+    }
+    assert_eq!(badge_requests(&t.app.take_requests()), ["feat/x"], "out, no reply yet");
+    for branch in ["other", "feat/x"] {
+        f.git(&["switch", "-q", branch]);
+        t.app.handle_focus(true);
+        let r = t.app.take_requests();
+        for m in t.exec_all(r) {
+            t.app.handle_msg(m);
+        }
+        let r = t.app.take_requests();
+        assert_eq!(badge_requests(&r), if branch == "other" { vec!["other"] } else { vec![] }, "{branch}");
+    }
+    assert_eq!(gitty::workers::route(&Request::PrBadge { branch: "x".into() }), gitty::workers::Pool::Maintenance);
 }
 
 #[test]

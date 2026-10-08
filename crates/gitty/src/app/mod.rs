@@ -301,6 +301,8 @@ pub struct App {
     pub pr_badge: Option<(String, PrInfo)>,
     /// The branch the badge was last asked for, and when.
     pr_asked: Option<(String, Instant)>,
+    /// Branches whose lookup is out, so switching back and forth does not queue more.
+    pr_inflight: HashSet<String>,
     /// The working tree, for opening files in the editor (set by the main loop).
     pub workdir: Option<PathBuf>,
     last_click: Option<(Instant, u16, u16)>,
@@ -414,6 +416,7 @@ impl App {
             open_url: None,
             pr_badge: None,
             pr_asked: None,
+            pr_inflight: HashSet::new(),
             workdir: None,
             last_click: None,
             compare_gen: 0,
@@ -712,6 +715,7 @@ impl App {
                 Err(PrUrlError::Failed(detail)) => self.toast = Some(Toast { what: "Could not open the pull request page".into(), detail, error: true }),
             },
             Msg::PrBadge { branch, result } => {
+                self.pr_inflight.remove(&branch);
                 // a reply for a branch no longer checked out is stale
                 if self.refs.as_ref().and_then(|r| r.head_branch()) == Some(branch.as_str()) {
                     // a failed lookup keeps what is shown: the answer is only unknown

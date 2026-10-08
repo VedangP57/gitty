@@ -112,9 +112,10 @@ impl App {
             self.pr_asked = None;
             return;
         };
-        if self.pr_asked.as_ref().is_some_and(|(b, t)| *b == branch && self.clock.saturating_duration_since(*t) < PR_BADGE_MIN) {
+        if self.pr_asked.as_ref().is_some_and(|(b, t)| *b == branch && self.clock.saturating_duration_since(*t) < PR_BADGE_MIN) || self.pr_inflight.contains(&branch) {
             return;
         }
+        self.pr_inflight.insert(branch.clone());
         self.pr_asked = Some((branch.clone(), self.clock));
         self.outbox.push(Request::PrBadge { branch });
     }

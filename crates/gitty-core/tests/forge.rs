@@ -127,8 +127,8 @@ fn the_badge_is_found_after_the_remote_branch_is_deleted() {
     let dir = tempfile::tempdir().unwrap();
     let gh = dir.path().join("gh");
     let body = r#"#!/bin/sh
-[ "$*" = "pr list -R acme/widgets --head feat/x --state all --limit 1 --json number,state,isDraft,url" ] || exit 1
-echo '[{"number":9,"state":"MERGED","isDraft":false,"url":"https://github.com/acme/widgets/pull/9"}]'
+[ "$*" = "pr list -R acme/widgets --head feat/x --state all --limit 20 --json number,state,isDraft,isCrossRepository,url" ] || exit 1
+echo '[{"number":9,"state":"MERGED","isDraft":false,"isCrossRepository":false,"url":"https://github.com/acme/widgets/pull/9"}]'
 "#;
     std::fs::write(&gh, body).unwrap();
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -140,4 +140,12 @@ echo '[{"number":9,"state":"MERGED","isDraft":false,"url":"https://github.com/ac
     assert_eq!(cli(&g).pr_badge_with(gh.to_str().unwrap(), "feat/y"), Ok(None));
     g.git(&["remote", "add", "origin", "git@gitlab.com:acme/widgets.git"]);
     assert_eq!(cli(&g).pr_badge_with(gh.to_str().unwrap(), "feat/y"), Ok(None));
+}
+
+#[test]
+fn an_unreadable_remote_is_not_the_same_as_no_pull_request() {
+    use gitty_core::forge::PrUnknown;
+    let f = on_branch("feat/x");
+    f.git(&["remote", "add", "origin", "https://github.com/acme"]);
+    assert_eq!(cli(&f).pr_badge_with("gitty-no-such-gh", "feat/x"), Err(PrUnknown));
 }
