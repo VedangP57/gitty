@@ -293,10 +293,8 @@ impl App {
             RowKind::Dir { open: false, .. } => {
                 self.toggle_files_dir();
             }
-            RowKind::Dir { open: true, .. } => {
-                if self.files_tab.rows.get(self.files_tab.sel + 1).is_some_and(|r| r.depth > row.depth) {
-                    self.select_files_row(self.files_tab.sel + 1);
-                }
+            RowKind::Dir { open: true, .. } if self.files_tab.rows.get(self.files_tab.sel + 1).is_some_and(|r| r.depth > row.depth) => {
+                self.select_files_row(self.files_tab.sel + 1);
             }
             _ => {}
         }

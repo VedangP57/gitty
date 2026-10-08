@@ -136,3 +136,26 @@ fn stash_keys_resolve_where_they_should() {
     assert_eq!(m.resolve(&ev(KeyCode::Char('Z')), changes), Some(Action::StashPush));
     assert_eq!(m.resolve(&ev(KeyCode::Char('Z')), history), None, "stashing is a Changes action");
 }
+
+#[test]
+fn files_tab_keys_resolve_where_they_should() {
+    let m = Keymap::default();
+    let tree = State { tab: Tab::Files, focus: Focus::Files, compare: false };
+    let viewer = State { tab: Tab::Files, focus: Focus::Diff, compare: false };
+    for s in [tree, viewer, history()] {
+        assert_eq!(m.resolve(&ev(KeyCode::Char('3')), s), Some(Action::FilesTab));
+    }
+    assert_eq!(m.resolve(&ev(KeyCode::Char('h')), tree), Some(Action::FilesCollapse));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('l')), tree), Some(Action::FilesExpand));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('h')), viewer), Some(Action::ScrollLeft), "the viewer scrolls sideways");
+    assert_eq!(m.resolve(&ev(KeyCode::Char('e')), tree), Some(Action::OpenEditor), "e edits here, where it expands context in a diff");
+    assert_eq!(m.resolve(&ev(KeyCode::Char('e')), viewer), Some(Action::OpenEditor));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('e')), history()), Some(Action::Expand));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('v')), tree), Some(Action::RevealSecret));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('v')), history()), None);
+    let changes_diff = State { tab: Tab::Changes, focus: Focus::Diff, compare: false };
+    assert_eq!(m.resolve(&ev(KeyCode::Char('v')), changes_diff), Some(Action::LineRange));
+    // the same key in Changes and Files never overlaps, so rebinding warns about nothing
+    let (_, w) = Keymap::from_config(&table("line_range = \"ctrl-y\"\nreveal_secret = \"ctrl-y\"\n"));
+    assert!(w.is_empty(), "{w:?}");
+}

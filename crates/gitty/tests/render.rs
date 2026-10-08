@@ -1592,3 +1592,254 @@ fn a_short_terminal_cuts_the_force_push_text_not_the_keys() {
     assert!(s.contains("Force push `feat` with lease?"), "{s}");
     assert!(s.contains("Enter force push · Esc cancel"), "{s}");
 }
+
+// ---- Files tab ----
+
+const FAKE_SECRET: &str = "fake-secret-value-123";
+
+fn files_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write(".env", format!("TOKEN={FAKE_SECRET}\n"));
+    f.write(".gitignore", "target/\n");
+    f.write("README.md", "# readme\n");
+    f.write("src/main.rs", main_rs(0));
+    f.write("src/lib.rs", "pub fn lib() {}\n");
+    f.write("data.bin", b"ab\0cd");
+    f.commit("base", NOW - DAY);
+    f.write("target/out.txt", "o\n");
+    std::os::unix::fs::symlink("src/main.rs", f.path().join("link")).unwrap();
+    f
+}
+
+fn files_tab(f: &Fixture, size: (u16, u16)) -> H {
+    let mut t = H::new(f, "github-dark", size);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.key(KeyCode::Char('3'));
+    t
+}
+
+fn pick(t: &mut H, name: &str) {
+    let i = t.app.files_tab.rows.iter().position(|r| r.name == name).unwrap_or_else(|| panic!("no row {name}"));
+    t.app.select_files_row(i);
+    t.pump();
+}
+
+/// No cell, row or whole screen carries `needle` (cells are checked on their own too, in case a
+/// string were split across them).
+fn assert_absent(b: &Buffer, needle: &str) {
+    assert!(!text(b).contains(needle), "{needle} is on screen");
+    let all: String = (0..b.area.height).flat_map(|y| (0..b.area.width).map(move |x| (x, y))).map(|(x, y)| b[(x, y)].symbol().to_string()).collect();
+    assert!(!all.contains(needle), "{needle} is in the cells");
+}
+
+#[test]
+fn files_tab_tree_and_viewer_snapshots() {
+    let f = files_fixture();
+    for (w, focus_viewer) in [(140u16, false), (100, false), (100, true)] {
+        let mut t = files_tab(&f, (w, 30));
+        t.key(KeyCode::Enter);
+        pick(&mut t, "main.rs");
+        if focus_viewer {
+            t.key(KeyCode::Enter);
+        }
+        let s = text(&t.render(w, 30));
+        insta::assert_snapshot!(format!("files_{w}_{}", if focus_viewer { "viewer" } else { "tree" }), s);
+    }
+}
+
+#[test]
+fn the_tree_marks_directories_symlinks_secrets_and_ignored_entries() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    t.key(KeyCode::Enter);
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("▾ src/"), "{s}");
+    assert!(s.contains("▸ target/"), "{s}");
+    assert!(s.contains("link -> src/main.rs"), "{s}");
+    assert!(s.contains(".env (secret)"), "{s}");
+    assert!(s.contains("  main.rs"), "children are indented under src: {s}");
+    assert!(!s.contains(".git/"), "{s}");
+    // the ignored directory is dimmed against a normal one
+    let theme = t.app.theme.ui.clone();
+    let (tx, ty) = find(&b, "target").unwrap();
+    let (sx, sy) = find(&b, "src").unwrap();
+    assert_eq!(b[(tx, ty)].fg, theme.muted, "ignored is muted");
+    assert_eq!(b[(sx, sy)].fg, theme.accent, "directories take the accent colour");
+    let (rx, ry) = find(&b, "README.md").unwrap();
+    assert_eq!(b[(rx, ry)].fg, theme.fg);
+}
+
+#[test]
+fn the_viewer_shows_numbered_lines_with_syntax_colours() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    t.key(KeyCode::Enter);
+    pick(&mut t, "main.rs");
+    let b = t.render(140, 30);
+    let s = text(&b);
+    assert!(s.contains("src/main.rs"), "{s}");
+    assert!(s.contains("3 fn main"), "line numbers then text: {s}");
+    let (x, y) = find(&b, "fn").expect("keyword drawn");
+    assert_ne!(b[(x, y)].fg, t.app.theme.ui.fg, "highlighted");
+}
+
+#[test]
+fn a_masked_secret_never_reaches_the_screen_until_revealed() {
+    let f = files_fixture();
+    for (w, h) in [(140u16, 30u16), (100, 30)] {
+        let mut t = files_tab(&f, (w, h));
+        pick(&mut t, ".env");
+        if w < 120 {
+            // narrow: the viewer is its own screen
+            t.key(KeyCode::Enter);
+        }
+        let b = t.render(w, h);
+        assert_absent(&b, FAKE_SECRET);
+        assert_absent(&b, "TOKEN=");
+        if w >= 120 {
+            assert!(text(&b).contains("Hidden: this looks like a secret file. Press v to reveal."), "{}", text(&b));
+            assert_absent(&b, "1 line");
+        }
+        // reveal: the content shows
+        t.key(KeyCode::Char('v'));
+        let b = t.render(w, h);
+        assert!(text(&b).contains(FAKE_SECRET), "{}", text(&b));
+        // and is gone again after hiding it
+        t.key(KeyCode::Char('v'));
+        assert_absent(&t.render(w, h), FAKE_SECRET);
+    }
+}
+
+#[test]
+fn a_directory_shows_loading_until_its_listing_arrives() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    t.app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+    term.draw(|fr| ui::draw(&mut t.app, fr)).unwrap();
+    let s = text(term.backend().buffer());
+    assert!(s.contains("src/ loading…"), "{s}");
+    t.pump();
+    assert!(!text(&t.render(140, 30)).contains("loading…"));
+}
+
+#[test]
+fn binary_files_and_symlinks_get_a_message() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, "data.bin");
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("binary file (5 bytes)"), "{s}");
+    pick(&mut t, "link");
+    let s = text(&t.render(140, 30));
+    assert!(s.contains("symlink -> src/main.rs"), "{s}");
+}
+
+#[test]
+fn files_tab_label_and_tiny_sizes() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    assert!(text(&t.render(140, 30)).contains("[3] Files"));
+    t.key(KeyCode::Enter);
+    pick(&mut t, "main.rs");
+    for w in [20u16, 24, 40, 80, 119, 120, 200] {
+        for h in [5u16, 6, 8, 30] {
+            for focus_viewer in [false, true] {
+                t.app.focus = if focus_viewer { Focus::Diff } else { Focus::Files };
+                let _ = t.render(w, h);
+            }
+        }
+    }
+}
+
+#[test]
+fn hostile_file_names_and_lines_stay_in_their_pane() {
+    let f = Fixture::new();
+    f.write("plain.txt", "x\n");
+    f.commit("base", NOW - DAY);
+    f.write("esc\u{1b}[31mred.txt", format!("\u{1b}[31m{}\n{}\n", "x".repeat(5000), "ü".repeat(400)));
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, "esc\u{1b}[31mred.txt");
+    let b = t.render(140, 30);
+    for y in 0..b.area.height {
+        for x in 0..b.area.width {
+            assert!(!b[(x, y)].symbol().contains('\u{1b}'), "raw escape in a cell");
+        }
+    }
+    // sideways scrolling works and never panics
+    t.app.focus = Focus::Diff;
+    for _ in 0..5 {
+        t.key(KeyCode::Char('l'));
+        let _ = t.render(140, 30);
+    }
+}
+
+#[test]
+fn a_big_tree_draws_within_the_frame_budget() {
+    let f = Fixture::new();
+    for i in 0..5000 {
+        std::fs::write(f.path().join(format!("f{i:05}.txt")), "x").unwrap();
+    }
+    f.commit("many", NOW - DAY);
+    let mut t = files_tab(&f, (140, 40));
+    assert_eq!(t.app.files_tab.rows.len(), 5000);
+    t.render(140, 40);
+    let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
+    let start = Instant::now();
+    for _ in 0..20 {
+        term.draw(|fr| ui::draw(&mut t.app, fr)).unwrap();
+    }
+    let per_frame = start.elapsed() / 20;
+    eprintln!("5000-row Files tree: {per_frame:?} per frame (unoptimised)");
+    // unoptimised builds are several times slower than the 16 ms release budget
+    assert!(per_frame < Duration::from_millis(16), "{per_frame:?}");
+}
+
+#[test]
+fn files_clicks_select_and_toggle_and_a_double_click_edits() {
+    use gitty::external::External;
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "src").unwrap();
+    t.click(x, y);
+    assert!(t.app.files_tab.rows.iter().any(|r| r.name == "main.rs"), "a click on a directory opens it");
+    // a second click right after is a double-click: no toggle back, and a directory is not edited
+    t.click(x, y);
+    assert!(t.app.files_tab.rows.iter().any(|r| r.name == "main.rs"));
+    assert_eq!(t.app.external, None);
+    t.clock += Duration::from_secs(1);
+    t.app.tick(t.clock);
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "README.md").unwrap();
+    t.click(x, y);
+    assert_eq!(t.app.files_tab.shown.as_deref(), Some(std::path::Path::new("README.md")));
+    assert_eq!(t.app.external, None, "one click only selects");
+    t.click(x, y);
+    assert_eq!(t.app.external, Some(External::Edit { path: f.path().join("README.md"), line: None }));
+}
+
+#[test]
+fn the_wheel_scrolls_the_pane_under_the_pointer_in_files() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 20));
+    t.key(KeyCode::Enter);
+    pick(&mut t, "main.rs");
+    let b = t.render(140, 20);
+    let (vx, vy) = find(&b, "fn main").unwrap();
+    let wheel = |t: &mut H, x, y| t.app.handle_mouse(MouseEvent { kind: MouseEventKind::ScrollDown, column: x, row: y, modifiers: KeyModifiers::NONE });
+    wheel(&mut t, vx, vy);
+    assert_eq!(t.app.files_tab.vscroll, 3);
+    assert_eq!(t.app.files_tab.scroll, 0, "the tree stays put");
+    let s = text(&t.render(140, 20));
+    assert!(s.contains(" 4     step(0);") || s.contains("step(0)"), "{s}");
+    // keys scroll the viewer when it has focus
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('j'));
+    assert_eq!(t.app.files_tab.vscroll, 4);
+    t.key(KeyCode::Char('g'));
+    assert_eq!(t.app.files_tab.vscroll, 0);
+    t.key(KeyCode::Char('G'));
+    assert!(t.app.files_tab.vscroll > 10);
+}
