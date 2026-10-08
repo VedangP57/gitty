@@ -240,6 +240,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let wanted_path = match app.tab {
         crate::app::Tab::Changes => app.changes.selected().map(|e| e.path.clone()),
         crate::app::Tab::History => app.current_file().map(|f| f.path.clone()),
+        crate::app::Tab::Files => None,
     };
     if let Some(err) = app.wanted_diff_error().map(str::to_string) {
         title(app, buf, r, wanted_path.as_deref().unwrap_or("Diff"), focused, "");

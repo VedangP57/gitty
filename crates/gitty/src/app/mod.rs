@@ -7,6 +7,7 @@ pub mod branches;
 pub mod compare;
 pub mod net;
 pub mod diffstate;
+pub mod files;
 mod input;
 pub mod search;
 mod tools;
@@ -49,6 +50,8 @@ const ROWS_BATCH: usize = 256;
 pub enum Tab {
     Changes,
     History,
+    /// The working tree as a file tree with a read-only viewer.
+    Files,
 }
 
 pub enum Overlay {
@@ -265,6 +268,7 @@ pub struct App {
     pub hits: Hits,
 
     pub changes: changes::Changes,
+    pub files_tab: files::FilesState,
     /// The terminal has focus (FocusGained/FocusLost); the status backstop runs only then.
     pub focused: bool,
     index_mark: Option<gitty_core::watch::IndexMark>,
@@ -395,6 +399,7 @@ impl App {
             osc_out: Vec::new(),
             hits: Hits::default(),
             changes: changes::Changes::default(),
+            files_tab: files::FilesState::default(),
             focused: false,
             index_mark: None,
             net: None,
@@ -429,6 +434,7 @@ impl App {
     }
 
     pub fn take_requests(&mut self) -> Vec<Request> {
+        self.settle_files();
         std::mem::take(&mut self.outbox)
     }
     pub fn take_requests_peek(&self) -> &[Request] {
@@ -502,6 +508,7 @@ impl App {
         match self.tab {
             Tab::History => layout::compute(&input),
             Tab::Changes => layout::compute_changes(&input),
+            Tab::Files => layout::compute_files(&input),
         }
     }
 
@@ -562,6 +569,7 @@ impl App {
     pub fn handle_msg(&mut self, m: Msg) {
         self.dirty = true;
         let Some(m) = self.handle_changes_msg(m) else { return };
+        let Some(m) = self.handle_files_msg(m) else { return };
         let Some(m) = self.handle_net_msg(m) else { return };
         let Some(m) = self.handle_search_msg(m) else { return };
         let Some(m) = self.handle_compare_msg(m) else { return };
@@ -727,7 +735,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } => {}
+            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer(_) | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
@@ -1102,6 +1110,10 @@ impl App {
     }
 
     fn schedule_diff(&mut self) {
+        // the Files tab hides the History diff: nothing of it moves meanwhile (set_tab reloads it)
+        if self.tab == Tab::Files {
+            return;
+        }
         self.file_gen = Gens::bump(&self.gens.file);
         // the bump cancels in-flight highlights; their replies only clear pending entries
         self.hl_pending.clear();
@@ -1117,6 +1129,9 @@ impl App {
 
     fn fire_diff(&mut self) {
         self.diff_deadline = None;
+        if self.tab == Tab::Files {
+            return;
+        }
         let Some(file) = self.current_file().cloned() else { return };
         let opts = self.diff_opts();
         let key = DiffKey::of(&file, opts, self.force_text);
@@ -1161,7 +1176,7 @@ impl App {
             if text.is_empty() || self.hl_cache.contains(&key) || !self.hl_pending.insert(key.clone()) {
                 continue;
             }
-            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text: text.clone() });
+            self.outbox.push(Request::Highlight { generation: self.file_gen, key, text: text.clone(), files_view: false });
         }
     }
 
@@ -1175,6 +1190,9 @@ impl App {
 
     /// Re-requests the current file's diff with new options (whitespace mode, force text).
     pub fn refresh_diff(&mut self) {
+        if self.tab == Tab::Files {
+            return;
+        }
         if self.tab == Tab::Changes {
             self.request_change_diff();
         } else if self.current_file().is_some() {

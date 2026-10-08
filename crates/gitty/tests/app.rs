@@ -4105,3 +4105,542 @@ fn a_branch_that_moved_while_the_question_was_open_is_not_force_pushed() {
     assert!(toast_text(&t).contains("The branch changed since this screen: push again (P)"), "{}", toast_text(&t));
     assert_eq!(remote_rev(&bare, "topic"), before);
 }
+
+// ---- Files tab ----
+
+const FAKE_SECRET: &str = "fake-secret-value-123";
+
+fn files_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write(".env", format!("TOKEN={FAKE_SECRET}\n"));
+    f.write(".env.example", "TOKEN=\n");
+    f.write(".gitignore", "target/\n");
+    f.write("README.md", "# readme\n");
+    f.write("src/main.rs", "fn main() {}\n");
+    f.write("src/lib.rs", "pub fn lib() {}\n");
+    f.write("src/deep/mod.rs", "// deep\n");
+    f.write("data.bin", b"ab\0cd");
+    f.commit("base", 1_700_000_000);
+    f.write("big.txt", vec![b'a'; 2 * 1024 * 1024 + 1]);
+    f.write("target/out.txt", "o\n");
+    f
+}
+
+/// The Files tab opened on `f`, as the main loop would (the work tree is known).
+fn files_tab(f: &Fixture) -> H {
+    let mut t = H::new(f);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.pump();
+    t.key(KeyCode::Char('3'));
+    t.pump();
+    t
+}
+
+/// Rows as "<indent>name", for comparing listings.
+fn rows(t: &H) -> Vec<String> {
+    t.app.files_tab.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.name)).collect()
+}
+
+fn select(t: &mut H, name: &str) {
+    let i = t.app.files_tab.rows.iter().position(|r| r.name == name).unwrap_or_else(|| panic!("no row {name}: {:?}", rows(t)));
+    t.app.select_files_row(i);
+}
+
+/// What the Files requests in a batch are, without running them.
+fn labels(reqs: &[Request]) -> Vec<String> {
+    reqs.iter()
+        .filter_map(|r| match r {
+            Request::ReadDir { dir, .. } => Some(format!("dir {}", dir.display())),
+            Request::ReadFile { path, reveal, .. } => Some(format!("file {}{}", path.display(), if *reveal { " (reveal)" } else { "" })),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Runs everything queued, recording the Files requests that went out.
+fn drain_files(t: &mut H) -> Vec<String> {
+    let mut sent = Vec::new();
+    for _ in 0..100 {
+        let reqs = t.app.take_requests();
+        if reqs.is_empty() {
+            return sent;
+        }
+        sent.extend(labels(&reqs));
+        for m in t.exec_all(reqs) {
+            t.app.handle_msg(m);
+        }
+    }
+    panic!("did not settle");
+}
+
+fn viewing_text(t: &H) -> Option<String> {
+    match &t.app.files_tab.viewing {
+        gitty::app::files::Viewing::Ready(gitty::msg::FileView::Text { text, .. }) => Some(String::from_utf8_lossy(text.bytes()).into_owned()),
+        _ => None,
+    }
+}
+
+#[test]
+fn key_3_opens_the_files_tab_and_lists_only_the_root() {
+    let f = files_fixture();
+    let mut t = H::new(&f);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.pump();
+    t.ch('3');
+    assert_eq!(t.app.tab, gitty::app::Tab::Files);
+    assert_eq!(t.app.focus, Focus::Files);
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir "], "only the root is listed");
+    t.pump();
+    assert_eq!(rows(&t), ["src", "target", ".env", ".env.example", ".gitignore", "big.txt", "data.bin", "README.md"]);
+    // 1 and 2 still switch
+    t.ch('1');
+    assert_eq!(t.app.tab, gitty::app::Tab::Changes);
+    t.ch('3');
+    t.ch('2');
+    assert_eq!(t.app.tab, gitty::app::Tab::History);
+}
+
+#[test]
+fn a_bare_repository_has_no_files_tab() {
+    let f = files_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.workdir.is_none());
+    t.ch('3');
+    assert_eq!(t.app.tab, gitty::app::Tab::History);
+    assert!(t.app.take_requests_peek().iter().all(|r| !matches!(r, Request::ReadDir { .. })));
+}
+
+#[test]
+fn enter_expands_one_directory_with_one_request_and_h_collapses() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "src");
+    t.key(KeyCode::Enter);
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir src"]);
+    assert!(matches!(t.app.files_tab.rows[0].kind, gitty::app::files::RowKind::Dir { open: true, loading: true }), "shows loading… until the reply");
+    t.pump();
+    assert_eq!(&rows(&t)[..5], ["src", "  deep", "  lib.rs", "  main.rs", "target"]);
+    // h on an open directory closes it; opening it again shows the kept listing at once and asks anew
+    t.ch('h');
+    assert_eq!(&rows(&t)[..2], ["src", "target"]);
+    t.ch('l');
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir src"]);
+    assert_eq!(&rows(&t)[..3], ["src", "  deep", "  lib.rs"]);
+    t.pump();
+    // h on a file goes to its directory; h on that closes it
+    select(&mut t, "main.rs");
+    t.ch('h');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "src");
+    t.ch('h');
+    assert_eq!(&rows(&t)[..2], ["src", "target"]);
+    // h on a top-level file has no parent to go to
+    select(&mut t, "README.md");
+    t.ch('h');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "README.md");
+}
+
+#[test]
+fn nested_directories_stay_expanded_through_a_refresh() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "deep");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(&rows(&t)[..5], ["src", "  deep", "    mod.rs", "  lib.rs", "  main.rs"]);
+    t.app.refresh_files();
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir ", "dir src", "dir src/deep"]);
+    t.pump();
+    assert_eq!(&rows(&t)[..3], ["src", "  deep", "    mod.rs"]);
+}
+
+#[test]
+fn a_reply_from_an_older_generation_is_dropped() {
+    let f = files_fixture();
+    let mut t = H::new(&f);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.pump();
+    t.ch('3');
+    let first = t.app.take_requests();
+    assert_eq!(labels(&first), ["dir "]);
+    // a refresh begins before the first listing came back
+    t.app.refresh_files();
+    for m in t.exec_all(first) {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.files_tab.loading_root(), "the stale reply installed nothing");
+    assert!(t.app.files_tab.rows.is_empty());
+    t.pump();
+    assert!(!t.app.files_tab.rows.is_empty());
+}
+
+#[test]
+fn selecting_a_file_requests_it_and_shows_its_text() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.ch('j');
+    t.ch('j');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "lib.rs");
+    assert_eq!(labels(t.app.take_requests_peek()), ["file src/lib.rs"]);
+    t.pump();
+    assert_eq!(viewing_text(&t).as_deref(), Some("pub fn lib() {}\n"));
+    // moving to a directory empties the viewer
+    select(&mut t, "target");
+    assert!(t.app.files_tab.shown.is_none());
+    t.pump();
+    // Enter on a file moves to the viewer; Esc comes back
+    select(&mut t, "README.md");
+    t.pump();
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.key(KeyCode::Esc);
+    assert_eq!(t.app.focus, Focus::Files);
+}
+
+#[test]
+fn only_the_last_selection_is_shown_when_replies_arrive_out_of_order() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    let first = t.app.take_requests();
+    select(&mut t, ".gitignore");
+    let second = t.app.take_requests();
+    // the older read is cancelled by the generation (it may not even run) and never installs
+    let late = t.exec_all(first);
+    let current = t.exec_all(second);
+    for m in current.into_iter().chain(late) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(viewing_text(&t).as_deref(), Some("target/\n"));
+}
+
+#[test]
+fn a_secret_file_is_never_requested_until_revealed() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    let sent = drain_files(&mut t);
+    assert!(sent.iter().all(|s| !s.starts_with("file ")), "no ReadFile for a masked file: {sent:?}");
+    assert!(t.app.files_tab.masked());
+    assert!(matches!(t.app.files_tab.viewing, gitty::app::files::Viewing::Nothing), "nothing of the file is held");
+    // the example is not a secret
+    select(&mut t, ".env.example");
+    assert_eq!(drain_files(&mut t), ["file .env.example"]);
+    assert_eq!(viewing_text(&t).as_deref(), Some("TOKEN=\n"));
+    // v reveals the selected secret only, with a request that says so
+    select(&mut t, ".env");
+    drain_files(&mut t);
+    t.ch('v');
+    assert!(!t.app.files_tab.masked());
+    assert_eq!(drain_files(&mut t), ["file .env (reveal)"]);
+    assert_eq!(viewing_text(&t), Some(format!("TOKEN={FAKE_SECRET}\n")));
+    // v again hides it and drops the content
+    t.ch('v');
+    assert!(t.app.files_tab.masked());
+    assert!(viewing_text(&t).is_none());
+    assert!(drain_files(&mut t).is_empty());
+    // v on an ordinary file does nothing
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    t.ch('v');
+    assert!(labels(t.app.take_requests_peek()).is_empty());
+}
+
+#[test]
+fn the_reveal_ends_with_the_selection_and_with_the_tab() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    t.ch('v');
+    drain_files(&mut t);
+    assert!(viewing_text(&t).is_some());
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    select(&mut t, ".env");
+    assert!(t.app.files_tab.masked(), "back on the secret: hidden again");
+    assert!(drain_files(&mut t).iter().all(|s| !s.starts_with("file ")));
+    // leaving the tab hides it too
+    t.ch('v');
+    drain_files(&mut t);
+    assert!(viewing_text(&t).is_some());
+    t.ch('1');
+    t.ch('3');
+    drain_files(&mut t);
+    assert!(t.app.files_tab.masked());
+    assert!(viewing_text(&t).is_none());
+}
+
+#[test]
+fn a_reply_that_lands_after_the_reveal_was_undone_is_not_shown() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    drain_files(&mut t);
+    t.ch('v');
+    let reveal_read = t.app.take_requests();
+    assert_eq!(labels(&reveal_read), ["file .env (reveal)"]);
+    t.ch('v');
+    for m in t.exec_all(reveal_read) {
+        t.app.handle_msg(m);
+    }
+    assert!(t.app.files_tab.masked());
+    assert!(viewing_text(&t).is_none());
+}
+
+#[test]
+fn e_opens_the_selected_file_in_the_editor_even_a_masked_one() {
+    use gitty::external::External;
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    t.ch('e');
+    assert_eq!(t.app.external, Some(External::Edit { path: f.path().join(".env"), line: None }));
+    t.app.external = None;
+    select(&mut t, "src");
+    t.ch('e');
+    assert_eq!(t.app.external, None, "a directory is not opened");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "main.rs");
+    t.ch('e');
+    assert_eq!(t.app.external, Some(External::Edit { path: f.path().join("src/main.rs"), line: None }));
+}
+
+#[test]
+fn binary_and_large_files_say_so_without_loading() {
+    use gitty::app::files::Viewing;
+    use gitty::msg::FileView;
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "data.bin");
+    drain_files(&mut t);
+    assert!(matches!(t.app.files_tab.viewing, Viewing::Ready(FileView::Binary { size: 5 })));
+    select(&mut t, "big.txt");
+    drain_files(&mut t);
+    assert!(matches!(t.app.files_tab.viewing, Viewing::Ready(FileView::TooLarge { size }) if size == 2 * 1024 * 1024 + 1));
+}
+
+#[test]
+fn a_worktree_change_refreshes_the_open_tab_only() {
+    use gitty_core::watch::Changed;
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    f.write("README.md", "# changed\n");
+    f.write("added.txt", "x\n");
+    t.app.handle_msg(Msg::Changed(Changed::WORKTREE));
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir ", "file README.md"]);
+    t.pump();
+    assert!(rows(&t).contains(&"added.txt".to_string()));
+    assert_eq!(viewing_text(&t).as_deref(), Some("# changed\n"));
+    t.ch('2');
+    t.app.take_requests();
+    t.app.handle_msg(Msg::Changed(Changed::WORKTREE));
+    assert!(labels(t.app.take_requests_peek()).is_empty(), "other tabs do not list the tree");
+}
+
+#[test]
+fn an_unreadable_directory_is_an_inline_error_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    let dir = f.path().join("src");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    t.key(KeyCode::Enter);
+    t.pump();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // running as root can read it anyway
+    if rows(&t)[1] != "  deep" {
+        assert!(rows(&t)[1].trim_start().starts_with("cannot read"), "{:?}", rows(&t));
+        assert!(matches!(t.app.files_tab.rows[1].kind, gitty::app::files::RowKind::Note { error: true }));
+        // the rest keeps working
+        select(&mut t, "README.md");
+        t.pump();
+        assert!(viewing_text(&t).is_some());
+    }
+}
+
+#[test]
+fn a_history_generation_bump_during_a_read_does_not_drop_the_viewer() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    let read = t.app.take_requests();
+    // what a refs move, a walk or a diff schedule does on the History side
+    Gens::bump(&t.gens.file);
+    Gens::bump(&t.gens.session);
+    Gens::bump(&t.gens.commit);
+    for m in t.exec_all(read) {
+        t.app.handle_msg(m);
+    }
+    t.pump();
+    assert_eq!(viewing_text(&t).as_deref(), Some("# readme\n"));
+    // and the highlight of a file with a language is not cancelled either
+    select(&mut t, "big.txt");
+    drain_files(&mut t);
+    t.key(KeyCode::Enter);
+    t.key(KeyCode::Esc);
+    let reqs = t.app.take_requests();
+    assert!(reqs.iter().all(|r| !matches!(r, Request::Diff { .. } | Request::Walk { .. })));
+}
+
+#[test]
+fn diff_keys_do_nothing_on_the_files_tab() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    let ws = t.app.ws;
+    let wrap = t.app.wrap;
+    for c in ['w', 's', 'W', 'O', '{', '}', '[', ']', 'E'] {
+        t.ch(c);
+        assert!(t.app.take_requests_peek().is_empty(), "{c} sent a request");
+    }
+    t.app.focus = Focus::Diff;
+    for c in ['w', 's', 'W', 'O', '{', '}', 'E'] {
+        t.ch(c);
+        assert!(t.app.take_requests_peek().is_empty(), "{c} sent a request");
+    }
+    assert_eq!((t.app.ws, t.app.wrap), (ws, wrap));
+    assert_eq!(viewing_text(&t).as_deref(), Some("# readme\n"));
+    assert!(t.app.external.is_none());
+    assert!(t.app.diff.is_none());
+}
+
+#[test]
+fn a_burst_of_changes_asks_once_per_directory_and_the_old_asks_are_dropped() {
+    use gitty_core::watch::Changed;
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "README.md");
+    drain_files(&mut t);
+    for _ in 0..4 {
+        t.app.handle_msg(Msg::Changed(Changed::WORKTREE));
+    }
+    assert_eq!(labels(t.app.take_requests_peek()), ["dir ", "dir src", "file README.md"]);
+    // a request that went out before the newest refresh is dropped by the worker
+    let older = t.app.take_requests();
+    t.app.handle_msg(Msg::Changed(Changed::WORKTREE));
+    let out = t.exec_all(older);
+    assert!(out.iter().all(|m| !matches!(m, Msg::Dir { .. } | Msg::File { .. })), "stale requests answered: {out:?}");
+}
+
+#[test]
+fn directories_that_vanish_are_forgotten_when_their_parent_lists_again() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "deep");
+    t.key(KeyCode::Enter);
+    t.pump();
+    std::fs::remove_dir_all(f.path().join("src/deep")).unwrap();
+    t.app.refresh_files();
+    t.pump();
+    assert!(!rows(&t).contains(&"  deep".to_string()));
+    // a new directory of that name starts closed
+    f.write("src/deep/new.rs", "x\n");
+    t.app.refresh_files();
+    t.pump();
+    let deep = t.app.files_tab.rows.iter().find(|r| r.name == "deep").unwrap();
+    assert!(matches!(deep.kind, gitty::app::files::RowKind::Dir { open: false, .. }), "{:?}", deep.kind);
+}
+
+#[test]
+fn a_listing_arriving_does_not_snap_a_scrolled_tree_back() {
+    let f = Fixture::new();
+    for i in 0..80 {
+        f.write(&format!("f{i:02}.txt"), "x\n");
+    }
+    f.commit("many", 1_700_000_000);
+    let mut t = files_tab(&f);
+    t.app.files_tab.scroll = 20;
+    assert_eq!(t.app.files_tab.sel, 0);
+    t.app.refresh_files();
+    t.pump();
+    assert_eq!(t.app.files_tab.scroll, 20, "the user's scroll stays");
+    // moving the selection does bring it into view
+    t.ch('j');
+    assert_eq!(t.app.files_tab.scroll, 1);
+}
+
+#[test]
+fn a_huge_listing_is_rebuilt_once_per_batch() {
+    use gitty_core::files::{DirEntry, EntryKind};
+    let f = files_fixture();
+    let mut t = H::new(&f);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.pump();
+    t.ch('3');
+    let generation = match t.app.take_requests().as_slice() {
+        [Request::ReadDir { generation, .. }] => *generation,
+        _ => panic!("one ReadDir"),
+    };
+    let entries = |n: usize| -> Vec<DirEntry> {
+        (0..n).map(|i| DirEntry { name: format!("file{i:06}.txt").into(), kind: EntryKind::File, tracked: true, ignored: false, size: 1 }).collect()
+    };
+    // five replies in one batch cost one rebuild
+    let start = Instant::now();
+    for _ in 0..5 {
+        t.app.handle_msg(Msg::Dir { generation, dir: std::path::PathBuf::new(), result: Ok(entries(20_000)) });
+    }
+    assert!(t.app.files_tab.rows.is_empty(), "not rebuilt per message");
+    t.app.take_requests();
+    assert_eq!(t.app.files_tab.rows.len(), 20_000);
+    t.app.handle_msg(Msg::Dir { generation, dir: std::path::PathBuf::new(), result: Ok(entries(100_000)) });
+    let rebuild = Instant::now();
+    t.app.take_requests();
+    let took = rebuild.elapsed();
+    assert_eq!(t.app.files_tab.rows.len(), 100_000);
+    eprintln!("100k-entry rebuild: {took:?} (whole test {:?})", start.elapsed());
+    // generous: unoptimised builds on a loaded machine
+    if std::env::var_os("GITTY_SKIP_TIMING").is_none() {
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+}
+
+#[test]
+fn a_late_listing_of_a_closed_directory_is_not_kept() {
+    use gitty_core::files::{DirEntry, EntryKind};
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    t.ch('h');
+    t.app.refresh_files();
+    let generation = t.app.take_requests().iter().find_map(|r| match r {
+        Request::ReadDir { generation, .. } => Some(*generation),
+        _ => None,
+    });
+    let ghost = DirEntry { name: "ghost".into(), kind: EntryKind::File, tracked: false, ignored: false, size: 0 };
+    t.app.handle_msg(Msg::Dir { generation: generation.unwrap(), dir: "src".into(), result: Ok(vec![ghost]) });
+    t.app.take_requests();
+    t.ch('l');
+    assert!(!rows(&t).contains(&"  ghost".to_string()), "{:?}", rows(&t));
+}
+
+#[test]
+fn leaving_the_tab_cancels_the_read_of_a_revealed_file() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    drain_files(&mut t);
+    t.ch('v');
+    let read = t.app.take_requests();
+    assert_eq!(labels(&read), ["file .env (reveal)"]);
+    t.ch('1');
+    let out = t.exec_all(read);
+    assert!(out.iter().all(|m| !matches!(m, Msg::File { .. })), "the worker answered a cancelled read");
+    t.ch('3');
+    drain_files(&mut t);
+    assert!(t.app.files_tab.masked());
+    assert!(viewing_text(&t).is_none());
+}

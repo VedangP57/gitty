@@ -18,6 +18,10 @@ pub enum Ctx {
     ChangesList,
     /// Changes tab, diff pane.
     ChangesDiff,
+    /// Files tab, any pane.
+    Files,
+    /// Files tab, the tree (not the viewer).
+    FilesTree,
     /// History tab, any pane.
     History,
     /// The diff, from any pane of either tab.
@@ -42,6 +46,8 @@ impl Ctx {
             Ctx::Changes => s.tab == Tab::Changes,
             Ctx::ChangesList => s.tab == Tab::Changes && s.focus != Focus::Diff,
             Ctx::ChangesDiff => s.tab == Tab::Changes && s.focus == Focus::Diff,
+            Ctx::Files => s.tab == Tab::Files,
+            Ctx::FilesTree => s.tab == Tab::Files && s.focus != Focus::Diff,
             Ctx::History => s.tab == Tab::History,
         }
     }
@@ -51,6 +57,7 @@ impl Ctx {
         let tab = |c: Ctx| match c {
             Changes | ChangesList | ChangesDiff => Some(Tab::Changes),
             History | Compare => Some(Tab::History),
+            Files | FilesTree => Some(Tab::Files),
             Global | Diff | Nav => None,
         };
         match (tab(self), tab(other)) {
@@ -73,6 +80,7 @@ actions! {
     Quit "quit" Global ["q"] "quit",
     ChangesTab "changes_tab" Global ["1"] "Changes tab",
     HistoryTab "history_tab" Global ["2"] "History tab",
+    FilesTab "files_tab" Global ["3"] "Files tab",
     Fetch "fetch" Global ["f"] "fetch",
     Pull "pull" Global ["p"] "pull",
     Push "push" Global ["P"] "push",
@@ -96,6 +104,10 @@ actions! {
     Filter "filter" ChangesList ["F"] "Changes: filter the file list",
     LineRange "line_range" ChangesDiff ["v"] "Changes: select a range of lines",
     StageHunk "stage_hunk" ChangesDiff ["H"] "Changes: stage the hunk",
+    RevealSecret "reveal_secret" Files ["v"] "Files: show or hide a secret file (.env, keys…)",
+    OpenEditor "open_editor" Files ["e"] "Files: open the file in $EDITOR",
+    FilesCollapse "files_collapse" FilesTree ["h", "left"] "Files: close the directory (or go to its parent)",
+    FilesExpand "files_expand" FilesTree ["l", "right"] "Files: open the directory",
     Search "search" History ["/"] "search history (text, path:dir)",
     NextMatch "next_match" History ["n"] "next search match",
     PrevMatch "prev_match" History ["N"] "previous search match",

@@ -63,7 +63,7 @@ pub fn coalesce(evs: Vec<Event>) -> Vec<InputEvent> {
         }
         if let (Some(prev), true) = (out.last_mut(), is_wheel(&ev))
             && let (Event::Mouse(a), Event::Mouse(b)) = (&prev.ev, &ev)
-                && a.kind == b.kind && a.column == b.column && a.row == b.row {
+                && a.kind == b.kind && a.modifiers == b.modifiers && a.column == b.column && a.row == b.row {
                     prev.repeat = prev.repeat.saturating_add(1);
                     continue;
                 }
