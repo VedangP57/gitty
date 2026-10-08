@@ -91,6 +91,11 @@ pub struct UiColors {
     pub status_modified: Color,
     pub status_deleted: Color,
     pub status_renamed: Color,
+    /// The pull-request badge in the top bar, by state (GitHub's colours).
+    pub pr_open: Color,
+    pub pr_draft: Color,
+    pub pr_merged: Color,
+    pub pr_closed: Color,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,6 +374,10 @@ fn build(spec: &Spec, depth: ColorDepth, emph_override: Option<f32>) -> anyhow::
         u("status_modified", yellow)?,
         u("status_deleted", red)?,
         u("status_renamed", blue)?,
+        u("pr_open", green)?,
+        u("pr_draft", muted)?,
+        u("pr_merged", magenta)?,
+        u("pr_closed", red)?,
     ];
     let c = |x: Rgb| r.color(x);
     let ui = UiColors {
@@ -399,6 +408,10 @@ fn build(spec: &Spec, depth: ColorDepth, emph_override: Option<f32>) -> anyhow::
         status_modified: c(ui[20]),
         status_deleted: c(ui[21]),
         status_renamed: c(ui[22]),
+        pr_open: c(ui[23]),
+        pr_draft: c(ui[24]),
+        pr_merged: c(ui[25]),
+        pr_closed: c(ui[26]),
     };
 
     let d = |k: &str, dflt: Rgb| r.get("diff", k, || Ok(dflt));

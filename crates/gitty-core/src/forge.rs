@@ -1,4 +1,5 @@
-//! Forge links: the GitHub "open a pull request" page for a branch. The URL half is pure.
+//! Forge links: the GitHub "open a pull request" page for a branch, and the state of the branch's
+//! pull request. The URL half is pure.
 
 use crate::git_cli::{GitCli, Kind};
 use crate::net::push_target;
@@ -89,9 +90,9 @@ fn encode_branch(branch: &str) -> String {
 }
 
 impl GitCli {
-    /// The "open a pull request" page of a pushed branch, on the remote and under the name `P`
-    /// would push it to.
-    pub fn pr_url(&self, branch: &str) -> anyhow::Result<String> {
+    /// The "new pull request" page for `branch` on the remote and under the name `P` would push
+    /// it to, and that remote branch's name. Whether the remote branch exists is not looked at.
+    fn pr_remote(&self, branch: &str) -> anyhow::Result<(String, String, String)> {
         self.check_branch_name(branch)?;
         let Ok(target) = push_target(self, branch) else {
             return Err(ForgeError::NoRemote.into());
@@ -99,22 +100,71 @@ impl GitCli {
         let to = target.refspec.split_once(':').map_or(target.refspec.as_str(), |(_, to)| to);
         let name = to.strip_prefix("refs/heads/").unwrap_or(to);
         let remote = target.remote;
+        let out = self.quiet(Kind::Read, &["remote", "get-url", "--push", "--", &remote], None)?;
+        let compare = github_pr_url(String::from_utf8_lossy(&out).trim(), name)?;
+        Ok((remote, name.to_string(), compare))
+    }
+
+    /// [`GitCli::pr_remote`] for a branch that has been pushed.
+    fn pr_target(&self, branch: &str) -> anyhow::Result<(String, String)> {
+        let (remote, name, compare) = self.pr_remote(branch)?;
         if self.quiet(Kind::Read, &["rev-parse", "-q", "--verify", &format!("refs/remotes/{remote}/{name}")], None).is_err() {
             return Err(ForgeError::NotPushed.into());
         }
-        let out = self.quiet(Kind::Read, &["remote", "get-url", "--push", "--", &remote], None)?;
-        let compare = github_pr_url(String::from_utf8_lossy(&out).trim(), name)?;
-        Ok(open_pr_url("gh", &compare, name).unwrap_or(compare))
+        Ok((compare, name))
+    }
+
+    /// The "open a pull request" page of a pushed branch.
+    pub fn pr_url(&self, branch: &str) -> anyhow::Result<String> {
+        let (compare, name) = self.pr_target(branch)?;
+        Ok(open_pr_url("gh", &compare, &name).unwrap_or(compare))
+    }
+
+    /// The newest pull request whose head is `branch` on its remote, whatever its state, even
+    /// when the remote branch is gone (merged and deleted). `Ok(None)`: there is none, or no
+    /// GitHub remote to have one. `Err`: gh could not say (missing, logged out, offline, timed
+    /// out, an answer it should not give).
+    pub fn pr_badge(&self, branch: &str) -> Result<Option<PrInfo>, PrUnknown> {
+        self.pr_badge_with("gh", branch)
+    }
+
+    /// [`GitCli::pr_badge`] asking `program` instead of `gh`.
+    pub fn pr_badge_with(&self, program: &str, branch: &str) -> Result<Option<PrInfo>, PrUnknown> {
+        let (_, name, compare) = match self.pr_remote(branch) {
+            Ok(t) => t,
+            Err(e) if matches!(e.downcast_ref::<ForgeError>(), Some(ForgeError::NotGithub | ForgeError::NoRemote)) => return Ok(None),
+            Err(_) => return Err(PrUnknown),
+        };
+        pr_info(program, &compare, &name)
     }
 }
 
-/// The page of the open pull request for `branch`, asked of the `gh` CLI. `compare` is the
-/// `/pull/new/` URL, which names the repository. `None` on any trouble: gh missing, not logged
-/// in, no open PR, an odd answer or no answer within a few seconds.
-fn open_pr_url(program: &str, compare: &str, branch: &str) -> Option<String> {
-    let (repo, _) = compare.strip_prefix("https://github.com/")?.split_once("/pull/new/")?;
+/// Where a pull request stands, as GitHub shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+/// gh could not say whether there is a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrUnknown;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrInfo {
+    pub number: u64,
+    pub state: PrState,
+    /// `https://github.com/{owner}/{repo}/pull/{number}`, checked.
+    pub url: String,
+}
+
+/// Runs `program` (gh) with `args`: stdout up to `limit` bytes if it exits successfully within a
+/// few seconds. No terminal, no prompts, no stderr.
+fn run_gh(program: &str, args: &[&str], limit: u64) -> Option<String> {
     let mut child = Command::new(program)
-        .args(["pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"])
+        .args(args)
         .env("GH_PROMPT_DISABLED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -137,14 +187,65 @@ fn open_pr_url(program: &str, compare: &str, branch: &str) -> Option<String> {
         return None;
     }
     let mut out = String::new();
-    child.stdout.take()?.take(4096).read_to_string(&mut out).ok()?;
-    pick_pr_url(&out, repo)
+    child.stdout.take()?.take(limit).read_to_string(&mut out).ok()?;
+    Some(out)
 }
 
-/// `gh`'s output if it is exactly one line holding `https://github.com/{repo}/pull/{number}`.
+/// The page of the open pull request for `branch`, asked of the `gh` CLI. `compare` is the
+/// `/pull/new/` URL, which names the repository. `None` on any trouble: gh missing, not logged
+/// in, no open PR, an odd answer or no answer within a few seconds.
+fn open_pr_url(program: &str, compare: &str, branch: &str) -> Option<String> {
+    let (repo, _) = compare.strip_prefix("https://github.com/")?.split_once("/pull/new/")?;
+    let out = run_gh(program, &["pr", "list", "-R", repo, "--head", branch, "--state", "open", "--limit", "20", "--json", "url,isCrossRepository"], 16 * 1024)?;
+    pick_pr_url(own_pr(&out).ok()??.get("url")?.as_str()?, repo)
+}
+
+/// The newest pull request for `branch` on the repository `compare` names, asked of gh.
+fn pr_info(program: &str, compare: &str, branch: &str) -> Result<Option<PrInfo>, PrUnknown> {
+    let (repo, _) = compare.strip_prefix("https://github.com/").and_then(|c| c.split_once("/pull/new/")).ok_or(PrUnknown)?;
+    let out = run_gh(program, &["pr", "list", "-R", repo, "--head", branch, "--state", "all", "--limit", "20", "--json", "number,state,isDraft,isCrossRepository,url"], 64 * 1024).ok_or(PrUnknown)?;
+    match own_pr(&out)? {
+        None => Ok(None),
+        Some(pr) => parse_pr(&pr, repo).map(Some).ok_or(PrUnknown),
+    }
+}
+
+/// The first pull request of gh's JSON list that comes from the repository itself: `--head`
+/// matches the branch name only, so pull requests from forks of the same name are in the list too.
+/// `Err` when it is not a list; `Ok(None)` when none qualifies.
+fn own_pr(json: &str) -> Result<Option<serde_json::Value>, PrUnknown> {
+    let list: Vec<serde_json::Value> = serde_json::from_str(json).map_err(|_| PrUnknown)?;
+    Ok(list.into_iter().find(|pr| pr.get("isCrossRepository").and_then(|c| c.as_bool()) == Some(false)))
+}
+
+#[cfg(test)]
+/// [`parse_pr`] of the first pull request of the repository itself in gh's JSON list.
+fn parse_pr_list(json: &str, repo: &str) -> Option<PrInfo> {
+    parse_pr(&own_pr(json).ok()??, repo)
+}
+
+/// A pull request if its fields are what gh documents and its URL is that repository's page for
+/// that number.
+fn parse_pr(pr: &serde_json::Value, repo: &str) -> Option<PrInfo> {
+    let number = pr.get("number")?.as_u64()?;
+    let draft = pr.get("isDraft")?.as_bool()?;
+    let state = match (pr.get("state")?.as_str()?, draft) {
+        ("OPEN", false) => PrState::Open,
+        ("OPEN", true) => PrState::Draft,
+        ("MERGED", _) => PrState::Merged,
+        ("CLOSED", _) => PrState::Closed,
+        _ => return None,
+    };
+    let url = pick_pr_url(pr.get("url")?.as_str()?, repo)?;
+    (url.rsplit('/').next() == Some(number.to_string().as_str())).then_some(PrInfo { number, state, url })
+}
+
+/// `gh`'s output if it is exactly one line holding `https://github.com/{repo}/pull/{number}`;
+/// gh writes the repository's canonical case, which the remote URL may not have.
 fn pick_pr_url(output: &str, repo: &str) -> Option<String> {
     let line = output.strip_suffix('\n').unwrap_or(output);
-    let number = line.strip_prefix("https://github.com/")?.strip_prefix(repo)?.strip_prefix("/pull/")?;
+    let rest = line.strip_prefix("https://github.com/")?;
+    let number = rest.get(repo.len()..).filter(|_| rest.get(..repo.len()).is_some_and(|r| r.eq_ignore_ascii_case(repo)))?.strip_prefix("/pull/")?;
     (!number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())).then(|| line.to_string())
 }
 
@@ -177,6 +278,129 @@ mod tests {
         ] {
             assert_eq!(pick(bad), None, "{bad:?}");
         }
+    }
+
+    fn pr(number: u64, state: PrState) -> Option<PrInfo> {
+        Some(PrInfo { number, state, url: format!("https://github.com/o/r/pull/{number}") })
+    }
+
+    #[test]
+    fn parses_each_state() {
+        let one = |state: &str, draft: bool| format!(r#"[{{"number":7,"state":"{state}","isCrossRepository":false,"isDraft":{draft},"url":"https://github.com/o/r/pull/7"}}]"#);
+        assert_eq!(parse_pr_list(&one("OPEN", false), "o/r"), pr(7, PrState::Open));
+        assert_eq!(parse_pr_list(&one("OPEN", true), "o/r"), pr(7, PrState::Draft));
+        assert_eq!(parse_pr_list(&one("MERGED", false), "o/r"), pr(7, PrState::Merged));
+        assert_eq!(parse_pr_list(&one("CLOSED", false), "o/r"), pr(7, PrState::Closed));
+        // a draft that was closed is closed
+        assert_eq!(parse_pr_list(&one("CLOSED", true), "o/r"), pr(7, PrState::Closed));
+    }
+
+    #[test]
+    fn takes_the_first_pull_request_and_ignores_extra_fields() {
+        let json = r#"[{"number":9,"state":"MERGED","isCrossRepository":false,"isDraft":false,"url":"https://github.com/o/r/pull/9","title":"x"},{"number":3,"state":"OPEN","isCrossRepository":false,"isDraft":false,"url":"https://github.com/o/r/pull/3"}]"#;
+        assert_eq!(parse_pr_list(json, "o/r"), pr(9, PrState::Merged));
+    }
+
+    #[test]
+    fn skips_pull_requests_from_forks() {
+        let entry = |n: u64, cross: &str| format!(r#"{{"number":{n},"state":"OPEN","isDraft":false,"isCrossRepository":{cross},"url":"https://github.com/o/r/pull/{n}"}}"#);
+        let list = |entries: &[String]| format!("[{}]", entries.join(","));
+        assert_eq!(parse_pr_list(&list(&[entry(9, "true"), entry(5, "false"), entry(3, "false")]), "o/r"), pr(5, PrState::Open));
+        assert_eq!(parse_pr_list(&list(&[entry(9, "true")]), "o/r"), None);
+        // without the field, nothing says it is the repository's own
+        assert_eq!(parse_pr_list(r#"[{"number":9,"state":"OPEN","isDraft":false,"url":"https://github.com/o/r/pull/9"}]"#, "o/r"), None);
+        assert!(matches!(own_pr(&list(&[entry(9, "true")])), Ok(None)));
+        assert!(own_pr("nope").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let compare = "https://github.com/o/r/pull/new/main";
+        let forks = fake_gh(dir.path(), "forks", &format!("echo '{}'", list(&[entry(9, "true")])));
+        assert_eq!(pr_info(&forks, compare, "main"), Ok(None));
+        let mixed = fake_gh(dir.path(), "mixed", &format!("echo '{}'", list(&[entry(9, "true"), entry(5, "false")])));
+        assert_eq!(pr_info(&mixed, compare, "main"), Ok(pr(5, PrState::Open)));
+        // `R` opens the repository's own pull request, not a fork's
+        assert_eq!(open_pr_url(&mixed, compare, "main").as_deref(), Some("https://github.com/o/r/pull/5"));
+        assert_eq!(open_pr_url(&forks, compare, "main"), None);
+    }
+
+    #[test]
+    fn the_repository_is_compared_case_insensitively() {
+        let url = "https://github.com/acme/widgets/pull/12\n";
+        assert_eq!(pick_pr_url(url, "Acme/Widgets").as_deref(), Some("https://github.com/acme/widgets/pull/12"));
+        assert_eq!(pick_pr_url(url, "acme/widgets").as_deref(), Some("https://github.com/acme/widgets/pull/12"));
+        assert_eq!(pick_pr_url(url, "acme/gadgets"), None);
+        assert_eq!(pick_pr_url(url, "acme/widget"), None);
+        assert_eq!(pick_pr_url(url, "acme/widgets-x"), None);
+        assert_eq!(pick_pr_url("https://github.com/acme/widgets/pull/1a", "Acme/Widgets"), None);
+        assert_eq!(pick_pr_url("http://github.com/acme/widgets/pull/1", "acme/widgets"), None);
+    }
+
+    #[test]
+    fn refuses_odd_pull_request_lists() {
+        let with = |number: &str, state: &str, draft: &str, url: &str| format!(r#"[{{"number":{number},"state":"{state}","isCrossRepository":false,"isDraft":{draft},"url":"{url}"}}]"#);
+        let good = "https://github.com/o/r/pull/7";
+        for bad in [
+            with("7", "OPEN", "false", "https://github.com/o/other/pull/7"),
+            with("7", "OPEN", "false", "https://evil.com/o/r/pull/7"),
+            with("7", "OPEN", "false", "https://github.com/o/r/pull/7/files"),
+            with("7", "OPEN", "false", "https://github.com/o/r/pull/7?x=1"),
+            with("7", "OPEN", "false", "https://github.com/o/r/pull/8"),
+            with("7", "OPEN", "false", "https://github.com/o/r/pull/7\\nhttps://evil.com"),
+            with("7", "OPEN", "false", "javascript:alert(1)"),
+            with("7", "WEIRD", "false", good),
+            with("7", "open", "false", good),
+            with("-7", "OPEN", "false", good),
+            with("\"7\"", "OPEN", "false", good),
+            with("7", "OPEN", "\"no\"", good),
+            "[]".to_string(),
+            "[{}]".to_string(),
+            "[null]".to_string(),
+            r#"{"number":7,"state":"OPEN","isCrossRepository":false,"isDraft":false,"url":"https://github.com/o/r/pull/7"}"#.to_string(),
+            String::new(),
+            "not json".to_string(),
+            "[{\"number\":7".to_string(),
+        ] {
+            assert_eq!(parse_pr_list(&bad, "o/r"), None, "{bad:?}");
+        }
+    }
+
+    /// A stand-in for gh: a script running `body` whatever it is asked.
+    fn fake_gh(dir: &std::path::Path, name: &str, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn asks_gh_and_reads_its_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let compare = "https://github.com/o/r/pull/new/feat/x";
+        let args = r#"[ "$*" = "pr list -R o/r --head feat/x --state all --limit 20 --json number,state,isDraft,isCrossRepository,url" ] || exit 1"#;
+        let ok = fake_gh(d, "ok", &format!(r#"{args}; echo '[{{"number":4,"state":"OPEN","isCrossRepository":false,"isDraft":true,"url":"https://github.com/o/r/pull/4"}}]'"#));
+        assert_eq!(pr_info(&ok, compare, "feat/x"), Ok(pr(4, PrState::Draft)));
+        // gh is told never to prompt
+        let env = fake_gh(d, "env", r#"[ "$GH_PROMPT_DISABLED" = 1 ] || exit 1; echo '[{"number":4,"state":"MERGED","isCrossRepository":false,"isDraft":false,"url":"https://github.com/o/r/pull/4"}]'"#);
+        assert_eq!(pr_info(&env, compare, "feat/x"), Ok(pr(4, PrState::Merged)));
+        let fails = fake_gh(d, "fails", r#"echo '[{"number":4,"state":"OPEN","isCrossRepository":false,"isDraft":false,"url":"https://github.com/o/r/pull/4"}]'; exit 1"#);
+        assert_eq!(pr_info(&fails, compare, "feat/x"), Err(PrUnknown));
+        assert_eq!(pr_info("gitty-no-such-gh", compare, "feat/x"), Err(PrUnknown));
+        assert_eq!(pr_info(&ok, "https://example.com/o/r/pull/new/x", "x"), Err(PrUnknown));
+        // gh answering "none" is not a failure; an answer it should not give is
+        let none = fake_gh(d, "none", "echo '[]'");
+        assert_eq!(pr_info(&none, compare, "feat/x"), Ok(None));
+        let odd = fake_gh(d, "odd", r#"echo '[{"number":4,"state":"OPEN","isCrossRepository":false,"isDraft":false,"url":"https://evil.com/o/r/pull/4"}]'"#);
+        assert_eq!(pr_info(&odd, compare, "feat/x"), Err(PrUnknown));
+    }
+
+    #[test]
+    fn a_hanging_gh_is_given_up_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let slow = fake_gh(dir.path(), "slow", "exec sleep 30");
+        let t = Instant::now();
+        assert_eq!(pr_info(&slow, "https://github.com/o/r/pull/new/x", "x"), Err(PrUnknown));
+        assert!(t.elapsed() < Duration::from_secs(10));
     }
 
     #[test]

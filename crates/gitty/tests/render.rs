@@ -266,6 +266,93 @@ fn find(b: &Buffer, needle: &str) -> Option<(u16, u16)> {
     None
 }
 
+fn with_pr(t: &mut H, number: u64, state: gitty_core::forge::PrState) {
+    let branch = t.app.refs.as_ref().unwrap().head_branch().unwrap().to_string();
+    let url = format!("https://github.com/o/r/pull/{number}");
+    t.app.handle_msg(Msg::PrBadge { branch, result: Ok(Some(gitty_core::forge::PrInfo { number, state, url })) });
+}
+
+#[test]
+fn the_pull_request_badge_is_coloured_by_state_and_underlined() {
+    use gitty_core::forge::PrState;
+    use ratatui::style::Modifier;
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    let ui = t.app.theme.ui.clone();
+    let (open, draft, merged, closed) = (ui.pr_open, ui.pr_draft, ui.pr_merged, ui.pr_closed);
+    assert_eq!(open, ui.status_added, "green");
+    assert_eq!(draft, ui.muted);
+    assert_eq!(merged, t.app.theme.avatar[4], "magenta");
+    assert_eq!(closed, ui.error, "red");
+    let all = [open, draft, merged, closed];
+    assert!(all.iter().enumerate().all(|(i, c)| all.iter().skip(i + 1).all(|d| c != d)), "four distinct colours");
+    assert!(find(&t.render(140, 30), "PR #").is_none(), "no pull request, no badge");
+    for (state, color) in [(PrState::Open, open), (PrState::Draft, draft), (PrState::Merged, merged), (PrState::Closed, closed)] {
+        with_pr(&mut t, 42, state);
+        let b = t.render(140, 30);
+        let (x, y) = find(&b, "PR #42").unwrap_or_else(|| panic!("{state:?}: {}", text(&b)));
+        let line: String = (0..140).map(|x| b[(x, 0)].symbol().to_string()).collect();
+        assert!(line.contains("↑") && line.find("PR #42") > line.find("↓"), "after the ahead/behind marks: {line}");
+        for dx in 0..6 {
+            let c = &b[(x + dx, y)];
+            assert_eq!(c.fg, color, "{state:?} cell {dx}");
+            assert_eq!(c.bg, ui.status_bg);
+        }
+        // the number is the link
+        assert!(!b[(x, y)].modifier.contains(Modifier::UNDERLINED), "PR");
+        assert!((3..6).all(|dx| b[(x + dx, y)].modifier.contains(Modifier::UNDERLINED)), "#42");
+        assert_eq!(t.app.hits.pr_badge, Some(ratatui::layout::Rect::new(x, y, 6, 1)));
+    }
+}
+
+#[test]
+fn the_pull_request_badge_gives_way_at_80_columns() {
+    use gitty_core::forge::PrState;
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    with_pr(&mut t, 12345, PrState::Open);
+    let wide = text(&t.render(140, 30));
+    assert!(wide.lines().next().unwrap().contains("PR #12345"));
+    let b = t.render(80, 24);
+    let top: String = (0..80).map(|x| b[(x, 0)].symbol().to_string()).collect();
+    assert!(top.contains("PR #12345"), "{top}");
+    assert!(top.contains("[2] History"), "{top}");
+    assert!(!top.contains("fetched"), "the age gives way first: {top}");
+    // narrower still: the badge goes before the branch name or the marks are cut
+    let mut dropped = false;
+    for w in (30..=80).rev() {
+        let b = t.render(w, 24);
+        let top: String = (0..w).map(|x| b[(x, 0)].symbol().to_string()).collect();
+        let badge = top.contains("PR #12345");
+        assert_eq!(badge, t.app.hits.pr_badge.is_some(), "{w}: {top}");
+        if badge {
+            assert!(top.contains("⎇ main  ↑") && top.contains("↓"), "{w}: {top}");
+        } else {
+            dropped = true;
+        }
+    }
+    assert!(dropped);
+}
+
+#[test]
+fn clicking_the_pull_request_badge_opens_it() {
+    use gitty_core::forge::PrState;
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.render(140, 30);
+    // nothing there yet: the same place is just the bar
+    t.click(40, 0);
+    assert_eq!(t.app.open_url, None);
+    with_pr(&mut t, 42, PrState::Merged);
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "PR #42").unwrap();
+    t.click(x + 4, y);
+    assert_eq!(t.app.open_url.as_deref(), Some("https://github.com/o/r/pull/42"));
+    t.app.open_url = None;
+    t.click(x + 7, y);
+    assert_eq!(t.app.open_url, None, "only the badge is a link");
+}
+
 #[test]
 fn diff_rows_have_full_width_backgrounds() {
     let f = fixture();

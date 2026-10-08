@@ -7,6 +7,7 @@ use ratatui::style::{Modifier, Style};
 use super::paint::{fill, spans, text, width};
 use crate::app::{App, Focus, Tab};
 use crate::dates::{DateMode, format_date};
+use gitty_core::forge::PrState;
 use gitty_core::refs::Head;
 
 pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
@@ -54,6 +55,24 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
             x = text(buf, x, y, max_x, &s, base.fg(ui.ahead));
         }
     }
+    let mut pr_hit = None;
+    if let Some((_, pr)) = &app.pr_badge {
+        let color = match pr.state {
+            PrState::Open => ui.pr_open,
+            PrState::Draft => ui.pr_draft,
+            PrState::Merged => ui.pr_merged,
+            PrState::Closed => ui.pr_closed,
+        };
+        let number = format!("#{}", pr.number);
+        let w = 3 + width(&number);
+        // the whole badge or none: the branch name is never cut for it
+        if x + 2 + w <= max_x {
+            let st = base.fg(color);
+            let end = spans(buf, x + 2, y, max_x, &[("PR ", st), (&number, st.add_modifier(Modifier::UNDERLINED))]);
+            pr_hit = Some(Rect::new(x + 2, y, w, 1));
+            x = end;
+        }
+    }
     if let Some(r) = app.needs_auth.as_deref().filter(|_| app.net.is_none()) {
         text(buf, x, y, max_x, &format!("  {r} needs auth · f"), base.fg(ui.warning));
     } else if let Some(p) = app.background_problem().filter(|_| app.net.is_none()) {
@@ -63,9 +82,13 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
     } else if let Some(t) = app.fetched_at {
         let ago = format_date(t, 0, app.now, DateMode::Relative);
         let s = if ago == "now" { "  fetched just now".to_string() } else { format!("  fetched {ago} ago") };
-        text(buf, x, y, max_x, &s, muted);
+        // beside the badge, the age goes first when it does not fit
+        if pr_hit.is_none() || x + width(&s) <= max_x {
+            text(buf, x, y, max_x, &s, muted);
+        }
     }
     app.hits.tabs = tab_hits;
+    app.hits.pr_badge = pr_hit;
 }
 
 /// `G` stays `G`; named keys read lowercase (`enter`, `ctrl-d`).
