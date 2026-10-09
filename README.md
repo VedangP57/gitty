@@ -131,6 +131,30 @@ Because no editor opens, a cherry-pick, revert or reworded commit keeps its mess
 Abort restores the branch as it was before the operation; what the operation did is discarded.
 `m` with nothing in progress says so.
 
+### Resolving conflicts
+
+Conflicted files form the top of the Changes list, with their number of conflict blocks
+(`a.txt (3)`) once read. Selecting one shows the file in the right pane instead of a diff: each
+block is drawn as two tinted sides under header lines that name them, the block the cursor is in
+is highlighted (`n` and `p`, or `[` and `]`, move to the next and previous, wrapping round), and
+a diff3 base is shown dim. What the sides are called depends on the operation, because git's
+"ours" and "theirs" swap roles when commits are replayed: in a merge they are *Current (your
+branch)* and *Incoming (the merged branch)*; in a rebase *Base branch (what you rebase onto)* and
+*Your commit (its subject)*; in a cherry-pick *Current branch* and *Picked commit*; in a revert
+*Current branch* and *Reverted change*. `o` keeps the first side, `t` takes the second, `b` keeps
+both (first, then second) and `u` takes the last resolution of the file back (while the file is
+as it left it); `e` opens the file in `$EDITOR` at the block. A resolution rewrites the file
+atomically and only if it is still the text on screen (otherwise: "The file changed on disk;
+reloaded"); symlinks, secret-looking files and files over 2 MiB are never rewritten from here.
+Nothing is staged for you: after the last block gitty says "No conflicts left in a.txt; press
+Space to stage it". Staging a file that still has markers works, with a notice.
+
+Conflicts with no markers (binary files, a file one side deleted, both sides adding it) show
+what happened in words; `o` and `t` then ask before taking that side's whole file (or deleting
+the path when that side deleted it), stage the result and keep a copy of the file in the Trash.
+`b` needs markers. While a conflicted file is selected `p` and `u` mean previous conflict and
+undo, not pull and undo-commit.
+
 ### In herdr
 
 gitty ships a [herdr](https://herdr.dev) plugin that opens it in a popup on the repository of the
@@ -350,4 +374,6 @@ syntax definitions. The built-in themes reproduce the palettes of Ayu (MIT), Cat
 Dracula (MIT), Everforest (MIT), GitHub (MIT), Gruvbox (MIT/X11), Kanagawa (MIT), Nightfox (MIT),
 Nord (MIT), Atom One Dark and One Light (MIT), Rosé Pine (MIT), Solarized (MIT) and Tokyo Night
 (MIT and Apache-2.0); the copyright holders and licence text are in
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). The conflict-marker parsing and resolving
+logic is adapted from the editor [druk](https://github.com/letstri/druk) (MIT, Copyright (c)
+Valerii Strilets).

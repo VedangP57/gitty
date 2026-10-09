@@ -2433,3 +2433,155 @@ fn the_dialogs_fit_small_terminals_and_keep_their_keys() {
         }
     }
 }
+
+// ---- the conflict view ----
+
+/// Runs a command that is expected to stop on conflicts.
+fn stops(f: &Fixture, args: &[&str]) {
+    let out = std::process::Command::new("git").current_dir(f.path()).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_EDITOR", "true").output().unwrap();
+    assert!(!out.status.success(), "{args:?} did not stop");
+}
+
+/// `a.txt` has two conflicting changes (far apart), merged in diff3 style so the base shows.
+fn merging_two_blocks() -> Fixture {
+    let f = Fixture::new();
+    f.git(&["config", "merge.conflictStyle", "diff3"]);
+    let body = |a: &str, b: &str| format!("one\n{a}\n{}three\n{b}\nend\n", (0..12).map(|i| format!("filler {i}\n")).collect::<String>());
+    f.write("a.txt", body("two", "four"));
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("a.txt", body("two topic", "four topic"));
+    f.commit("topic edit", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("a.txt", body("two main", "four main"));
+    f.commit("main edit", 1_700_000_200);
+    stops(&f, &["merge", "topic"]);
+    f
+}
+
+fn conflict_view(f: &Fixture, size: (u16, u16)) -> H {
+    let mut t = H::new(f, "github-dark", size);
+    t.app.set_tab(gitty::app::Tab::Changes);
+    t.pump();
+    // below 120 columns the view is a screen of its own: Tab goes to it
+    if size.0 < 120 {
+        t.key(KeyCode::Tab);
+    }
+    t
+}
+
+fn bg_of(b: &Buffer, needle: &str) -> Color {
+    let (x, y) = find(b, needle).unwrap_or_else(|| panic!("no {needle:?}"));
+    b[(x, y)].bg
+}
+
+#[test]
+fn the_conflict_view_tints_the_sides_and_names_them() {
+    for w in [100u16, 140] {
+        let f = merging();
+        let mut t = conflict_view(&f, (w, 30));
+        let b = t.render(w, 30);
+        let d = t.app.theme.diff.clone();
+        // the markers are not shown raw: headers and a rule stand in for them
+        for raw in ["<<<<<<<", "=======", ">>>>>>>"] {
+            assert!(find(&b, raw).is_none(), "{w}: {raw}");
+        }
+        assert!(find(&b, "◂ Current (main)").is_some() && find(&b, "▸ Incoming (topic)").is_some(), "{w}");
+        // the only block is the current one: its sides are tinted strongly
+        let (hx, hy) = find(&b, "◂ Current").unwrap();
+        assert_eq!(b[(hx, hy)].bg, d.ours_head);
+        assert_eq!(b[(hx + 20, hy + 1)].bg, d.ours_current_bg, "{w}: the text row under the header");
+        let (hx, hy) = find(&b, "▸ Incoming").unwrap();
+        assert_eq!(b[(hx, hy)].bg, d.theirs_head);
+        assert_eq!(b[(hx + 20, hy + 1)].bg, d.theirs_current_bg, "{w}");
+        // the file list counts the blocks, the title says which one this is, the bar names the keys
+        assert_eq!(find(&b, "a.txt (1)").is_some(), w >= 120, "{w}: the list shows with the view from 120 columns");
+        assert!(find(&b, "conflict 1/1").is_some(), "{w}");
+        assert!(find(&b, "o keep Current").is_some() && find(&b, "t take Incoming").is_some(), "{w}");
+        assert!(t.app.diff.is_none());
+    }
+}
+
+#[test]
+fn the_current_block_is_marked_and_n_moves_it() {
+    let f = merging_two_blocks();
+    let mut t = conflict_view(&f, (120, 40));
+    let d = t.app.theme.diff.clone();
+    let b = t.render(120, 40);
+    // diff3: the base is dim
+    assert!(find(&b, "│ Base").is_some());
+    let (bx, by) = find(&b, "│ Base").unwrap();
+    assert_eq!(b[(bx + 12, by + 1)].bg, d.base_bg, "the base text of the first block");
+    assert_eq!(bg_of(&b, "two main"), d.ours_current_bg);
+    assert_eq!(bg_of(&b, "four main"), d.ours_bg, "the other block is tinted lightly");
+    assert!(find(&b, "conflict 1/2").is_some());
+    // the keys sit on the closing rule of the current block only (and in the bar)
+    assert_eq!(find_all(&b, "o keep Current").len(), 2);
+    let (_, my) = find(&b, "two main").unwrap();
+    assert_eq!(b[(t.app.hits.panes.diff.unwrap().x, my)].symbol(), "▌");
+    t.key(KeyCode::Char('n'));
+    let b = t.render(120, 40);
+    assert!(find(&b, "conflict 2/2").is_some());
+    assert_eq!(bg_of(&b, "four main"), d.ours_current_bg, "the view scrolled to it");
+    // wraps round
+    t.key(KeyCode::Char('n'));
+    assert!(find(&t.render(120, 40), "conflict 1/2").is_some());
+    t.key(KeyCode::Char('p'));
+    assert!(find(&t.render(120, 40), "conflict 2/2").is_some());
+}
+
+#[test]
+fn controls_in_a_conflict_are_shown_as_carets() {
+    let f = Fixture::new();
+    f.write("a.txt", "base\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("a.txt", "topic \u{1b}[31mred\n");
+    f.commit("topic edit", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("a.txt", "main\n");
+    f.commit("main edit", 1_700_000_200);
+    stops(&f, &["merge", "topic"]);
+    let mut t = conflict_view(&f, (100, 30));
+    let b = t.render(100, 30);
+    assert!(find(&b, "topic ^[").is_some() && find(&b, "[31mred").is_some());
+    for y in 0..30 {
+        for x in 0..100 {
+            assert!(!b[(x, y)].symbol().contains('\u{1b}'));
+        }
+    }
+}
+
+#[test]
+fn a_narrow_conflict_view_clips_without_panicking() {
+    let f = merging_two_blocks();
+    let mut t = conflict_view(&f, (100, 30));
+    for (w, h) in [(60, 20), (44, 12), (30, 8), (21, 6), (100, 30)] {
+        let b = t.render(w, h);
+        assert_eq!(b.area.width, w);
+    }
+    let b = t.render(100, 30);
+    assert!(find(&b, "conflict 1/2").is_some());
+}
+
+#[test]
+fn a_binary_conflict_explains_itself_and_names_what_the_keys_do() {
+    let f = Fixture::new();
+    f.write("img.bin", b"base\0".as_slice());
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("img.bin", b"topic\0".as_slice());
+    f.commit("topic", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("img.bin", b"main\0".as_slice());
+    f.commit("main", 1_700_000_200);
+    stops(&f, &["merge", "topic"]);
+    let mut t = conflict_view(&f, (110, 30));
+    let b = t.render(110, 30);
+    assert!(find(&b, "Both sides changed this file").is_some());
+    assert!(find(&b, "binary file").is_some());
+    assert!(find(&b, "Current (main): keep its version of the file").is_some());
+    assert!(find(&b, "Incoming (topic): keep its version of the file").is_some());
+    assert!(find(&b, "o keep Current").is_some());
+    assert!(find(&b, "both").is_none(), "no markers, no keep-both");
+}

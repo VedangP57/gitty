@@ -138,6 +138,35 @@ fn stash_keys_resolve_where_they_should() {
 }
 
 #[test]
+fn conflict_keys_beat_the_changes_and_global_keys_only_on_a_conflicted_file() {
+    let m = Keymap::default();
+    let plain = State { tab: Tab::Changes, focus: Focus::Files, compare: false, conflict: false };
+    let conflicted = State { conflict: true, ..plain };
+    let diff = State { focus: Focus::Diff, ..conflicted };
+    for s in [conflicted, diff] {
+        for (c, a) in [('o', Action::ConflictOurs), ('t', Action::ConflictTheirs), ('b', Action::ConflictBoth), ('n', Action::ConflictNext), ('p', Action::ConflictPrev), ('u', Action::ConflictUndo), ('e', Action::ConflictEdit)] {
+            assert_eq!(m.resolve(&ev(KeyCode::Char(c)), s), Some(a), "{c}");
+        }
+    }
+    // the chords they take: pull and undo-commit give way, only here
+    assert_eq!(m.resolve(&ev(KeyCode::Char('p')), plain), Some(Action::Pull));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('u')), plain), Some(Action::UndoCommit));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('o')), plain), None);
+    assert_eq!(m.resolve(&ev(KeyCode::Char('e')), plain), Some(Action::Expand));
+    // everything else still works on a conflicted file
+    for (c, a) in [('f', Action::Fetch), (' ', Action::Stage), ('a', Action::StageAll), ('m', Action::Operation), ('q', Action::Quit), ('j', Action::Down)] {
+        assert_eq!(m.resolve(&ev(KeyCode::Char(c)), conflicted), Some(a), "{c}");
+    }
+    // the conflict view is a Changes-tab thing
+    let history = State { tab: Tab::History, focus: Focus::History, compare: false, conflict: true };
+    assert_eq!(m.resolve(&ev(KeyCode::Char('p')), history), Some(Action::Pull));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('o')), history), Some(Action::Header));
+    // rebinding one of them warns when it takes another Changes key
+    let (_, w) = Keymap::from_config(&table("conflict_edit = \"c\"\n"));
+    assert!(w.iter().any(|w| w.contains("`commit_box` has no key left")), "{w:?}");
+}
+
+#[test]
 fn files_tab_keys_resolve_where_they_should() {
     let m = Keymap::default();
     let tree = State { tab: Tab::Files, focus: Focus::Files, compare: false, conflict: false };

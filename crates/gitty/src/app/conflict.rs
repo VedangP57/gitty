@@ -283,12 +283,16 @@ impl App {
             return;
         };
         let (entry, sides) = (v.entry.clone(), v.sides.clone());
-        let ConflictBody::Text { text, key, conflicts } = &v.body else {
+        // only a file both sides have can hold markers; the others (and files the view cannot
+        // read) are settled whole
+        let marked = matches!((entry.x, entry.y), ('U', 'U') | ('A', 'A'));
+        let ConflictBody::Text { text, key, conflicts } = &v.body else { return self.conflict_whole_file(&entry, &sides, choice) };
+        if !marked {
             return self.conflict_whole_file(&entry, &sides, choice);
-        };
-        // a file with no markers is the user's own result (or a kind of conflict that has no blocks)
+        }
+        // a file with no markers left is the user's own result
         if conflicts.is_empty() {
-            self.toast = say(if matches!((entry.x, entry.y), ('U', 'U') | ('A', 'A')) { "No conflict markers left: press Space to stage the file".to_string() } else { describe(&entry, &sides) });
+            self.toast = say("No conflict markers left: press Space to stage the file");
             return;
         }
         let Some(block) = conflicts.get(v.cur) else { return };
