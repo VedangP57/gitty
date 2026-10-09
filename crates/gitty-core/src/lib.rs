@@ -4,6 +4,7 @@ pub mod ahead_behind;
 pub mod branch;
 pub mod commit_files;
 pub mod compare;
+pub mod conflicts;
 pub mod diff;
 pub mod diff_lines;
 pub mod error;

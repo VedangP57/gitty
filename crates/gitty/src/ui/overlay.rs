@@ -14,6 +14,7 @@ use gitty_core::status::EntryKind;
 
 /// Help sections, in display order, and the keys that are not rebindable.
 const SECTIONS: &[(Ctx, &str)] = &[
+    (Ctx::Conflict, "Resolving a conflict"),
     (Ctx::Global, "Everywhere"),
     (Ctx::Nav, "Moving"),
     (Ctx::History, "History"),
@@ -69,6 +70,7 @@ fn confirm_verb(op: &crate::msg::WriteOp) -> &'static str {
         W::DeleteBranch { .. } => " delete · ",
         W::StashDrop { .. } => " drop · ",
         W::RemoveIndexLock { .. } => " remove · ",
+        W::TakeSide { .. } => " resolve · ",
         _ => " discard · ",
     }
 }

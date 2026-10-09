@@ -121,7 +121,8 @@ fn fallback_trash_dir() -> PathBuf {
 /// [`fallback_trash_dir`] when the Trash is not writable; returns the fallback directory when it
 /// was used. Missing files need no backup.
 fn to_trash(file: &Path) -> anyhow::Result<Option<PathBuf>> {
-    if !file.is_file() {
+    // a symlink is not followed, and a link has nothing to keep
+    if !std::fs::symlink_metadata(file).is_ok_and(|m| m.is_file()) {
         return Ok(None);
     }
     let trash = trash_location(|k| std::env::var_os(k), cfg!(target_os = "macos"));
@@ -262,6 +263,27 @@ fn merge_note(name: &str, into: &str, outcome: &MergeOutcome) -> String {
     }
 }
 
+/// A notice when staging `paths` (every path when None) stages conflicted files that still hold
+/// conflict markers, looked at now: a count made earlier may be stale.
+fn marker_warning(h: &Handle, cli: &GitCli, paths: Option<&[String]>) -> Option<String> {
+    let root = h.owner().workdir()?;
+    let marked: Vec<String> = cli
+        .unmerged_paths()
+        .ok()?
+        .into_iter()
+        .filter(|p| paths.is_none_or(|ps| ps.contains(p)))
+        .filter(|p| match gitty_core::conflicts::read(root, Path::new(p), cli.conflict_style(p)) {
+            Ok(gitty_core::conflicts::Loaded::Text { conflicts, unknown, .. }) => !conflicts.is_empty() || unknown,
+            _ => false,
+        })
+        .collect();
+    match marked.as_slice() {
+        [] => None,
+        [one] => Some(format!("{one} still has conflict markers")),
+        more => Some(format!("{} staged files still have conflict markers", more.len())),
+    }
+}
+
 /// The notice for continuing `op`.
 fn continue_note(op: RepoOp, outcome: Continued) -> String {
     match outcome {
@@ -283,9 +305,18 @@ fn continue_note(op: RepoOp, outcome: Continued) -> String {
 pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Result<Option<String>> {
     let cli = GitCli::new(h.owner());
     match op {
-        WriteOp::Stage(paths) => cli.stage_paths(paths)?,
+        WriteOp::Stage(paths) => {
+            // looked at before staging, which ends the conflict; the staging goes ahead regardless
+            let note = marker_warning(h, &cli, Some(paths));
+            cli.stage_paths(paths)?;
+            return Ok(note);
+        }
         WriteOp::Unstage(paths) => cli.unstage_paths(paths)?,
-        WriteOp::StageAll => cli.stage_all()?,
+        WriteOp::StageAll => {
+            let note = marker_warning(h, &cli, None);
+            cli.stage_all()?;
+            return Ok(note);
+        }
         WriteOp::UnstageAll => cli.unstage_all()?,
         WriteOp::SetStaged { entry, texts, diff, flags } => {
             // whole-file plans run `git add`/`restore`, which take the file as it is now: refuse
@@ -321,6 +352,21 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             let note = fallback_note(to_trash(&full)?);
             // write in place so the file keeps its mode, owner and inode
             std::fs::write(&full, bytes).with_context(|| format!("writing {path}"))?;
+            return Ok(note);
+        }
+        WriteOp::ResolveConflict { path, bytes, expect, left, .. } => {
+            gitty_core::conflicts::write_resolved(&workdir(h)?, Path::new(path), *expect, bytes)?;
+            return Ok((*left == 0).then(|| format!("No conflicts left in {path}; press Space to stage it")));
+        }
+        WriteOp::TakeSide { path, theirs, delete } => {
+            // the file as it is now (markers, or the side git left in the tree) is kept in the
+            // Trash, once the index has confirmed what is being done
+            let full = workdir(h)?.join(path);
+            let mut note = None;
+            cli.take_side(path, *theirs, *delete, &mut || {
+                note = fallback_note(to_trash(&full)?);
+                Ok(())
+            })?;
             return Ok(note);
         }
         WriteOp::DiscardFiles { restore, remove } => {
@@ -460,6 +506,17 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_symlink_is_neither_followed_nor_copied_to_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, "x").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(super::to_trash(&link).unwrap(), None);
+        assert_eq!(super::to_trash(&dir.path().join("missing")).unwrap(), None);
+    }
+
     #[test]
     fn fsmonitor_daemons_do_not_hold_the_lock() {
         let daemon = "/usr/libexec/git-core/git fsmonitor--daemon run --detach --ipc-threads=8\n";

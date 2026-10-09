@@ -136,8 +136,11 @@ fn hint_label(k: &crate::keymap::Key) -> String {
 
 /// Bottom-bar hints for the focused pane, with the keys the keymap really uses (`alt+enter` is
 /// fixed).
-fn hints(app: &App) -> Vec<(String, &'static str)> {
+fn hints(app: &App) -> Vec<(String, String)> {
     use crate::keymap::Action as A;
+    if app.tab == Tab::Changes && app.focus != Focus::Commit && app.conflict_active() {
+        return conflict_hints(app);
+    }
     let list: &[(&[A], &str)] = if app.tab == Tab::Files {
         match app.focus {
             Focus::Diff => &[(&[A::Down, A::Up], "scroll"), (&[A::ScrollLeft, A::ScrollRight], "sideways"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::Back], "back"), (&[A::Help], "help")],
@@ -146,7 +149,7 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
     } else if app.tab == Tab::Changes {
         match app.focus {
             Focus::Diff => &[(&[A::Stage], "stage line"), (&[A::LineRange], "range"), (&[A::StageHunk], "hunk"), (&[A::StageAll], "file"), (&[A::Discard], "discard"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Back], "back")],
-            Focus::Commit => return vec![("alt+enter".into(), "commit"), ("tab".into(), "field"), ("esc".into(), "leave")],
+            Focus::Commit => return vec![("alt+enter".into(), "commit".into()), ("tab".into(), "field".into()), ("esc".into(), "leave".into())],
             _ => &[(&[A::Stage], "stage"), (&[A::StageAll], "all"), (&[A::Discard], "discard"), (&[A::Filter], "filter"), (&[A::Open], "diff"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit")],
         }
     } else {
@@ -161,7 +164,27 @@ fn hints(app: &App) -> Vec<(String, &'static str)> {
     list.iter()
         .filter_map(|(acts, what)| {
             let keys: Vec<String> = acts.iter().filter_map(|a| app.keymap.keys_of(*a).first().map(hint_label)).collect();
-            (!keys.is_empty()).then(|| (keys.join("/"), *what))
+            (!keys.is_empty()).then(|| (keys.join("/"), what.to_string()))
+        })
+        .collect()
+}
+
+/// What the keys do in the conflict view, by the names of the sides.
+fn conflict_hints(app: &App) -> Vec<(String, String)> {
+    use crate::keymap::Action as A;
+    let (ours, theirs, blocks) = app.conflict_view().map_or(("Current", "Incoming", 0), |v| (v.sides.ours.title, v.sides.theirs.title, v.conflicts().len()));
+    let mut list: Vec<(Vec<A>, String)> = vec![(vec![A::ConflictOurs], format!("keep {ours}")), (vec![A::ConflictTheirs], format!("take {theirs}"))];
+    if blocks > 0 {
+        list.push((vec![A::ConflictBoth], "both".into()));
+        list.push((vec![A::ConflictPrev, A::ConflictNext], "prev/next".into()));
+    }
+    list.extend([(vec![A::ConflictUndo], "undo".into()), (vec![A::ConflictEdit], "edit".into()), (vec![A::Stage], "stage".into()), (vec![A::Help], "help".into())]);
+    // p, u and e are other things on other files: say so where the keys are listed
+    list.push((vec![A::ConflictPrev, A::ConflictUndo, A::ConflictEdit], "act on conflicts here".into()));
+    list.into_iter()
+        .filter_map(|(acts, what)| {
+            let keys: Vec<String> = acts.iter().filter_map(|a| app.keymap.keys_of(*a).first().map(hint_label)).collect();
+            (!keys.is_empty()).then(|| (keys.join("/"), what))
         })
         .collect()
 }
@@ -201,9 +224,9 @@ pub fn bottom(app: &App, buf: &mut Buffer, r: Rect) {
     // an overlay has the keys: it prints its own hints, the pane's would mislead
     let pane_hints = if app.overlay.is_some() { Vec::new() } else { hints(app) };
     for (k, d) in pane_hints {
-        if x + width(&k) + width(d) + 3 > max_x {
+        if x + width(&k) + width(&d) + 3 > max_x {
             break;
         }
-        x = spans(buf, x, r.y, max_x, &[(&k, base.fg(ui.accent)), (" ", base), (d, base), ("  ", base)]);
+        x = spans(buf, x, r.y, max_x, &[(&k, base.fg(ui.accent)), (" ", base), (&d, base), ("  ", base)]);
     }
 }

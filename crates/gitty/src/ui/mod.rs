@@ -3,6 +3,7 @@
 pub mod bars;
 pub mod changes;
 pub mod commit_list;
+pub mod conflict;
 pub mod diff;
 pub mod file_list;
 pub mod files;
@@ -55,6 +56,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     if let Some(r) = panes.diff {
         if app.tab == Tab::Files {
             files::draw_viewer(app, buf, r);
+        } else if app.conflict_active() {
+            conflict::draw(app, buf, r);
         } else {
             diff::draw(app, buf, r);
         }

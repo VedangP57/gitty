@@ -37,7 +37,7 @@ fn table(s: &str) -> toml::Table {
 }
 
 fn history() -> State {
-    State { tab: Tab::History, focus: Focus::History, compare: false }
+    State { tab: Tab::History, focus: Focus::History, compare: false, conflict: false }
 }
 
 fn ev(code: KeyCode) -> KeyEvent {
@@ -80,13 +80,13 @@ fn unknown_names_and_keys_warn() {
 #[test]
 fn contexts_pick_the_meaning() {
     let m = Keymap::default();
-    let changes_list = State { tab: Tab::Changes, focus: Focus::Files, compare: false };
-    let changes_diff = State { tab: Tab::Changes, focus: Focus::Diff, compare: false };
+    let changes_list = State { tab: Tab::Changes, focus: Focus::Files, compare: false, conflict: false };
+    let changes_diff = State { tab: Tab::Changes, focus: Focus::Diff, compare: false, conflict: false };
     assert_eq!(m.resolve(&ev(KeyCode::Char('F')), changes_list), Some(Action::Filter));
     assert_eq!(m.resolve(&ev(KeyCode::Char('F')), changes_diff), Some(Action::Fullscreen));
     assert_eq!(m.resolve(&ev(KeyCode::Char('F')), history()), Some(Action::Fullscreen));
     assert_eq!(m.resolve(&ev(KeyCode::Char('r')), changes_diff), None, "history-only keys do nothing in Changes");
-    let compare = State { tab: Tab::History, focus: Focus::History, compare: true };
+    let compare = State { tab: Tab::History, focus: Focus::History, compare: true, conflict: false };
     assert_eq!(m.resolve(&ev(KeyCode::Char('l')), compare), Some(Action::CompareAhead));
     assert_eq!(m.resolve(&ev(KeyCode::Char('l')), history()), Some(Action::ScrollRight));
 }
@@ -120,7 +120,7 @@ fn binding_a_fixed_key_warns_and_is_dropped() {
 #[test]
 fn b_opens_the_branches_from_every_screen() {
     let m = Keymap::default();
-    let changes = State { tab: Tab::Changes, focus: Focus::Files, compare: false };
+    let changes = State { tab: Tab::Changes, focus: Focus::Files, compare: false, conflict: false };
     for s in [changes, history()] {
         assert_eq!(m.resolve(&ev(KeyCode::Char('B')), s), Some(Action::Branches));
     }
@@ -129,8 +129,8 @@ fn b_opens_the_branches_from_every_screen() {
 #[test]
 fn stash_keys_resolve_where_they_should() {
     let m = Keymap::default();
-    let changes = State { tab: Tab::Changes, focus: Focus::Files, compare: false };
-    let history = State { tab: Tab::History, focus: Focus::History, compare: false };
+    let changes = State { tab: Tab::Changes, focus: Focus::Files, compare: false, conflict: false };
+    let history = State { tab: Tab::History, focus: Focus::History, compare: false, conflict: false };
     assert_eq!(m.resolve(&ev(KeyCode::Char('S')), changes), Some(Action::Stashes));
     assert_eq!(m.resolve(&ev(KeyCode::Char('S')), history), Some(Action::Stashes));
     assert_eq!(m.resolve(&ev(KeyCode::Char('Z')), changes), Some(Action::StashPush));
@@ -138,10 +138,39 @@ fn stash_keys_resolve_where_they_should() {
 }
 
 #[test]
+fn conflict_keys_beat_the_changes_and_global_keys_only_on_a_conflicted_file() {
+    let m = Keymap::default();
+    let plain = State { tab: Tab::Changes, focus: Focus::Files, compare: false, conflict: false };
+    let conflicted = State { conflict: true, ..plain };
+    let diff = State { focus: Focus::Diff, ..conflicted };
+    for s in [conflicted, diff] {
+        for (c, a) in [('o', Action::ConflictOurs), ('t', Action::ConflictTheirs), ('b', Action::ConflictBoth), ('n', Action::ConflictNext), ('p', Action::ConflictPrev), ('u', Action::ConflictUndo), ('e', Action::ConflictEdit)] {
+            assert_eq!(m.resolve(&ev(KeyCode::Char(c)), s), Some(a), "{c}");
+        }
+    }
+    // the chords they take: pull and undo-commit give way, only here
+    assert_eq!(m.resolve(&ev(KeyCode::Char('p')), plain), Some(Action::Pull));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('u')), plain), Some(Action::UndoCommit));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('o')), plain), None);
+    assert_eq!(m.resolve(&ev(KeyCode::Char('e')), plain), Some(Action::Expand));
+    // everything else still works on a conflicted file
+    for (c, a) in [('f', Action::Fetch), (' ', Action::Stage), ('a', Action::StageAll), ('m', Action::Operation), ('q', Action::Quit), ('j', Action::Down)] {
+        assert_eq!(m.resolve(&ev(KeyCode::Char(c)), conflicted), Some(a), "{c}");
+    }
+    // the conflict view is a Changes-tab thing
+    let history = State { tab: Tab::History, focus: Focus::History, compare: false, conflict: true };
+    assert_eq!(m.resolve(&ev(KeyCode::Char('p')), history), Some(Action::Pull));
+    assert_eq!(m.resolve(&ev(KeyCode::Char('o')), history), Some(Action::Header));
+    // rebinding one of them warns when it takes another Changes key
+    let (_, w) = Keymap::from_config(&table("conflict_edit = \"c\"\n"));
+    assert!(w.iter().any(|w| w.contains("`commit_box` has no key left")), "{w:?}");
+}
+
+#[test]
 fn files_tab_keys_resolve_where_they_should() {
     let m = Keymap::default();
-    let tree = State { tab: Tab::Files, focus: Focus::Files, compare: false };
-    let viewer = State { tab: Tab::Files, focus: Focus::Diff, compare: false };
+    let tree = State { tab: Tab::Files, focus: Focus::Files, compare: false, conflict: false };
+    let viewer = State { tab: Tab::Files, focus: Focus::Diff, compare: false, conflict: false };
     for s in [tree, viewer, history()] {
         assert_eq!(m.resolve(&ev(KeyCode::Char('3')), s), Some(Action::FilesTab));
     }
@@ -153,7 +182,7 @@ fn files_tab_keys_resolve_where_they_should() {
     assert_eq!(m.resolve(&ev(KeyCode::Char('e')), history()), Some(Action::Expand));
     assert_eq!(m.resolve(&ev(KeyCode::Char('v')), tree), Some(Action::RevealSecret));
     assert_eq!(m.resolve(&ev(KeyCode::Char('v')), history()), None);
-    let changes_diff = State { tab: Tab::Changes, focus: Focus::Diff, compare: false };
+    let changes_diff = State { tab: Tab::Changes, focus: Focus::Diff, compare: false, conflict: false };
     assert_eq!(m.resolve(&ev(KeyCode::Char('v')), changes_diff), Some(Action::LineRange));
     // the same key in Changes and Files never overlaps, so rebinding warns about nothing
     let (_, w) = Keymap::from_config(&table("line_range = \"ctrl-y\"\nreveal_secret = \"ctrl-y\"\n"));
