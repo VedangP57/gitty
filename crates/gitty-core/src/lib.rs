@@ -15,6 +15,7 @@ pub mod history;
 mod ignores;
 pub mod merge;
 pub mod net;
+pub mod op_state;
 pub mod refs;
 pub mod repo;
 pub mod search;
