@@ -31,7 +31,7 @@ use gitty_highlight::Highlights;
 use gitty_core::refs::{HistoryScope, RefsSnapshot};
 use ratatui::layout::Rect;
 
-use crate::config::{Config, Density, UiState};
+use crate::config::{Config, Density, GraphStyle, UiState};
 use crate::dates::{DateMode, next_threshold};
 use crate::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, PrUrlError, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
@@ -47,6 +47,8 @@ const IDLE_BEFORE_LEADING_EDGE: Duration = Duration::from_millis(100);
 const NEIGHBOURS: usize = 10;
 const MAX_PREFETCH_IN_FLIGHT: usize = 20;
 const ROWS_BATCH: usize = 256;
+/// The History pane drops the graph below this width, before badges and dates.
+pub const GRAPH_MIN_WIDTH: u16 = 34;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -209,6 +211,8 @@ pub struct App {
     pub history_done: bool,
     pub rows: HashMap<usize, CommitRow>,
     requested_rows: HashSet<usize>,
+    /// `L`: History lists git's topological order and draws its commit graph.
+    pub show_graph: bool,
     pub selected: usize,
     pub list_scroll: usize,
     selected_id: Option<CommitId>,
@@ -366,6 +370,7 @@ impl App {
             history_done: false,
             rows: HashMap::new(),
             requested_rows: HashSet::new(),
+            show_graph: false,
             selected: 0,
             list_scroll: 0,
             selected_id: None,
@@ -444,6 +449,7 @@ impl App {
             key_warnings,
         };
         app.files_tab.show_ignored = app.config.files_show_ignored;
+        app.show_graph = app.config.history_graph;
         app.request_status();
         app
     }
@@ -531,10 +537,13 @@ impl App {
         Mode::of(self.size.0)
     }
 
+    /// Lines per History row: two in comfortable density, and two while a roomy graph shows (its
+    /// lines run on through the second line, which carries the commit's author and date).
     pub fn row_height(&self) -> usize {
+        let roomy = self.config.history_graph_style == GraphStyle::Roomy && self.graph_shown();
         match self.density {
-            Density::Compact => 1,
-            Density::Comfortable => 2,
+            Density::Compact if !roomy => 1,
+            _ => 2,
         }
     }
 
@@ -804,6 +813,7 @@ impl App {
     fn start_walk(&mut self) {
         let Some(refs) = &self.refs else { return };
         let tips = refs.tips(self.scope);
+        let head = refs.head_id();
         self.session = Gens::bump(&self.gens.session);
         // a count's excluded rows belong to the old walk's list
         self.range_count = None;
@@ -814,8 +824,32 @@ impl App {
         self.requested_rows.clear();
         // indices of the old walk mean nothing in the new one
         self.range_anchor = None;
-        self.outbox.push(Request::Walk { session: self.session, tips });
+        self.outbox.push(Request::Walk { session: self.session, tips, topo: self.show_graph, head });
         self.restart_search();
+    }
+
+    /// `L`: the graph on or off. The list's order goes with it (git's topological order under
+    /// the graph), so the history is walked again; the selected commit stays selected.
+    pub fn toggle_graph(&mut self) {
+        self.show_graph = !self.show_graph;
+        self.reselect = self.selected_id.or(self.reselect);
+        self.selected = 0;
+        self.list_scroll = 0;
+        self.start_walk();
+        // on, but nothing to see: say why
+        if self.show_graph && !self.graph_fits() {
+            self.toast = Some(Toast { what: format!("Graph hidden: the History pane is narrower than {GRAPH_MIN_WIDTH} columns"), detail: String::new(), error: false });
+        }
+    }
+
+    /// Whether the list draws the graph now. Hidden where the rows are not the plain history
+    /// (search, path filter, a range, compare) and in a pane too narrow for it.
+    pub fn graph_shown(&self) -> bool {
+        self.show_graph && self.compare.is_none() && !self.search_active() && self.range_anchor.is_none() && self.graph_fits()
+    }
+
+    fn graph_fits(&self) -> bool {
+        self.panes().history.map_or(self.size.0, |r| r.width) >= GRAPH_MIN_WIDTH
     }
 
     pub fn toggle_scope(&mut self) {

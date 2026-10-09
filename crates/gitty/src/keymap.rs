@@ -136,6 +136,7 @@ actions! {
     Header "header" History ["o"] "expand the commit header",
     Dates "dates" History ["D"] "date format",
     Density "density" History ["z"] "row density",
+    Graph "graph" History ["L"] "show or hide the commit graph",
     ScrollLeft "scroll_left" Diff ["h", "left"] "scroll the diff left",
     ScrollRight "scroll_right" Diff ["l", "right"] "scroll the diff right",
     PrevHunk "prev_hunk" Diff ["["] "previous hunk",

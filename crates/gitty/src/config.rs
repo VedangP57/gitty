@@ -15,6 +15,17 @@ pub enum Density {
     Comfortable,
 }
 
+/// How the commit graph spaces its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GraphStyle {
+    /// Two lines per commit: the node, then its lines carried on down (and the commit's second
+    /// line of text), so the graph reads as continuous lines.
+    #[default]
+    Roomy,
+    /// One line per commit (two only when `density` is comfortable).
+    Compact,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     /// A theme name, or "auto" (light or dark by the terminal background).
@@ -31,6 +42,10 @@ pub struct Config {
     pub auto_tune: bool,
     /// The Files tab starts with ignored files listed (`i` toggles).
     pub files_show_ignored: bool,
+    /// History starts with the commit graph shown (`L` toggles).
+    pub history_graph: bool,
+    /// Rows of History while the graph shows.
+    pub history_graph_style: GraphStyle,
     pub difftool: Option<String>,
     /// `[keys]`: action name → key or keys (see `keymap`).
     pub keys: toml::Table,
@@ -50,6 +65,8 @@ impl Default for Config {
             auto_fetch_minutes: 5,
             auto_tune: true,
             files_show_ignored: true,
+            history_graph: true,
+            history_graph_style: GraphStyle::Roomy,
             difftool: None,
             keys: toml::Table::new(),
         }
@@ -132,6 +149,15 @@ impl Config {
                 "auto_fetch_minutes" => c.auto_fetch_minutes = pick(v, k, w, int).map_or(c.auto_fetch_minutes, |n| n.clamp(0, 1440) as u32),
                 "auto_tune" => c.auto_tune = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.auto_tune),
                 "files_show_ignored" => c.files_show_ignored = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.files_show_ignored),
+                "history_graph" => c.history_graph = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.history_graph),
+                "history_graph_style" => {
+                    c.history_graph_style = pick(v, k, w, |v| match v.as_str()? {
+                        "roomy" => Some(GraphStyle::Roomy),
+                        "compact" => Some(GraphStyle::Compact),
+                        _ => None,
+                    })
+                    .unwrap_or(c.history_graph_style)
+                }
                 "difftool" => c.difftool = pick(v, k, w, |v| v.as_str().map(String::from)).or(c.difftool.take()),
                 "keys" => match v.as_table() {
                     Some(t) => c.keys = t.clone(),
@@ -271,7 +297,17 @@ mod tests {
         assert_eq!(c.diff_algorithm, DiffAlgorithm::Myers);
         assert!(c.auto_tune);
         assert!(c.files_show_ignored);
+        assert!(c.history_graph);
+        assert_eq!(c.history_graph_style, GraphStyle::Roomy);
         assert_eq!(c.emph_alpha, None);
+    }
+
+    #[test]
+    fn an_unknown_history_graph_style_warns_and_keeps_roomy() {
+        let (c, w) = load_str("history_graph_style = \"spacious\"\n");
+        assert_eq!(c.history_graph_style, GraphStyle::Roomy);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].contains("history_graph_style"), "{w:?}");
     }
 
     #[test]
@@ -279,7 +315,7 @@ mod tests {
         let (c, w) = load_str(
             "theme = \"dracula\"\ntab_size = 8\ndiff_algorithm = \"histogram\"\nwhitespace = \"ignore-all\"\n\
              split_threshold = 180\ndate_mode = \"both\"\ndensity = \"comfortable\"\nemph_alpha = 0.4\n\
-             auto_fetch_minutes = 0\nauto_tune = false\nfiles_show_ignored = false\ndifftool = \"code --diff\"\n",
+             auto_fetch_minutes = 0\nauto_tune = false\nfiles_show_ignored = false\nhistory_graph = false\nhistory_graph_style = \"compact\"\ndifftool = \"code --diff\"\n",
         );
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.theme, "dracula");
@@ -293,6 +329,8 @@ mod tests {
         assert_eq!(c.auto_fetch_minutes, 0);
         assert!(!c.auto_tune);
         assert!(!c.files_show_ignored);
+        assert!(!c.history_graph);
+        assert_eq!(c.history_graph_style, GraphStyle::Compact);
         assert_eq!(c.difftool.as_deref(), Some("code --diff"));
     }
 
@@ -302,6 +340,14 @@ mod tests {
         assert!(c.files_show_ignored);
         assert_eq!(w.len(), 1, "{w:?}");
         assert!(w[0].contains("files_show_ignored"), "{w:?}");
+    }
+
+    #[test]
+    fn a_non_bool_history_graph_warns_and_keeps_the_default() {
+        let (c, w) = load_str("history_graph = 0\n");
+        assert!(c.history_graph);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("history_graph"), "{w:?}");
     }
 
     #[test]

@@ -33,6 +33,10 @@ impl H {
     fn new(f: &Fixture) -> H {
         H::with(f, Config::default(), None)
     }
+    /// The graph off: History lists commit-time order.
+    fn by_date(f: &Fixture) -> H {
+        H::with(f, Config { history_graph: false, ..Config::default() }, None)
+    }
     fn with(f: &Fixture, config: Config, config_path: Option<std::path::PathBuf>) -> H {
         let repo = Repo::open(f.path()).unwrap();
         let registry = Registry::load(None);
@@ -274,7 +278,7 @@ fn scope_toggle_restarts_walk_and_reselects() {
     f.write("side.txt", "s\n");
     let side = f.commit("side work", 1_700_000_250);
     f.git(&["checkout", "-q", "main"]);
-    let mut t = H::new(&f);
+    let mut t = H::by_date(&f);
     t.pump();
     assert_eq!(t.app.history_len, 4);
     t.ch('j');
@@ -2623,7 +2627,7 @@ fn a_range_says_when_it_covers_commits_outside_the_selected_rows() {
     f.write("m.txt", "1\n");
     f.commit("m1", 1_700_000_300);
     f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
-    let mut t = H::new(&f);
+    let mut t = H::by_date(&f);
     t.pump();
     let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
     assert_eq!((summary(&t, 0), summary(&t, 1)), ("merge side".into(), "m1".into()));
@@ -2687,7 +2691,7 @@ fn a_range_note_counts_commits_not_rows_in_all_refs_scope() {
     f.commit("o1", 1_700_000_350);
     f.git(&["checkout", "-q", "main"]);
     f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
-    let mut t = H::new(&f);
+    let mut t = H::by_date(&f);
     t.pump();
     t.app.toggle_scope();
     t.pump();
@@ -6184,4 +6188,261 @@ fn i_in_the_viewer_toggles_and_a_revealed_secret_stays_revealed() {
     assert!(!rows(&t).contains(&"target".to_string()));
     assert!(t.app.files_tab.reveal, "the selection did not change, so the reveal stands");
     assert!(viewing_text(&t).is_some_and(|s| s.contains(FAKE_SECRET)));
+}
+
+// ---- commit graph ----
+
+/// main and a feature branch whose commits interleave in time, merged at the end: time order
+/// and topological order differ.
+fn graph_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["branch", "feature"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_200);
+    f.git(&["checkout", "-q", "feature"]);
+    f.write("f.txt", "1\n");
+    f.commit("f1", 1_700_000_300);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "2\n");
+    f.commit("m2", 1_700_000_400);
+    f.git(&["checkout", "-q", "feature"]);
+    f.write("f.txt", "2\n");
+    f.commit("f2", 1_700_000_500);
+    f.git(&["checkout", "-q", "main"]);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge feature", "feature"], &[("GIT_AUTHOR_DATE", "1700000600 +0000".into()), ("GIT_COMMITTER_DATE", "1700000600 +0000".into())]);
+    f
+}
+
+fn history_ids(t: &H) -> Vec<CommitId> {
+    (0..t.app.history_len).map(|i| t.app.history_id_at(i).unwrap()).collect()
+}
+
+fn git_ids(f: &Fixture, args: &[&str]) -> Vec<CommitId> {
+    f.git(args).lines().map(id).collect()
+}
+
+/// The lanes of row `i` as text, if the walk laid them out.
+fn lanes(t: &H, i: usize) -> Option<String> {
+    let h = t.app.history.as_ref()?.read().unwrap();
+    h.graph_row(i).map(|r| r.text())
+}
+
+#[test]
+fn the_graph_is_on_by_default_and_lists_git_topological_order() {
+    let f = graph_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.show_graph && t.app.graph_shown());
+    assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "--topo-order", "main"]));
+    assert_ne!(history_ids(&t), git_ids(&f, &["rev-list", "main"]), "the fixture's time order differs");
+    let rows: Vec<String> = (0..t.app.history_len).map(|i| lanes(&t, i).expect("laid out")).collect();
+    assert_eq!(rows, ["◎─╮", "┃ ●", "┃ ●", "● │", "● │", "●─╯"], "HEAD, the merge, has its own node and its first-parent line is heavy");
+}
+
+#[test]
+fn l_toggles_the_graph_and_the_order_and_keeps_the_selected_commit() {
+    let f = graph_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    t.app.select(2);
+    t.pump();
+    let sel = t.selected_id();
+    t.ch('L');
+    assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Walk { topo: false, .. })));
+    t.pump();
+    assert!(!t.app.show_graph && !t.app.graph_shown());
+    assert_eq!(lanes(&t, 0), None, "a walk by date lays out no lanes");
+    let by_date = git_ids(&f, &["rev-list", "main"]);
+    assert_eq!(history_ids(&t), by_date);
+    assert_eq!(t.selected_id(), sel);
+    assert_eq!(t.app.selected, by_date.iter().position(|&c| c == sel).unwrap());
+    t.ch('L');
+    t.pump();
+    assert!(t.app.graph_shown());
+    assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "--topo-order", "main"]));
+    assert_eq!(t.selected_id(), sel);
+    assert!(lanes(&t, 0).is_some());
+}
+
+#[test]
+fn history_graph_false_walks_by_date_and_never_draws() {
+    let f = graph_fixture();
+    let mut t = H::by_date(&f);
+    t.pump();
+    assert!(!t.app.show_graph);
+    assert_eq!(lanes(&t, 0), None);
+    assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "main"]));
+    t.ch('L');
+    t.pump();
+    assert!(t.app.graph_shown(), "L still turns it on");
+}
+
+#[test]
+fn the_graph_hides_for_search_path_filter_range_compare_and_narrow_panes() {
+    let f = graph_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert!(t.app.graph_shown());
+    t.ch('/');
+    assert!(t.app.graph_shown(), "typing a query changes nothing yet");
+    typed(&mut t, "f1");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.search_active() && !t.app.graph_shown());
+    t.key(KeyCode::Esc);
+    assert!(t.app.graph_shown());
+    t.ch('/');
+    typed(&mut t, "path:f.txt");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(!t.app.graph_shown());
+    t.key(KeyCode::Esc);
+    assert!(t.app.graph_shown());
+    t.ch('V');
+    assert!(!t.app.graph_shown());
+    t.key(KeyCode::Esc);
+    assert!(t.app.graph_shown());
+    t.ch('b');
+    typed(&mut t, "fea");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(t.app.compare.is_some() && !t.app.graph_shown());
+    t.key(KeyCode::Esc);
+    assert!(t.app.compare.is_none() && t.app.graph_shown());
+    t.app.handle_resize(33, 30);
+    assert!(!t.app.graph_shown(), "a pane narrower than 34 columns drops it");
+    t.app.handle_resize(80, 30);
+    assert!(t.app.graph_shown());
+}
+
+#[test]
+fn l_in_a_pane_too_narrow_for_the_graph_says_why_nothing_shows() {
+    let f = graph_fixture();
+    let mut t = H::by_date(&f);
+    t.pump();
+    t.app.handle_resize(33, 30);
+    t.ch('L');
+    assert!(t.app.show_graph && !t.app.graph_shown());
+    let toast = t.app.toast.clone().expect("a note");
+    assert!(toast.what.contains("Graph hidden") && !toast.error, "{toast:?}");
+    // wide enough: no note
+    t.ch('L');
+    t.app.handle_resize(80, 30);
+    t.ch('L');
+    assert!(t.app.graph_shown() && t.app.toast.is_none());
+}
+
+/// `n` commits on main with a side branch merged every fourth, written by fast-import (fast
+/// for big histories).
+fn many_merges(f: &Fixture, n: usize) {
+    let mut s = String::new();
+    let mut mark = 0;
+    let mut main = 0;
+    let commit = |s: &mut String, branch: &str, mark: usize, t: usize, msg: &str, from: usize, merge: Option<usize>| {
+        s.push_str(&format!("commit refs/heads/{branch}\nmark :{mark}\nauthor A <a@a> {t} +0000\ncommitter A <a@a> {t} +0000\ndata {}\n{msg}\n", msg.len()));
+        if from > 0 {
+            s.push_str(&format!("from :{from}\n"));
+        }
+        if let Some(m) = merge {
+            s.push_str(&format!("merge :{m}\n"));
+        }
+        s.push('\n');
+    };
+    for i in 0..n {
+        let t = 1_700_000_000 + i * 100;
+        mark += 1;
+        if i % 4 == 3 {
+            commit(&mut s, "side", mark, t, &format!("side {i}"), main, None);
+            mark += 1;
+            commit(&mut s, "main", mark, t + 50, &format!("merge {i}"), main, Some(mark - 1));
+        } else {
+            commit(&mut s, "main", mark, t, &format!("main {i}"), main, None);
+        }
+        main = mark;
+    }
+    let mut c = std::process::Command::new("git");
+    c.current_dir(f.path()).args(["fast-import", "--quiet"]).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1");
+    c.stdin(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(s.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn a_range_counts_its_extra_commits_in_topological_order() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_300);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_200);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    let order: Vec<String> = (0..5).map(|i| summary(&t, i)).collect();
+    assert_eq!(order, ["merge side", "s2", "s1", "m1", "base"], "the side branch stays together");
+    // merge + s2: s1..merge also holds m1
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(1));
+    t.key(KeyCode::Esc);
+    // s2 + s1: linear, nothing extra
+    t.app.select(1);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), None);
+}
+
+#[test]
+fn every_row_of_a_long_history_has_its_lanes_and_two_lines() {
+    let f = Fixture::new();
+    many_merges(&f, 1200);
+    let mut t = H::new(&f);
+    t.pump();
+    let len = t.app.history_len;
+    assert_eq!(len, 1200 + 1200 / 4);
+    for i in 0..len {
+        let row = lanes(&t, i).unwrap_or_else(|| panic!("row {i} has no lanes"));
+        assert_eq!(row.matches(['●', '◉', '◎']).count(), 1, "row {i}: {row}");
+    }
+    assert_eq!(lanes(&t, len - 1).as_deref(), Some("●"), "the root ends alone");
+    // roomy rows are two lines: a page moves by the commits that fit
+    assert_eq!(t.app.row_height(), 2);
+    t.ch('g');
+    let page = t.app.list_capacity();
+    t.key(KeyCode::PageDown);
+    assert_eq!(t.app.selected, page);
+}
+
+#[test]
+fn the_graph_style_sets_the_rows_lines_and_density_still_applies_without_the_graph() {
+    let f = graph_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.row_height(), 2, "roomy by default");
+    // without the graph (a search) the list keeps its own density
+    t.ch('/');
+    typed(&mut t, "f1");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(t.app.row_height(), 1);
+    t.key(KeyCode::Esc);
+    let mut t = H::with(&f, Config { history_graph_style: gitty::config::GraphStyle::Compact, ..Config::default() }, None);
+    t.pump();
+    assert!(t.app.graph_shown());
+    assert_eq!(t.app.row_height(), 1, "compact");
+    t.ch('z');
+    assert_eq!(t.app.row_height(), 2, "comfortable density still gives two lines");
 }

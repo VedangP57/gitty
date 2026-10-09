@@ -4,10 +4,10 @@ expression: text(&b)
 ---
  gitty repo  ⎇ main  ↑2 ↓0                                                                                                                                                                         [1] Changes  [2] History
  History · 4                                           │ Describe the project
- ↑ Empty commit message                   main  TU 12m │ TU Test User · 858cb35 · +2 −0 · 5h
- ↑ Describe the project                          TU 5h │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   Add compute helper and …  origin/main   v1.0  TU 3d │ 1 changed file                     │ README.md  +2 −0 · split
-   Initial commit                            TU Aug 23 │ M README.md                  +2 −0 │        @@ -1,1 +1,3 @@
+ ↑ ◎ Empty commit message                 main  TU 12m │ TU Test User · 858cb35 · +2 −0 · 5h
+ ↑ ● Describe the project                        TU 5h │────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   ● Add compute helper an…  origin/main   v1.0  TU 3d │ 1 changed file                     │ README.md  +2 −0 · split
+   ● Initial commit                          TU Aug 23 │ M README.md                  +2 −0 │        @@ -1,1 +1,3 @@
                                                        │                                    │ 1   # demo                                                    │ 1   # demo
                                                        │                                    │                                                               │ 2 +
                                                        │                                    │                                                               │ 3 + A demo repository.

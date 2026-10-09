@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use common::Fixture;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use gitty::app::{App, AppInit, Focus};
-use gitty::config::{Config, UiState};
+use gitty::config::{Config, GraphStyle, UiState};
 use gitty::exec::exec;
 use gitty::msg::{Gens, Msg};
 use gitty::theme::{ColorDepth, Registry};
@@ -38,7 +38,8 @@ impl H {
         let clock = Instant::now();
         let app = App::new(AppInit {
             repo_name: "repo".into(),
-            config: Config::default(),
+            // one line per commit unless a test asks for the roomy graph (see `roomy`)
+            config: Config { history_graph_style: GraphStyle::Compact, ..Config::default() },
             registry,
             theme,
             depth: ColorDepth::True,
@@ -528,6 +529,193 @@ fn a_column_zero_gap_click_expands_where_no_hunk_handle_is_drawn() {
     t.click(x0, y);
     assert!(t.app.diff.as_ref().unwrap().rows(false) > before, "History draws no hunk handle: column 0 is the gap's ↑");
     assert!(t.app.toast.is_none(), "{:?}", t.app.toast.as_ref().map(|t| &t.what));
+}
+
+/// Two branches merged into main, then an octopus merge of three more, dated relative to NOW.
+fn graph_fixture() -> Fixture {
+    let f = Fixture::new();
+    let mut t = NOW - 30 * DAY;
+    let mut commit = |f: &Fixture, msg: &str| {
+        t += DAY;
+        f.write(&format!("{}.txt", msg.replace(' ', "_")), "x\n");
+        f.commit(msg, t)
+    };
+    let merge = |f: &Fixture, args: &[&str], at: i64| {
+        let d = format!("{at} +0000");
+        let mut all = vec!["merge", "-q", "--no-ff", "--no-edit"];
+        all.extend_from_slice(args);
+        f.git_env(&all, &[("GIT_AUTHOR_DATE", d.clone()), ("GIT_COMMITTER_DATE", d)]);
+    };
+    commit(&f, "Initial commit");
+    f.git(&["switch", "-q", "-c", "feature"]);
+    commit(&f, "Add the parser");
+    commit(&f, "Parse nested lists");
+    f.git(&["switch", "-q", "main"]);
+    commit(&f, "Fix the build");
+    merge(&f, &["feature"], NOW - 20 * DAY);
+    for b in ["docs", "ci", "lint"] {
+        f.git(&["switch", "-q", "-c", b, "main"]);
+        commit(&f, &format!("Update {b}"));
+    }
+    f.git(&["switch", "-q", "main"]);
+    merge(&f, &["docs", "ci", "lint"], NOW - 10 * DAY);
+    commit(&f, "Release 1.0");
+    f
+}
+
+const GRAPH_STYLES: [(GraphStyle, &str); 2] = [(GraphStyle::Roomy, "roomy"), (GraphStyle::Compact, "compact")];
+
+#[test]
+fn the_commit_graph_at_80_and_140_columns() {
+    let f = graph_fixture();
+    for (style, name) in GRAPH_STYLES {
+        for w in [80u16, 140] {
+            let mut t = H::new(&f, "github-dark", (w, 30));
+            t.app.config.history_graph_style = style;
+            t.app.focus = Focus::History;
+            let b = t.render(w, 30);
+            let s = text(&b);
+            assert!(s.contains("◉─┬─┬─╮"), "the octopus opens its lines on its own row: {s}");
+            assert!(s.contains("◎ Release 1.0"), "HEAD has its own node: {s}");
+            assert!(s.contains('┃'), "the current branch is heavy: {s}");
+            assert!(s.contains("Release 1.0") && s.contains("Parse nested lists"), "subjects stay readable: {s}");
+            insta::assert_snapshot!(format!("graph_{name}_{w}_text"), s);
+            insta::assert_snapshot!(format!("graph_{name}_{w}_style"), digest(&b));
+        }
+    }
+}
+
+#[test]
+fn a_43_column_history_pane_keeps_the_graph() {
+    let f = graph_fixture();
+    for (style, name) in GRAPH_STYLES {
+        let mut t = H::new(&f, "github-dark", (180, 30));
+        t.app.config.history_graph_style = style;
+        t.app.ui_state.history_width = Some(43);
+        let b = t.render(180, 30);
+        assert_eq!(t.app.hits.panes.history.map(|r| r.width), Some(43));
+        let s = text(&b);
+        assert!(s.contains('●'), "{s}");
+        // the subjects keep their room, cut with an ellipsis
+        assert!(s.contains("Merge branches") && s.contains('…'), "{s}");
+        let pane: String = s.lines().map(|l| l.chars().take(43).collect::<String>().trim_end().to_string() + "\n").collect();
+        insta::assert_snapshot!(format!("graph_{name}_43_pane"), pane);
+    }
+}
+
+#[test]
+fn roomy_rows_continue_every_lane_and_carry_the_second_line() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 30));
+    t.app.config.history_graph_style = GraphStyle::Roomy;
+    t.app.focus = Focus::History;
+    let b = t.render(80, 30);
+    let s = text(&b);
+    let lines: Vec<&str> = s.lines().collect();
+    let (_, y) = find(&b, "Release 1.0").unwrap();
+    // HEAD's node, then its heavy line on with the author and date beside it
+    assert!(lines[y as usize].contains("◎ Release 1.0"), "{s}");
+    assert!(lines[y as usize + 1].contains("┃ TU Test User"), "{s}");
+    let (_, y) = find(&b, "Update lint").unwrap();
+    assert!(lines[y as usize + 1].contains("┃ │ │ │ TU Test User"), "{s}");
+    // a click on either line selects the commit
+    let (_, y) = find(&b, "Update ci").unwrap();
+    t.click(40, y + 1);
+    let sel = t.app.selected;
+    t.click(40, y);
+    assert_eq!(t.app.selected, sel);
+    assert_eq!(t.app.rows.get(&sel).map(|r| r.summary.as_str()), Some("Update ci"));
+}
+
+#[test]
+fn branch_labels_take_their_commits_lane_colour() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    t.app.focus = Focus::History;
+    let b = t.render(80, 24);
+    let lanes = t.app.theme.ui.lanes;
+    for label in ["lint", "docs"] {
+        let (_, y) = find(&b, &format!("Update {label}")).unwrap();
+        let line: String = (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect();
+        let x = line.rfind(&format!(" {label} ")).unwrap();
+        let x = line[..x].chars().count() as u16 + 1;
+        let node = (3..20).find(|&x| gitty_core::graph::is_node(b[(x, y)].symbol().chars().next().unwrap_or(' '))).unwrap();
+        assert_eq!(b[(x, y)].bg, b[(node, y)].fg, "{label}: the pill is the lane's colour");
+        assert!(lanes.contains(&b[(x, y)].bg));
+    }
+}
+
+#[test]
+fn comfortable_rows_carry_the_lanes_through_their_second_line() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 30));
+    t.app.focus = Focus::History;
+    t.key(KeyCode::Char('z'));
+    insta::assert_snapshot!("graph_80_comfortable", text(&t.render(80, 30)));
+}
+
+#[test]
+fn the_graph_leaves_with_a_search_and_comes_back() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    t.app.focus = Focus::History;
+    assert!(text(&t.render(80, 24)).contains('◉'));
+    t.key(KeyCode::Char('/'));
+    for c in "parse".chars() {
+        t.key(KeyCode::Char(c));
+    }
+    t.key(KeyCode::Enter);
+    let s = text(&t.render(80, 24));
+    assert!(!s.contains('●') && !s.contains('│'), "{s}");
+    assert!(s.contains("Parse nested lists"));
+    t.key(KeyCode::Esc);
+    assert!(text(&t.render(80, 24)).contains('◉'));
+    // too narrow for it: the subjects keep the room
+    let s = text(&t.render(33, 24));
+    assert!(!s.contains('●'), "{s}");
+}
+
+#[test]
+fn each_subject_starts_right_after_its_own_rows_graph() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    t.app.focus = Focus::History;
+    let b = t.render(80, 24);
+    let s = text(&b);
+    // (subject, its row's graph): the subject one column after the graph's last cell
+    let mut ends = Vec::new();
+    for (subject, graph) in [("Release 1.0", "◎"), ("Merge branches", "◉─┬─┬─╮"), ("Update lint", "┃ │ │ ●"), ("Initial commit", "●─╯")] {
+        let (x, y) = find(&b, subject).unwrap_or_else(|| panic!("{subject}: {s}"));
+        let line = s.lines().nth(y as usize).unwrap();
+        assert_eq!(x as usize, 3 + graph.chars().count() + 1, "{subject}: {line}");
+        assert!(line.chars().skip(3).collect::<String>().starts_with(&format!("{graph} {subject}")), "{line}");
+        // the dates stay right-aligned whatever the graph's width
+        ends.push(line.trim_end().chars().count());
+    }
+    assert!(ends.iter().all(|&e| e == ends[0]), "{ends:?}\n{s}");
+}
+
+#[test]
+fn lanes_wider_than_the_pane_are_cut_with_a_marker() {
+    let f = Fixture::new();
+    f.write("a.txt", "x\n");
+    f.commit("Initial commit", NOW - 30 * DAY);
+    for i in 0..12 {
+        f.git(&["switch", "-q", "-c", &format!("b{i}"), "main"]);
+        f.write(&format!("b{i}.txt"), "x\n");
+        f.commit(&format!("Branch {i}"), NOW - 20 * DAY + i * DAY);
+    }
+    f.git(&["switch", "-q", "main"]);
+    let mut args = vec!["merge".to_string(), "-q".into(), "--no-edit".into()];
+    args.extend((0..12).map(|i| format!("b{i}")));
+    f.git(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut t = H::new(&f, "github-dark", (180, 24));
+    t.app.ui_state.history_width = Some(43);
+    let s = text(&t.render(180, 24));
+    let pane: Vec<String> = s.lines().map(|l| l.chars().take(43).collect()).collect();
+    assert!(pane.iter().any(|l| l.contains('›')), "{}", pane.join("\n"));
+    assert!(pane.iter().any(|l| l.contains("Branch 0")), "the subjects keep their room: {}", pane.join("\n"));
+    insta::assert_snapshot!("graph_43_clipped", pane.iter().map(|l| l.trim_end().to_string() + "\n").collect::<String>());
 }
 
 #[test]

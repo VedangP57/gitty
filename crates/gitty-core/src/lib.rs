@@ -12,6 +12,7 @@ pub mod forge;
 pub mod git_bin;
 pub mod files;
 pub mod git_cli;
+pub mod graph;
 pub mod history;
 mod ignores;
 pub mod merge;
