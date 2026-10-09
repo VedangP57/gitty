@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use gitty_core::Handle;
 use gitty_core::git_cli::{GitCli, Kind};
 use gitty_core::net::{ForcePush, Job, Mode, NetCmd, Outcome, force_push_plan, push_target, remote_of};
+use gitty_core::op_state::RepoOp;
+use gitty_core::status::EntryKind;
 
 use crate::msg::{Msg, NetOp};
 
@@ -42,6 +44,9 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     // fast-forward, merge and rebase write the index and worktree: never alongside the writer
     let local = matches!(cmd, NetCmd::FfMerge | NetCmd::Merge | NetCmd::Rebase);
     let _write = local.then(crate::write::lock);
+    // what was open before, read under the same lock: a failure is only blamed on conflicts when
+    // this step opened (or replaced) the operation
+    let before = if local { open_op(cli) } else { None };
     let job = match Job::spawn(cli, cmd, mode.clone()) {
         Ok(j) => j,
         Err(e) => return failed(format!("{e:#}")),
@@ -49,12 +54,38 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     let cancel = cancellable.then(|| job.cancel_handle());
     sink(Msg::NetStarted { op, label, remote, cancel });
     let mut last: Option<Instant> = None;
-    job.wait(&mut |fraction| {
+    let outcome = job.wait(&mut |fraction| {
         if last.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY || fraction >= 1.0) {
             last = Some(Instant::now());
             sink(Msg::NetProgress { op, fraction });
         }
-    })
+    });
+    match before {
+        Some(before) if local => left_open(cli, outcome, before),
+        _ => outcome,
+    }
+}
+
+/// The operation open now, as (kind, id): None when the status cannot be read, Some(None) when
+/// nothing is open.
+fn open_op(cli: &GitCli) -> Option<Option<(RepoOp, String)>> {
+    let status = cli.status().ok()?;
+    Some(cli.op_state(&status).map(|s| (s.op, s.id)))
+}
+
+/// A failed merge or rebase that is still in progress on conflicts is not a failure but a
+/// question. Decided by the state on disk, never by git's words; an operation that was already
+/// open before this step (same kind and id) is not this step's.
+fn left_open(cli: &GitCli, outcome: Outcome, before: Option<(RepoOp, String)>) -> Outcome {
+    let Outcome::Failed { detail } = outcome else { return outcome };
+    let Ok(status) = cli.status() else { return Outcome::Failed { detail } };
+    match cli.op_state(&status) {
+        Some(state) if matches!(state.op, RepoOp::Merge | RepoOp::Rebase) && state.conflicts > 0 && before.as_ref() != Some(&(state.op, state.id.clone())) => {
+            let files = status.entries.iter().filter(|e| e.kind == EntryKind::Unmerged).map(|e| e.path.clone()).collect();
+            Outcome::Conflicts { detail, files, state }
+        }
+        _ => Outcome::Failed { detail },
+    }
 }
 
 pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) {

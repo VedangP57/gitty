@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use gitty_core::op_state::{OpState, RepoOp};
 
 use super::{App, Overlay, Toast};
-use crate::msg::WriteOp;
+use crate::msg::{MergeStash, WriteOp};
 
 fn say(what: &str) -> Option<Toast> {
     Some(Toast { what: what.into(), detail: String::new(), error: false })
@@ -29,6 +29,11 @@ fn abort_question(op: RepoOp) -> (String, String) {
 }
 
 impl App {
+    /// The stash gitty made before this very operation (matched by its id), if it is still open.
+    pub fn merge_stash_of(&self, state: &OpState) -> Option<&MergeStash> {
+        self.merge_stash.as_ref().filter(|(id, _, _)| *id == state.id).map(|(_, s, _)| s)
+    }
+
     /// `m`.
     pub fn open_operation(&mut self) {
         if self.op.is_some() {
@@ -51,6 +56,45 @@ impl App {
         });
     }
 
+    /// A merge, pull or rebase (`doing`, "Merging a into main") was left open on conflicts: ask
+    /// whether to resolve them now. Another overlay stays: the banner shows the state, and a toast
+    /// points at `m`. Returns that toast, if any.
+    pub(super) fn offer_resolve(&mut self, doing: String, files: Vec<String>, state: OpState, stash: Option<MergeStash>) -> Option<Toast> {
+        if self.overlay.is_some() {
+            return say(&format!("Conflicts: press m{}", stash.map_or(String::new(), |s| format!(". {}.", s.whereabouts()))));
+        }
+        let n = files.len();
+        let shown = files.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
+        let more = if n > 3 { format!(", +{}", n - 3) } else { String::new() };
+        let mut body = format!("{doing} hit conflicts in {n} file{} ({shown}{more}).", if n == 1 { "" } else { "s" });
+        if let Some(s) = &stash {
+            body.push_str(&format!(" {}: pop them after you finish the merge.", s.whereabouts()));
+        }
+        self.overlay = Some(Overlay::Resolve { body, state, stash });
+        None
+    }
+
+    /// Keys in the "resolve now?" prompt: Enter goes to the conflicts, `a` aborts (putting the
+    /// stashed changes back), Esc decides later.
+    pub(super) fn resolve_key(&mut self, ov: Overlay, k: KeyEvent) {
+        let Overlay::Resolve { state, stash, .. } = &ov else { return };
+        match k.code {
+            KeyCode::Enter => self.resolve_now(),
+            KeyCode::Char('a') => {
+                let (op, id) = (state.op, state.id.clone());
+                self.write(match stash {
+                    Some(stash) => WriteOp::AbortAndUnstash { op, id, stash: stash.clone() },
+                    None => WriteOp::AbortOp { op, id },
+                });
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                let held = stash.as_ref().map_or(String::new(), |s| format!(". {}", s.whereabouts()));
+                self.toast = say(&format!("The {} stays open: press m to continue or abort it{held}", state.op.name()));
+            }
+            _ => self.overlay = Some(ov),
+        }
+    }
+
     /// Keys in the dialog: `c` continue, `a` abort, Esc close.
     pub(super) fn operation_key(&mut self, k: KeyEvent) {
         let Some(state) = self.op.clone() else { return };
@@ -64,8 +108,17 @@ impl App {
                 None => self.write(WriteOp::ContinueOp { op: state.op, id: state.id, accepted: Vec::new() }),
             },
             KeyCode::Char('a') => {
-                let (title, body) = abort_question(state.op);
-                self.overlay = Some(Overlay::Confirm { title, body, op: WriteOp::AbortOp { op: state.op, id: state.id } });
+                let (title, mut body) = abort_question(state.op);
+                // the merge's stash goes back after the abort
+                let stash = self.merge_stash_of(&state).cloned();
+                if stash.is_some() {
+                    body.push_str(" The changes stashed before the merge are put back afterwards.");
+                }
+                let op = match stash {
+                    Some(stash) => WriteOp::AbortAndUnstash { op: state.op, id: state.id, stash },
+                    None => WriteOp::AbortOp { op: state.op, id: state.id },
+                };
+                self.overlay = Some(Overlay::Confirm { title, body, op });
             }
             _ => self.overlay = Some(Overlay::InProgress),
         }

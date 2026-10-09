@@ -153,6 +153,9 @@ pub struct Changes {
     /// Output of the latest write (hooks).
     pub log: Vec<String>,
     status_gen: u64,
+    /// "Resolve now" was chosen: the first conflicted file is selected once a status run from
+    /// this generation on (and the state read with it) has come back.
+    resolve_gen: Option<u64>,
     status_in_flight: bool,
     status_again: bool,
     last_status: Option<Instant>,
@@ -292,6 +295,41 @@ impl App {
         self.request_change_diff();
     }
 
+    /// "Resolve now": the Changes tab with its first conflicted file selected (its conflict view
+    /// on screen), once a fresh status has said which files conflict.
+    pub(super) fn resolve_now(&mut self) {
+        self.set_tab(Tab::Changes);
+        self.changes.filter = Filter::All;
+        // the status asked for next, whether one is in flight now or not
+        self.changes.resolve_gen = Some(self.changes.status_gen + 1);
+        self.request_status();
+    }
+
+    fn select_first_conflict(&mut self) {
+        // the user went elsewhere meanwhile: nothing is moved under them
+        if self.tab != Tab::Changes {
+            return;
+        }
+        if self.changes.status_error.is_some() {
+            self.toast = Some(Toast { what: "Could not read the status: try again".into(), detail: String::new(), error: true });
+            return;
+        }
+        if self.op.is_none() {
+            self.toast = Some(Toast { what: "No longer in progress".into(), detail: String::new(), error: false });
+            return;
+        }
+        let first = self.changes.visible().first().is_some_and(|&i| self.changes.entries()[i].is_conflicted());
+        if !first {
+            self.toast = Some(Toast { what: "No conflicted files left: press m to continue".into(), detail: String::new(), error: false });
+            return;
+        }
+        // the file list keeps the focus: the conflict view on screen answers o/t/b/n/p/u from
+        // there too, and Space and j/k still stage and move between the files
+        self.focus = super::Focus::Files;
+        self.changes.scroll = 0;
+        self.select_change(0);
+    }
+
     pub fn write(&mut self, op: WriteOp) {
         self.changes.busy += 1;
         self.changes.log.clear();
@@ -344,6 +382,23 @@ impl App {
                     if self.op.is_none() && matches!(self.overlay, Some(Overlay::InProgress)) {
                         self.overlay = None;
                     }
+                    if let Some((id, _, g)) = &self.merge_stash
+                        && generation >= *g
+                        && self.op.as_ref().is_none_or(|s| s.id != *id)
+                    {
+                        self.merge_stash = None;
+                    }
+                    if self.changes.resolve_gen.is_some_and(|g| generation >= g) && generation == self.changes.status_gen {
+                        self.changes.resolve_gen = None;
+                        self.select_first_conflict();
+                    }
+                }
+            }
+            Msg::Conflicted { doing, files, state, stash } => {
+                // kept until a status run newer than this one shows the merge is over
+                self.merge_stash = stash.clone().map(|s| (state.id.clone(), s, self.changes.status_gen + 1));
+                if let Some(t) = self.offer_resolve(doing, files, state, stash) {
+                    self.toast = Some(t);
                 }
             }
             m @ (Msg::ConflictFile { .. } | Msg::ConflictCounts { .. }) => return self.handle_conflict_msg(m),
@@ -369,6 +424,15 @@ impl App {
             Msg::WriteDone { op: WriteOp::RefreshIndex, .. } => {}
             Msg::WriteDone { op, result } => {
                 self.changes.busy = self.changes.busy.saturating_sub(1);
+                // finishing the merge leaves the changes stashed before it where they are: say so
+                let result = match (result, &op) {
+                    (Ok(Some(note)), WriteOp::ContinueOp { id, .. })
+                        if matches!(note.as_str(), "Merge committed" | "Rebase finished") && self.merge_stash.as_ref().is_some_and(|(i, _, _)| i == id) =>
+                    {
+                        Ok(Some(format!("{note}; your changes from before the merge are still in the stash (S)")))
+                    }
+                    (r, _) => r,
+                };
                 self.conflict_write_settled(&op, result.is_ok());
                 match result {
                     _ if self.commit_done(&op, &result) => {}

@@ -245,8 +245,8 @@ impl GitCli {
                 Ok(_) => anyhow::anyhow!("git ran `{} --abort` but the {} is still in progress", op.name(), op.name()),
             });
         }
-        // the abort worked, or the state ended just before it: either way it is gone
-        Ok(Aborted::Done)
+        // gone, but the command failed: the state ended just before it, not by this abort
+        Ok(if ran.is_ok() { Aborted::Done } else { Aborted::Gone })
     }
 }
 

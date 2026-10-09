@@ -83,6 +83,9 @@ pub enum Overlay {
     Stashes { sel: usize },
     /// `q` while a network job runs.
     Quit { label: String },
+    /// A merge, pull or rebase was left open on conflicts: resolve now (Enter), abort (`a`; with
+    /// `stash`, the stash gitty made before it, the changes in it are popped back) or decide later.
+    Resolve { body: String, state: gitty_core::op_state::OpState, stash: Option<crate::msg::MergeStash> },
     /// `m`: continue or abort the merge, rebase, cherry-pick or revert in progress (read live from `App::op`).
     InProgress,
 }
@@ -307,6 +310,9 @@ pub struct App {
     pub open_url: Option<String>,
     /// The merge, rebase, cherry-pick or revert in progress, whoever started it.
     pub op: Option<gitty_core::op_state::OpState>,
+    /// The changes gitty stashed before the merge with this id hit conflicts, and the status
+    /// generation from which a state that is not that merge any more means it is over.
+    pub(super) merge_stash: Option<(String, crate::msg::MergeStash, u64)>,
     /// The current branch's pull request, for the top bar.
     pub pr_badge: Option<(String, PrInfo)>,
     /// The branch the badge was last asked for, and when.
@@ -426,6 +432,7 @@ impl App {
             external: None,
             open_url: None,
             op: None,
+            merge_stash: None,
             pr_badge: None,
             pr_asked: None,
             pr_inflight: HashSet::new(),
@@ -743,7 +750,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
-            Msg::ConflictFile { .. } | Msg::ConflictCounts { .. } | Msg::Status { .. } | Msg::OpState { .. } | Msg::StagedMarkers { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
+            Msg::ConflictFile { .. } | Msg::ConflictCounts { .. } | Msg::Status { .. } | Msg::OpState { .. } | Msg::StagedMarkers { .. } | Msg::Conflicted { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer(_) | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }

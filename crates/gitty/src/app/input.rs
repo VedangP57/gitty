@@ -342,6 +342,7 @@ impl App {
             Overlay::DirtySwitch { name, remote, merge } => self.dirty_key(name, remote, merge, k),
             Overlay::Stashes { sel } => self.stashes_key(sel, k),
             Overlay::InProgress => self.operation_key(k),
+            Overlay::Resolve { .. } => self.resolve_key(ov, k),
             Overlay::Quit { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
                 KeyCode::Char('n') | KeyCode::Esc => {}

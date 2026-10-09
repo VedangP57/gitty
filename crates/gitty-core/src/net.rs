@@ -233,6 +233,9 @@ pub enum Outcome {
     Rejected { refs: Vec<PushRef>, detail: String },
     NeedsAuth { detail: String },
     Failed { detail: String },
+    /// A merge or rebase failed and is left in progress on these conflicted `files`: the caller
+    /// found it so on disk after the job (`state`), not in git's words. `detail` is git's output.
+    Conflicts { detail: String, files: Vec<String>, state: crate::op_state::OpState },
 }
 
 /// Credential failures, from the texts git, ssh and remote helpers print.

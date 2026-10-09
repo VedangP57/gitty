@@ -1,5 +1,6 @@
-//! Merging a branch into the checked-out one (spec: branches and stash): one `git merge`, and a
-//! merge that stops on conflicts is aborted again, so gitty never leaves the repository mid-merge.
+//! Merging a branch into the checked-out one (spec: branches and stash): one `git merge`. A merge
+//! that stops on conflicts is left open for the user to resolve (conflict help), or aborted again
+//! when the caller asks.
 
 use anyhow::{anyhow, bail};
 
@@ -11,8 +12,9 @@ pub enum MergeOutcome {
     FastForward,
     /// A merge commit was made.
     Merged,
-    /// The merge stopped on these files and was aborted: nothing changed.
-    Conflicts(Vec<String>),
+    /// The merge stopped on these files. `left_open`: it is still in progress, with the conflict
+    /// markers in the files; otherwise it was aborted and nothing changed.
+    Conflicts { files: Vec<String>, left_open: bool },
 }
 
 /// A merge failed and left the repository or the tree not as it was: nothing may be stacked on it.
@@ -25,12 +27,15 @@ impl GitCli {
     /// into the checked-out branch. Refuses before git runs on a detached HEAD, a branch into
     /// itself, and a merge, rebase, cherry-pick or revert already in progress; when git itself
     /// refuses (local changes would be overwritten) its message is the error and nothing changed.
+    /// A merge that hits conflicts is left in progress.
     pub fn merge_branch(&self, name: &str, remote: bool) -> anyhow::Result<MergeOutcome> {
-        self.merge_branch_logged(name, remote, &mut |_| {})
+        self.merge_branch_logged(name, remote, true, &mut |_| {})
     }
 
     /// [`merge_branch`](Self::merge_branch), with git's and the hooks' stderr going to `log`.
-    pub fn merge_branch_logged(&self, name: &str, remote: bool, log: &mut dyn FnMut(&str)) -> anyhow::Result<MergeOutcome> {
+    /// With `keep_open` false a merge that hits conflicts is aborted again, HEAD and the status
+    /// checked to be as they were.
+    pub fn merge_branch_logged(&self, name: &str, remote: bool, keep_open: bool, log: &mut dyn FnMut(&str)) -> anyhow::Result<MergeOutcome> {
         self.check_branch_name(name)?;
         for (path, what) in [("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
             if self.git_path_exists(path) {
@@ -61,9 +66,13 @@ impl GitCli {
             // the unmerged paths are gone once the merge is aborted
             let files = self.quiet(Kind::Read, &["diff", "--name-only", "--diff-filter=U", "-z"], None)?;
             let files: Vec<String> = files.split(|&b| b == 0).filter(|f| !f.is_empty()).map(|f| String::from_utf8_lossy(f).into_owned()).collect();
+            // conflicts to resolve: the merge stays open
+            if !files.is_empty() && keep_open {
+                return Ok(MergeOutcome::Conflicts { files, left_open: true });
+            }
             self.abort_merge(&before, &tree)?;
             // stopped without conflicts (a pre-merge-commit hook, say): git's own message
-            return if files.is_empty() { Err(anyhow!("{e:#}; the merge was aborted")) } else { Ok(MergeOutcome::Conflicts(files)) };
+            return if files.is_empty() { Err(anyhow!("{e:#}; the merge was aborted")) } else { Ok(MergeOutcome::Conflicts { files, left_open: false }) };
         }
         if self.git_path_exists("MERGE_HEAD") {
             self.abort_merge(&before, &tree)?;

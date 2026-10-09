@@ -61,7 +61,7 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
     // when it does not fit, it gives up its details one at a time and the bare word last; when
     // even that does not fit (a very narrow terminal), nothing is drawn
     if let Some(op) = &app.op
-        && let Some(v) = op_banner(op).into_iter().find(|v| x + 2 + width(v) <= max_x)
+        && let Some(v) = op_banner(op, app.merge_stash_of(op).is_some()).into_iter().find(|v| x + 2 + width(v) <= max_x)
     {
         x = text(buf, x + 2, y, max_x, &v, base.fg(ui.warning).add_modifier(Modifier::BOLD));
     }
@@ -102,7 +102,8 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
 }
 
 /// The banner for a state in progress, from the full text to the bare word.
-fn op_banner(s: &gitty_core::op_state::OpState) -> Vec<String> {
+/// `stash`: the changes stashed before it are still there, which the full text says.
+fn op_banner(s: &gitty_core::op_state::OpState, stash: bool) -> Vec<String> {
     use gitty_core::op_state::RepoOp;
     let verb = match s.op {
         RepoOp::Merge => "MERGING",
@@ -119,6 +120,7 @@ fn op_banner(s: &gitty_core::op_state::OpState) -> Vec<String> {
     let join = |parts: &[Option<String>]| parts.iter().flatten().cloned().collect::<Vec<_>>().join(" · ");
     let named = if s.detail.is_empty() { verb.to_string() } else { format!("{verb} {}", s.detail) };
     let mut out = vec![
+        join(&[Some(named.clone()), step.clone(), Some(conflicts.clone()), stash.then(|| "changes in stash".to_string())]),
         join(&[Some(named), step.clone(), Some(conflicts.clone())]),
         join(&[Some(verb.to_string()), step, Some(conflicts.clone())]),
         join(&[Some(verb.to_string()), Some(conflicts)]),

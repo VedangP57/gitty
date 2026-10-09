@@ -167,6 +167,30 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             }
             spans(buf, inner.x, keys_y, inner.right(), &[("Enter", st.fg(ui.accent)), (confirm_verb(op), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
         }
+        Overlay::Resolve { body, state, .. } => {
+            let w = area.width.saturating_sub(4).clamp(40, 76).min(area.width);
+            // a long list of files wraps (to the box as drawn) rather than losing its end
+            let lines = wrap_text(body, w.saturating_sub(4) as usize);
+            let n = lines.len() as u16;
+            let inner = boxed(app, buf, area, w, n + 6, "Conflicts");
+            if inner.height == 0 {
+                return;
+            }
+            // the keys always have their row; the text gives way to them
+            let keys_y = (inner.y + 2 + n).min(inner.bottom() - 1);
+            text(buf, inner.x, inner.y, inner.right(), "Resolve now?", st.fg(ui.warning).add_modifier(Modifier::BOLD));
+            for (k, l) in lines.iter().enumerate() {
+                let y = inner.y + 1 + k as u16;
+                if y < keys_y {
+                    text(buf, inner.x, y, inner.right(), l, st.fg(ui.muted));
+                }
+            }
+            let abort = format!(" abort the {} · ", state.op.name());
+            spans(buf, inner.x, keys_y, inner.right(), &[("Enter", st.fg(ui.accent)), (" resolve now · ", st), ("a", st.fg(ui.accent)), (&abort, st), ("Esc", st.fg(ui.accent)), (" decide later", st)]);
+            if keys_y + 1 < inner.bottom() {
+                text(buf, inner.x, keys_y + 1, inner.right(), &format!("Deciding later keeps the {} open: press m", state.op.name()), st.fg(ui.muted));
+            }
+        }
         Overlay::InProgress => {
             let Some(state) = &app.op else { return };
             let n = state.op.name();
@@ -187,7 +211,8 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             // the keys always have their row; the text above gives way to them
             let keys_y = (inner.y + 4).min(inner.bottom() - 1);
             let status = if state.conflicts == 0 { "No conflicts left".to_string() } else { format!("{} conflict{}", state.conflicts, if state.conflicts == 1 { "" } else { "s" }) };
-            for (dy, line, style) in [(0, Some(doing), st.fg(ui.warning).add_modifier(Modifier::BOLD)), (1, Some(status), st.fg(ui.muted)), (2, blocked.clone(), st.fg(ui.muted))] {
+            let held = app.merge_stash_of(state).map(|s| format!("{}.", s.whereabouts()));
+            for (dy, line, style) in [(0, Some(doing), st.fg(ui.warning).add_modifier(Modifier::BOLD)), (1, Some(status), st.fg(ui.muted)), (2, blocked.clone(), st.fg(ui.muted)), (3, held, st.fg(ui.muted))] {
                 if let Some(l) = line.filter(|_| inner.y + dy < keys_y) {
                     text(buf, inner.x, inner.y + dy, inner.right(), &l, style);
                 }

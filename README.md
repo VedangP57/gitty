@@ -140,6 +140,25 @@ Because no editor opens, a cherry-pick, revert or reworded commit keeps its mess
 Abort restores the branch as it was before the operation; what the operation did is discarded.
 `m` with nothing in progress says so.
 
+A merge (`Ctrl-G` in the branch picker, "merge anyway" and "stash and merge" included) or a pull
+(merge or rebase) that hits conflicts is not aborted and not reported as a failure: it is left in
+progress, the bar shows it, and gitty asks "Resolve now?". `Enter` opens the Changes tab on the
+first conflicted file (the file list keeps the focus; `o`, `t`, `b`, `n`, `p`, `u` and Space work
+from there), `a` aborts the merge or rebase (the branch, index and files go back to how they were),
+and `Esc` decides later: the operation stays open and `m` opens the dialog above.
+With "stash and merge" your uncommitted changes stay in the stash (named by its message, `gitty:
+auto-stash from <branch>`) while the merge is open, because applying them onto conflicted files
+would mix the two: pop them after you finish the merge. The prompt, the `m` dialog, the top bar
+(`changes in stash`) and the notices all remind you. Aborting from the question or from `m` aborts
+the merge and then puts the stashed changes back (unless the stash list changed meanwhile, or the
+merge was already gone: then they stay in the stash and gitty says so); finishing the merge with
+Continue leaves them in the stash and says so. If the operation ended meanwhile gitty says "No
+longer in progress" and aborts nothing. An abort acts only on the operation with the id the
+question was about: a different merge or rebase that has started since is left alone, but a new
+merge of the same branch at the same commit has the same id and would be aborted. While any merge
+or rebase is open, pulling is refused ("finish or abort the merge first: m"). When another dialog
+is open at the moment of the conflict the question is not shown: a note says "Conflicts: press m".
+
 ### Resolving conflicts
 
 Conflicted files form the top of the Changes list, with their number of conflict blocks

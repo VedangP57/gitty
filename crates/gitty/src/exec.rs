@@ -354,8 +354,14 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 (crate::msg::WriteOp::ContinueOp { op, id, .. }, Err(e)) => e.downcast_ref::<gitty_core::op_state::StagedMarkers>().map(|m| Msg::StagedMarkers { op: *op, id: id.clone(), files: m.0.clone() }),
                 _ => None,
             };
-            let result = if markers.is_some() { Ok(None) } else { ran.map_err(|e| format!("{e:#}")) };
-            if let Some(ask) = markers {
+            // a merge left open on conflicts is a question too
+            let stopped = match &ran {
+                Err(e) => e.downcast_ref::<crate::write::MergeConflicts>().map(|c| Msg::Conflicted { doing: c.doing.clone(), files: c.files.clone(), state: c.state.clone(), stash: c.stash.clone() }),
+                Ok(_) => None,
+            };
+            let ask = markers.or(stopped);
+            let result = if ask.is_some() { Ok(None) } else { ran.map_err(|e| format!("{e:#}")) };
+            if let Some(ask) = ask {
                 sink(ask);
             }
             let stale = match &result {

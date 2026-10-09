@@ -38,9 +38,15 @@ All notable changes to gitty are listed here. The format follows
   `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
   branch with unmerged commits asks twice. With uncommitted changes, switching asks first.
 - `Ctrl-G` in the branch picker merges the highlighted branch (a remote-only one too) into the
-  checked-out branch after asking. A merge that hits conflicts is aborted and the files are listed,
-  so the repository is never left mid-merge. With uncommitted changes it offers "stash and merge":
-  the changes are put back after the merge, and stay in the stash (with a notice) if they cannot be.
+  checked-out branch after asking. A merge that hits conflicts is left open and gitty asks
+  "Resolve now?": Enter goes to the first conflicted file in Changes, `a` aborts the merge, Esc
+  decides later (the top bar shows it and `m` opens the dialog). With uncommitted changes it
+  offers "stash and merge": the changes are put back after the merge, and stay in the stash (with
+  a notice) if they cannot be. When the merge has conflicts they stay in the stash while it is
+  open; aborting from the question puts them back.
+- A pull (merge or rebase) that hits conflicts asks the same "Resolve now?" question instead of
+  failing, decided by the state git leaves on disk. A pull that fails with nothing in progress, and
+  a diverged fast-forward, are reported as before.
 - `S` opens the stash list: `a` applies, `p` pops, `d` drops (asks), `n` stashes the current
   changes under a message. Each stash shows its age. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
   is kept.
