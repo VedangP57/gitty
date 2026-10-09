@@ -1,0 +1,38 @@
+# One Light (Atom One Light syntax).
+name = "one-light"
+kind = "light"
+
+[palette]
+bg = "#fafafa"
+fg = "#383a42"
+muted = "#696c77"
+accent = "#4078f2"
+border = "#d3d4d5"
+red = "#e45649"
+green = "#50a14f"
+yellow = "#986801"
+blue = "#4078f2"
+magenta = "#a626a4"
+cyan = "#0184bc"
+orange = "#986801"
+
+[syntax]
+keyword = "#a626a4"
+string = "#50a14f"
+comment = { fg = "#a0a1a7", italic = true }
+function = "#4078f2"
+type = "#c18401"
+constant = "#986801"
+number = "#986801"
+operator = "#0184bc"
+variable = "#e45649"
+property = "#e45649"
+punctuation = "fg"
+attribute = "#986801"
+tag = "#e45649"
+label = "#4078f2"
+module = "#c18401"
+constructor = "#c18401"
+macro = "#0184bc"
+escape = "#0184bc"
+embedded = "fg"

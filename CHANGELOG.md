@@ -8,6 +8,9 @@ All notable changes to gitty are listed here. The format follows
 
 ### Added
 
+- Twelve more built-in themes: `nord`, `one-dark`, `one-light`, `gruvbox-light`, `catppuccin-frappe`,
+  `catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`, `everforest-dark`,
+  `ayu-mirage` and `nightfox`. Each is credited, with its licence, in `THIRD-PARTY-LICENSES.md`.
 - A Files tab (`3`): the working tree as a lazily loaded tree (ignored files dimmed, symlinks and
   submodules as leaves) with a read-only, syntax-coloured viewer. `Enter`/`l` open a directory,
   `h` closes it, `e` or a double-click opens the file in `$EDITOR`. Files named like secrets

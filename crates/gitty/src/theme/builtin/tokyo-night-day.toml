@@ -1,0 +1,39 @@
+# Tokyo Night Day (folke/tokyonight.nvim).
+name = "tokyo-night-day"
+kind = "light"
+
+[palette]
+bg = "#e1e2e7"
+panel = "#d0d5e3"
+fg = "#3760bf"
+muted = "#68709a"
+accent = "#2e7de9"
+border = "#b4b5b9"
+red = "#c64343"
+green = "#587539"
+yellow = "#8c6c3e"
+blue = "#2e7de9"
+magenta = "#9854f1"
+cyan = "#007197"
+orange = "#b15c00"
+
+[syntax]
+keyword = { fg = "#7847bd", italic = true }
+string = "#587539"
+comment = { fg = "#848cb5", italic = true }
+function = "#2e7de9"
+type = "#188092"
+constant = "#b15c00"
+number = "#b15c00"
+operator = "#006a83"
+variable = "fg"
+property = "#387068"
+punctuation = "#6172b0"
+attribute = "#8c6c3e"
+tag = "#c64343"
+label = "#2e7de9"
+module = "#007197"
+constructor = "#188092"
+macro = "#007197"
+escape = "#006a83"
+embedded = "fg"

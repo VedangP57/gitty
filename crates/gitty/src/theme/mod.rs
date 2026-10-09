@@ -16,7 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use color::Rgb;
 
-pub const BUILTIN_NAMES: [&str; 11] = [
+pub const BUILTIN_NAMES: [&str; 23] = [
     "github-dark",
     "github-light",
     "rose-pine",
@@ -28,9 +28,21 @@ pub const BUILTIN_NAMES: [&str; 11] = [
     "gruvbox-dark",
     "solarized-dark",
     "solarized-light",
+    "nord",
+    "one-dark",
+    "one-light",
+    "gruvbox-light",
+    "catppuccin-frappe",
+    "catppuccin-macchiato",
+    "tokyo-night-storm",
+    "tokyo-night-day",
+    "kanagawa",
+    "everforest-dark",
+    "ayu-mirage",
+    "nightfox",
 ];
 
-const BUILTINS: [&str; 11] = [
+const BUILTINS: [&str; 23] = [
     include_str!("builtin/github-dark.toml"),
     include_str!("builtin/github-light.toml"),
     include_str!("builtin/rose-pine.toml"),
@@ -42,6 +54,18 @@ const BUILTINS: [&str; 11] = [
     include_str!("builtin/gruvbox-dark.toml"),
     include_str!("builtin/solarized-dark.toml"),
     include_str!("builtin/solarized-light.toml"),
+    include_str!("builtin/nord.toml"),
+    include_str!("builtin/one-dark.toml"),
+    include_str!("builtin/one-light.toml"),
+    include_str!("builtin/gruvbox-light.toml"),
+    include_str!("builtin/catppuccin-frappe.toml"),
+    include_str!("builtin/catppuccin-macchiato.toml"),
+    include_str!("builtin/tokyo-night-storm.toml"),
+    include_str!("builtin/tokyo-night-day.toml"),
+    include_str!("builtin/kanagawa.toml"),
+    include_str!("builtin/everforest-dark.toml"),
+    include_str!("builtin/ayu-mirage.toml"),
+    include_str!("builtin/nightfox.toml"),
 ];
 
 const DEFAULT_EMPH_ALPHA: f32 = 0.25;
