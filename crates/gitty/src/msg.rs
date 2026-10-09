@@ -125,6 +125,23 @@ pub enum ConflictBody {
     Other(String),
 }
 
+/// The changes gitty stashed before a merge that then hit conflicts: they stay in the stash while
+/// the merge is open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeStash {
+    /// The `refs/stash` the push made: popping is refused if the stash list moved since.
+    pub pushed: String,
+    /// The stash's message, which names it (its index changes as others are pushed).
+    pub message: String,
+}
+
+impl MergeStash {
+    /// "Your uncommitted changes are in the stash ("gitty: auto-stash from main")".
+    pub fn whereabouts(&self) -> String {
+        format!("Your uncommitted changes are in the stash (\"{}\")", self.message)
+    }
+}
+
 /// A mutating git operation, run in order on the writer thread.
 #[derive(Clone)]
 pub enum WriteOp {
@@ -181,7 +198,7 @@ pub enum WriteOp {
     AbortOp { op: RepoOp, id: String },
     /// [`WriteOp::AbortOp`], then the changes stashed before the merge (`pushed`, the `refs/stash`
     /// the push made) are popped back, unless the stash list moved since.
-    AbortAndUnstash { op: RepoOp, id: String, pushed: String },
+    AbortAndUnstash { op: RepoOp, id: String, stash: MergeStash },
     /// Replace a conflicted file with `bytes` (one block resolved, or that undone) if it still
     /// holds the text that hashes to `expect`. `left` blocks remain in `bytes`;
     /// `undo`: it puts an earlier text back.
@@ -352,7 +369,7 @@ pub enum Msg {
     StagedMarkers { op: RepoOp, id: String, files: Vec<String> },
     /// A merge was left open on conflicts (`doing`: "Merging a into main"): ask whether to resolve
     /// them now. `state` is the merge as it was on disk, `stash` the stash gitty made before it.
-    Conflicted { doing: String, files: Vec<String>, state: OpState, stash: Option<String> },
+    Conflicted { doing: String, files: Vec<String>, state: OpState, stash: Option<MergeStash> },
     /// The merge, rebase, cherry-pick or revert in progress (None: none), read just after the
     /// status of the same `generation`, whose conflicts it counts.
     OpState { generation: u64, state: Option<OpState> },

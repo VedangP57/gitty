@@ -45,6 +45,11 @@ impl App {
             self.toast = Some(Toast { what, detail: String::new(), error: false });
             return;
         }
+        // a pull would merge or rebase on top of the one already open
+        if let Some(s) = self.op.as_ref().filter(|_| matches!(op, NetOp::Pull | NetOp::PullMerge | NetOp::PullRebase)) {
+            self.toast = Some(Toast { what: format!("finish or abort the {} first: m", s.op.name()), detail: String::new(), error: false });
+            return;
+        }
         let label = match op {
             // started with a plan, by start_force_push
             NetOp::ForcePush => return,

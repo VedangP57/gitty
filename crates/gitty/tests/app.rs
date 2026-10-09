@@ -4009,7 +4009,7 @@ fn stash_and_merge_with_conflicts_keeps_the_stash_and_says_where_it_is() {
     assert!(stash);
     assert_eq!(
         body,
-        "Merging topic into main hit conflicts in 2 files (a.txt, b.txt). Your uncommitted changes are in the stash (stash@{0}): pop them after you finish the merge."
+        "Merging topic into main hit conflicts in 2 files (a.txt, b.txt). Your uncommitted changes are in the stash (\"gitty: auto-stash from main\"): pop them after you finish the merge."
     );
     assert!(f.path().join(".git/MERGE_HEAD").exists());
     assert_eq!(f.git(&["stash", "list"]).lines().count(), 1, "the changes stay in the stash");
@@ -5575,7 +5575,8 @@ fn the_conflict_keys_only_exist_on_a_conflicted_file() {
     t.ch('o');
     assert!(t.app.toast.is_none() && t.app.overlay.is_none());
     t.ch('p');
-    assert!(t.app.take_requests().iter().any(|r| matches!(r, gitty::msg::Request::Net { .. })), "p pulls again");
+    // p pulls again, which is refused while the merge is open
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "finish or abort the merge first: m");
 }
 
 // ---- the conflict view, second pass ----
@@ -5795,4 +5796,155 @@ fn a_revert_names_the_second_side_by_what_it_is() {
     assert_eq!(v.sides.theirs.title, "Without change");
     assert!(v.label(0, false).starts_with("Without change ("));
     assert_eq!(v.sides.ours.title, "Current branch");
+}
+
+// ---- fix wave: pulls with an operation open, and the stash held for a merge ----
+
+/// `topic` is merged into main with a dirty m.txt, by "stash and merge": the prompt is up.
+fn stash_and_merge_conflicts(f: &Fixture) -> H {
+    dirty(f);
+    let mut t = H::new(f);
+    t.pump();
+    t.ch('B');
+    typed(&mut t, "topic");
+    ctrl(&mut t, 'g');
+    t.ch('s');
+    t.pump();
+    assert!(resolve_prompt(&t).is_some());
+    t
+}
+
+const STASH_NAME: &str = "gitty: auto-stash from main";
+
+#[test]
+fn a_pull_is_refused_while_a_merge_is_open() {
+    use gitty::msg::NetOp;
+    let f = conflicting_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    stops_merge(&f);
+    state_changed(&mut t);
+    for op in [NetOp::Pull, NetOp::PullMerge, NetOp::PullRebase] {
+        t.app.start_net(op);
+        assert_eq!(t.app.toast.as_ref().unwrap().what, "finish or abort the merge first: m", "{op:?}");
+        assert!(t.app.take_requests().iter().all(|r| !matches!(r, Request::Net { .. })), "{op:?}: nothing was started");
+    }
+    // a fetch changes nothing in the tree
+    t.app.start_net(NetOp::Fetch);
+    assert!(t.app.take_requests().iter().any(|r| matches!(r, Request::Net { .. })));
+}
+
+#[test]
+fn a_merge_that_was_open_before_the_pull_step_is_not_blamed_on_it() {
+    use gitty::msg::NetOp;
+    let (f, bare) = remote_fixture();
+    common::push_as_someone_else(&bare, "a.txt");
+    f.write("a.txt", "mine\n");
+    f.commit("mine", 1_700_000_100);
+    f.git(&["fetch", "-q"]);
+    let out = std::process::Command::new("git").current_dir(f.path()).args(["merge", "origin/main"]).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+    assert!(!out.status.success(), "the merge stops on the conflict");
+    let mut t = H::new(&f);
+    // started past the app's own refusal: another gitty, or a race
+    let msgs = t.exec_all(vec![Request::Net { op: NetOp::PullMerge, mode: gitty_core::net::Mode::Background, background: false, force: None }]);
+    let outcome = msgs.iter().find_map(|m| match m {
+        Msg::NetDone { outcome, .. } => Some(outcome.clone()),
+        _ => None,
+    });
+    assert!(matches!(outcome, Some(gitty_core::net::Outcome::Failed { .. })), "{outcome:?}");
+}
+
+#[test]
+fn the_stash_made_for_a_merge_is_remembered_and_named() {
+    let f = conflicting_fixture();
+    let t = stash_and_merge_conflicts(&f);
+    let op = t.app.op.clone().unwrap();
+    assert_eq!(t.app.merge_stash_of(&op).unwrap().message, STASH_NAME);
+}
+
+#[test]
+fn m_abort_for_a_merge_with_a_stash_puts_the_stash_back() {
+    let f = conflicting_fixture();
+    let mut t = stash_and_merge_conflicts(&f);
+    t.key(KeyCode::Esc);
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(toast.what.contains("stays open") && toast.what.contains(STASH_NAME), "{toast:?}");
+    t.ch('m');
+    t.ch('a');
+    assert!(matches!(&t.app.overlay, Some(gitty::app::Overlay::Confirm { op: WriteOp::AbortAndUnstash { .. }, .. })));
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "Aborted the merge; your changes were put back");
+    assert_eq!(std::fs::read_to_string(f.path().join("m.txt")).unwrap(), "my own edit\n");
+    assert_eq!(f.git(&["stash", "list"]), "");
+}
+
+#[test]
+fn continuing_a_merge_that_held_a_stash_says_the_changes_are_still_in_it() {
+    let f = conflicting_fixture();
+    let mut t = stash_and_merge_conflicts(&f);
+    t.key(KeyCode::Esc);
+    resolve_all(&f);
+    state_changed(&mut t);
+    t.ch('m');
+    t.ch('c');
+    t.pump();
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "Merge committed; your changes from before the merge are still in the stash (S)");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 1);
+}
+
+#[test]
+fn aborting_a_stash_and_merge_that_is_already_gone_leaves_the_stash_alone() {
+    let f = conflicting_fixture();
+    let mut t = stash_and_merge_conflicts(&f);
+    f.git(&["merge", "--abort"]);
+    t.ch('a');
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert_eq!(toast.what, format!("The merge is no longer in progress; your changes are still in the stash (\"{STASH_NAME}\")"));
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 1, "not popped");
+    assert_eq!(std::fs::read_to_string(f.path().join("m.txt")).unwrap(), "m\n");
+}
+
+#[test]
+fn an_abort_that_fails_says_where_the_stashed_changes_are() {
+    let f = conflicting_fixture();
+    let mut t = stash_and_merge_conflicts(&f);
+    // git cannot reset while the index is locked
+    std::fs::write(f.path().join(".git/index.lock"), "").unwrap();
+    t.ch('a');
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(toast.error && toast.detail.contains("could not be aborted") && toast.detail.contains(STASH_NAME), "{toast:?}");
+    assert_eq!(f.git(&["stash", "list"]).lines().count(), 1);
+    assert!(f.path().join(".git/MERGE_HEAD").exists());
+}
+
+#[test]
+fn another_dialog_open_on_a_stash_and_merge_still_names_the_stash() {
+    let f = conflicting_fixture();
+    dirty(&f);
+    let mut t = H::new(&f);
+    t.pump();
+    t.ch('?');
+    stops_merge(&f);
+    state_changed(&mut t);
+    let state = t.app.op.clone().unwrap();
+    let stash = gitty::msg::MergeStash { pushed: "abc".into(), message: STASH_NAME.into() };
+    t.app.handle_msg(Msg::Conflicted { doing: "Merging topic into main".into(), files: vec!["a.txt".into()], state: state.clone(), stash: Some(stash) });
+    assert!(matches!(t.app.overlay, Some(gitty::app::Overlay::Help { .. })));
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(toast.what.starts_with("Conflicts: press m.") && toast.what.contains(STASH_NAME), "{toast:?}");
+    assert!(t.app.merge_stash_of(&state).is_some(), "m and the banner still know");
+}
+
+#[test]
+fn resolve_now_does_not_move_focus_when_the_user_left_the_changes_tab() {
+    let f = conflicting_fixture();
+    let mut t = merge_into_conflicts(&f);
+    t.key(KeyCode::Enter);
+    t.app.set_tab(gitty::app::Tab::History);
+    t.pump();
+    assert_eq!(t.app.tab, gitty::app::Tab::History);
+    assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
 }

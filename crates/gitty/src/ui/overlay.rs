@@ -211,7 +211,8 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             // the keys always have their row; the text above gives way to them
             let keys_y = (inner.y + 4).min(inner.bottom() - 1);
             let status = if state.conflicts == 0 { "No conflicts left".to_string() } else { format!("{} conflict{}", state.conflicts, if state.conflicts == 1 { "" } else { "s" }) };
-            for (dy, line, style) in [(0, Some(doing), st.fg(ui.warning).add_modifier(Modifier::BOLD)), (1, Some(status), st.fg(ui.muted)), (2, blocked.clone(), st.fg(ui.muted))] {
+            let held = app.merge_stash_of(state).map(|s| format!("{}.", s.whereabouts()));
+            for (dy, line, style) in [(0, Some(doing), st.fg(ui.warning).add_modifier(Modifier::BOLD)), (1, Some(status), st.fg(ui.muted)), (2, blocked.clone(), st.fg(ui.muted)), (3, held, st.fg(ui.muted))] {
                 if let Some(l) = line.filter(|_| inner.y + dy < keys_y) {
                     text(buf, inner.x, inner.y + dy, inner.right(), &l, style);
                 }

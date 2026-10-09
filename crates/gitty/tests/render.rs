@@ -2624,12 +2624,12 @@ fn the_resolve_now_prompt_shows_every_key_and_its_words_at_80_and_140_columns() 
         let mut t = H::new(&f, "github-dark", (w, h));
         let state = t.app.op.clone().unwrap();
         let files = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"].map(String::from).to_vec();
-        t.app.handle_msg(Msg::Conflicted { doing: "Merging topic into main".into(), files, state, stash: Some("abc".into()) });
+        t.app.handle_msg(Msg::Conflicted { doing: "Merging topic into main".into(), files, state, stash: Some(gitty::msg::MergeStash { pushed: "abc".into(), message: "gitty: auto-stash from main".into() }) });
         let b = t.render(w, h);
         let s = text(&b);
         assert!(s.contains("Resolve now?"), "{w}: {s}");
         assert!(s.contains("Merging topic into main hit conflicts in 5 files (a.rs, b.rs, c.rs, +2)."), "{w}: {s}");
-        assert!(s.contains("stash@{0}"), "{w}: {s}");
+        assert!(s.contains("auto-stash from"), "{w}: {s}");
         assert!(s.contains("finish the merge."), "{w}: the sentence is whole: {s}");
         assert!(s.contains("Enter resolve now") && s.contains("a abort the merge") && s.contains("Esc decide later"), "{w}: {s}");
         assert!(s.contains("Deciding later keeps the merge open: press m"), "{w}: {s}");

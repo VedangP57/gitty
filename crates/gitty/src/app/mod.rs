@@ -85,7 +85,7 @@ pub enum Overlay {
     Quit { label: String },
     /// A merge, pull or rebase was left open on conflicts: resolve now (Enter), abort (`a`; with
     /// `stash`, the stash gitty made before it, the changes in it are popped back) or decide later.
-    Resolve { body: String, state: gitty_core::op_state::OpState, stash: Option<String> },
+    Resolve { body: String, state: gitty_core::op_state::OpState, stash: Option<crate::msg::MergeStash> },
     /// `m`: continue or abort the merge, rebase, cherry-pick or revert in progress (read live from `App::op`).
     InProgress,
 }
@@ -310,6 +310,9 @@ pub struct App {
     pub open_url: Option<String>,
     /// The merge, rebase, cherry-pick or revert in progress, whoever started it.
     pub op: Option<gitty_core::op_state::OpState>,
+    /// The changes gitty stashed before the merge with this id hit conflicts, and the status
+    /// generation from which a state that is not that merge any more means it is over.
+    pub(super) merge_stash: Option<(String, crate::msg::MergeStash, u64)>,
     /// The current branch's pull request, for the top bar.
     pub pr_badge: Option<(String, PrInfo)>,
     /// The branch the badge was last asked for, and when.
@@ -429,6 +432,7 @@ impl App {
             external: None,
             open_url: None,
             op: None,
+            merge_stash: None,
             pr_badge: None,
             pr_asked: None,
             pr_inflight: HashSet::new(),

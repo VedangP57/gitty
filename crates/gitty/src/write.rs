@@ -11,7 +11,7 @@ use gitty_core::merge::{MergeOutcome, MidMerge};
 use gitty_core::op_state::{Aborted, Continued, OpState, RepoOp};
 use gitty_core::stage::{Plan, plan};
 
-use crate::msg::WriteOp;
+use crate::msg::{MergeStash, WriteOp};
 
 /// Held by every index or worktree write: the writer thread's ops, and the network thread's local
 /// steps (fast-forward, merge, rebase), so they never race for `index.lock` (spec §12.1).
@@ -267,7 +267,7 @@ pub struct MergeConflicts {
     /// The merge as it is on disk now; its id is what an abort is pinned to.
     pub state: OpState,
     /// The stash gitty pushed before merging, which stays there.
-    pub stash: Option<String>,
+    pub stash: Option<MergeStash>,
 }
 
 impl std::fmt::Display for MergeConflicts {
@@ -279,12 +279,16 @@ impl std::fmt::Display for MergeConflicts {
 impl std::error::Error for MergeConflicts {}
 
 /// The question for a merge of `name` into `into` that was left open on `files`.
-fn merge_conflicts(cli: &GitCli, name: &str, into: &str, files: Vec<String>, stash: Option<String>) -> anyhow::Error {
+fn merge_conflicts(cli: &GitCli, name: &str, into: &str, files: Vec<String>, stash: Option<MergeStash>) -> anyhow::Error {
     let doing = format!("Merging {name} into {into}");
     match cli.status().ok().and_then(|st| cli.op_state(&st)) {
         Some(state) => MergeConflicts { doing, files, state, stash }.into(),
         // the merge is not to be read back (it ended, or git cannot be asked): say it as it is
-        None => anyhow!("{doing} hit conflicts in {} files, but its state could not be read: press m", files.len()),
+        None => anyhow!(
+            "{doing} hit conflicts in {} files, but its state could not be read: press m.{}",
+            files.len(),
+            stash.map_or(String::new(), |s| format!(" {}: pop them after you finish the merge.", s.whereabouts()))
+        ),
     }
 }
 
@@ -490,7 +494,8 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             let into = branch.as_deref().unwrap_or_default();
             // the merge stays open and the stash stays in the stash: popping it onto a conflicted tree would mix the two
             if let MergeOutcome::Conflicts { files, .. } = merged {
-                return Err(merge_conflicts(&cli, name, into, files, if stashed { pushed } else { None }));
+                let stash = pushed.filter(|_| stashed).map(|pushed| MergeStash { pushed, message: message.clone() });
+                return Err(merge_conflicts(&cli, name, into, files, stash));
             }
             let note = merge_note(name, into, &merged);
             if !stashed {
@@ -508,12 +513,13 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 Aborted::Gone => format!("The {n} is no longer in progress"),
             }));
         }
-        WriteOp::AbortAndUnstash { op, id, pushed } => {
+        WriteOp::AbortAndUnstash { op, id, stash } => {
             let n = op.name();
-            return Ok(Some(match cli.abort_op(*op, id)? {
+            let aborted = cli.abort_op(*op, id).map_err(|e| anyhow!("{e:#}; your changes are still in the stash (\"{}\")", stash.message))?;
+            return Ok(Some(match aborted {
                 // the tree is whatever it became elsewhere: the stash is not put on it
-                Aborted::Gone => format!("The {n} is no longer in progress; your changes are still in the stash"),
-                Aborted::Done => format!("Aborted the {n}; {}", pop_back(&cli, &Some(pushed.clone()))),
+                Aborted::Gone => format!("The {n} is no longer in progress; your changes are still in the stash (\"{}\")", stash.message),
+                Aborted::Done => format!("Aborted the {n}; {}", pop_back(&cli, &Some(stash.pushed.clone()))),
             }));
         }
         WriteOp::Seq(ops) => {

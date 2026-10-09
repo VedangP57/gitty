@@ -306,6 +306,14 @@ impl App {
     }
 
     fn select_first_conflict(&mut self) {
+        // the user went elsewhere meanwhile: nothing is moved under them
+        if self.tab != Tab::Changes {
+            return;
+        }
+        if self.changes.status_error.is_some() {
+            self.toast = Some(Toast { what: "Could not read the status: try again".into(), detail: String::new(), error: true });
+            return;
+        }
         if self.op.is_none() {
             self.toast = Some(Toast { what: "No longer in progress".into(), detail: String::new(), error: false });
             return;
@@ -374,6 +382,12 @@ impl App {
                     if self.op.is_none() && matches!(self.overlay, Some(Overlay::InProgress)) {
                         self.overlay = None;
                     }
+                    if let Some((id, _, g)) = &self.merge_stash
+                        && generation >= *g
+                        && self.op.as_ref().is_none_or(|s| s.id != *id)
+                    {
+                        self.merge_stash = None;
+                    }
                     if self.changes.resolve_gen.is_some_and(|g| generation >= g) && generation == self.changes.status_gen {
                         self.changes.resolve_gen = None;
                         self.select_first_conflict();
@@ -381,6 +395,8 @@ impl App {
                 }
             }
             Msg::Conflicted { doing, files, state, stash } => {
+                // kept until a status run newer than this one shows the merge is over
+                self.merge_stash = stash.clone().map(|s| (state.id.clone(), s, self.changes.status_gen + 1));
                 if let Some(t) = self.offer_resolve(doing, files, state, stash) {
                     self.toast = Some(t);
                 }
@@ -408,6 +424,15 @@ impl App {
             Msg::WriteDone { op: WriteOp::RefreshIndex, .. } => {}
             Msg::WriteDone { op, result } => {
                 self.changes.busy = self.changes.busy.saturating_sub(1);
+                // finishing the merge leaves the changes stashed before it where they are: say so
+                let result = match (result, &op) {
+                    (Ok(Some(note)), WriteOp::ContinueOp { id, .. })
+                        if matches!(note.as_str(), "Merge committed" | "Rebase finished") && self.merge_stash.as_ref().is_some_and(|(i, _, _)| i == id) =>
+                    {
+                        Ok(Some(format!("{note}; your changes from before the merge are still in the stash (S)")))
+                    }
+                    (r, _) => r,
+                };
                 self.conflict_write_settled(&op, result.is_ok());
                 match result {
                     _ if self.commit_done(&op, &result) => {}
