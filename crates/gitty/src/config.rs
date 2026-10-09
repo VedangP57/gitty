@@ -29,6 +29,8 @@ pub struct Config {
     pub emph_alpha: Option<f32>,
     pub auto_fetch_minutes: u32,
     pub auto_tune: bool,
+    /// The Files tab starts with ignored files listed (`i` toggles).
+    pub files_show_ignored: bool,
     pub difftool: Option<String>,
     /// `[keys]`: action name → key or keys (see `keymap`).
     pub keys: toml::Table,
@@ -47,6 +49,7 @@ impl Default for Config {
             emph_alpha: None,
             auto_fetch_minutes: 5,
             auto_tune: true,
+            files_show_ignored: true,
             difftool: None,
             keys: toml::Table::new(),
         }
@@ -128,6 +131,7 @@ impl Config {
                 }
                 "auto_fetch_minutes" => c.auto_fetch_minutes = pick(v, k, w, int).map_or(c.auto_fetch_minutes, |n| n.clamp(0, 1440) as u32),
                 "auto_tune" => c.auto_tune = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.auto_tune),
+                "files_show_ignored" => c.files_show_ignored = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.files_show_ignored),
                 "difftool" => c.difftool = pick(v, k, w, |v| v.as_str().map(String::from)).or(c.difftool.take()),
                 "keys" => match v.as_table() {
                     Some(t) => c.keys = t.clone(),
@@ -266,6 +270,7 @@ mod tests {
         assert_eq!(c.whitespace, WsMode::Show);
         assert_eq!(c.diff_algorithm, DiffAlgorithm::Myers);
         assert!(c.auto_tune);
+        assert!(c.files_show_ignored);
         assert_eq!(c.emph_alpha, None);
     }
 
@@ -274,7 +279,7 @@ mod tests {
         let (c, w) = load_str(
             "theme = \"dracula\"\ntab_size = 8\ndiff_algorithm = \"histogram\"\nwhitespace = \"ignore-all\"\n\
              split_threshold = 180\ndate_mode = \"both\"\ndensity = \"comfortable\"\nemph_alpha = 0.4\n\
-             auto_fetch_minutes = 0\nauto_tune = false\ndifftool = \"code --diff\"\n",
+             auto_fetch_minutes = 0\nauto_tune = false\nfiles_show_ignored = false\ndifftool = \"code --diff\"\n",
         );
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.theme, "dracula");
@@ -287,6 +292,7 @@ mod tests {
         assert_eq!(c.emph_alpha, Some(0.4));
         assert_eq!(c.auto_fetch_minutes, 0);
         assert!(!c.auto_tune);
+        assert!(!c.files_show_ignored);
         assert_eq!(c.difftool.as_deref(), Some("code --diff"));
     }
 

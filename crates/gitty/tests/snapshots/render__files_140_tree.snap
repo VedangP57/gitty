@@ -11,7 +11,7 @@ expression: s
    .env (secret)                          │  5     step(1);
    .gitignore                             │  6     step(2);
    data.bin                               │  7     step(3);
-   link -> src/main.rs                    │  8     step(4);
+   link -> src/main.rs                  A │  8     step(4);
    README.md                              │  9     step(5);
                                           │ 10     step(6);
                                           │ 11     step(7);
@@ -31,4 +31,4 @@ expression: s
                                           │ 25     step(21);
                                           │ 26     step(22);
                                           │ 27     step(23);
- j/k move  h/l fold  enter open  e edit  v reveal  2 history  ? help  q quit
+ j/k move  h/l fold  enter open  e edit  v reveal  i ignored  2 history  ? help  q quit

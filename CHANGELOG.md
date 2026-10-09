@@ -31,6 +31,9 @@ All notable changes to gitty are listed here. The format follows
   submodules as leaves) with a read-only, syntax-coloured viewer. `Enter`/`l` open a directory,
   `h` closes it, `e` or a double-click opens the file in `$EDITOR`. Files named like secrets
   (`.env`, keys, tokens) are not read until you press `v`.
+- Git marks in the Files tab: changed files show their Changes letter and colour, and directories
+  with changes below them show a `●` (also when folded). `i` hides or shows ignored files; the
+  `files_show_ignored` option sets the starting state.
 - `B` opens a branch picker: Enter switches (a remote-only branch gets a local tracking branch),
   `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
   branch with unmerged commits asks twice. With uncommitted changes, switching asks first.

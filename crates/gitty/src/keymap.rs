@@ -121,6 +121,7 @@ actions! {
     StageHunk "stage_hunk" ChangesDiff ["H"] "Changes: stage the hunk",
     RevealSecret "reveal_secret" Files ["v"] "Files: show or hide a secret file (.env, keys…)",
     OpenEditor "open_editor" Files ["e"] "Files: open the file in $EDITOR",
+    ToggleIgnored "toggle_ignored" Files ["i"] "Files: show or hide ignored files",
     FilesCollapse "files_collapse" FilesTree ["h", "left"] "Files: close the directory (or go to its parent)",
     FilesExpand "files_expand" FilesTree ["l", "right"] "Files: open the directory",
     Search "search" History ["/"] "search history (text, path:dir)",

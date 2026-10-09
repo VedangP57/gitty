@@ -436,6 +436,7 @@ impl App {
             keymap,
             key_warnings,
         };
+        app.files_tab.show_ignored = app.config.files_show_ignored;
         app.request_status();
         app
     }
