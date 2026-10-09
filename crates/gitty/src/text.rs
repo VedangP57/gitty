@@ -137,6 +137,28 @@ pub fn wrap_starts(gs: &[Glyph], width: u32, out: &mut Vec<usize>) {
     }
 }
 
+/// Widest line (display columns) that sideways scrolling takes into account: a longer line is
+/// treated as this wide, so a pathological one cannot make the range huge.
+pub const HSCROLL_CAP: u32 = 10_000;
+
+/// Columns `line` takes as drawn (tabs expanded, wide characters counted), at most [`HSCROLL_CAP`].
+pub fn line_width(line: &[u8], tab: u8, scratch: &mut Vec<Glyph>) -> u32 {
+    layout_until(line, tab, HSCROLL_CAP, scratch);
+    scratch.last().map_or(0, |g| g.col + u32::from(g.width)).min(HSCROLL_CAP)
+}
+
+/// Widest line of `text`, by [`line_width`].
+pub fn widest(text: &gitty_core::diff::text::Text, tab: u8) -> u32 {
+    let mut scratch = Vec::new();
+    (0..text.len()).map(|i| line_width(text.line(i), tab, &mut scratch)).max().unwrap_or(0)
+}
+
+/// How far a pane `visible` columns wide can scroll sideways over lines up to `widest` columns:
+/// to the end of the widest line and no further, and not at all when every line fits.
+pub fn max_hscroll(widest: u32, visible: u32) -> u32 {
+    widest.min(HSCROLL_CAP).saturating_sub(visible)
+}
+
 /// Display width of `s` in terminal columns.
 pub fn display_width(s: &str) -> usize {
     s.graphemes(true).map(UnicodeWidthStr::width).sum()
@@ -371,5 +393,26 @@ mod tests {
         layout(b"abcdef", 4, &mut gs);
         wrap_starts(&gs, 3, &mut starts);
         assert_eq!(starts, vec![0, 3]);
+    }
+
+    #[test]
+    fn max_hscroll_stops_at_the_widest_line() {
+        assert_eq!(max_hscroll(50, 80), 0, "everything fits");
+        assert_eq!(max_hscroll(80, 80), 0, "exactly fits");
+        assert_eq!(max_hscroll(203, 100), 103);
+        assert_eq!(max_hscroll(40, 0), 40, "a zero-width pane");
+        assert_eq!(max_hscroll(0, 0), 0);
+        assert_eq!(max_hscroll(1_000_000, 80), HSCROLL_CAP - 80, "capped");
+    }
+
+    #[test]
+    fn line_width_counts_tabs_and_wide_characters_and_is_capped() {
+        let mut s = Vec::new();
+        assert_eq!(line_width(b"", 4, &mut s), 0);
+        assert_eq!(line_width(b"abc", 4, &mut s), 3);
+        assert_eq!(line_width(b"a	b", 4, &mut s), 5);
+        assert_eq!(line_width("日本".as_bytes(), 4, &mut s), 4);
+        assert_eq!(line_width(&vec![b'x'; 1_000_000], 4, &mut s), HSCROLL_CAP);
+        assert_eq!(line_width("日".repeat(100_000).as_bytes(), 4, &mut s), HSCROLL_CAP);
     }
 }

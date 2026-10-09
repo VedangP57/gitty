@@ -451,7 +451,8 @@ impl App {
             return;
         }
         if let Some(d) = self.diff.as_mut().filter(|_| !self.wrap) {
-            d.hscroll = (i32::from(d.hscroll) + by).clamp(0, 10_000) as u16;
+            let max = i32::from(d.max_hscroll(self.config.tab_size));
+            d.hscroll = (i32::from(d.hscroll) + by).clamp(0, max) as u16;
         }
     }
 
