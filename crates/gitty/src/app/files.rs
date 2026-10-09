@@ -279,10 +279,17 @@ impl App {
                             if let FileView::Text { text, key } = &view {
                                 self.files_tab.widest = widest(text, self.config.tab_size);
                                 self.request_file_highlight(key.clone(), text.clone());
+                            } else {
+                                self.files_tab.widest = 0;
+                                self.files_tab.hscroll = 0;
                             }
                             Viewing::Ready(view)
                         }
-                        Err(e) => Viewing::Failed(e),
+                        Err(e) => {
+                            self.files_tab.widest = 0;
+                            self.files_tab.hscroll = 0;
+                            Viewing::Failed(e)
+                        }
                     };
                 }
             }

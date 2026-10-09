@@ -2228,6 +2228,43 @@ fn viewer_edge_marks_show_only_where_text_is_hidden() {
 }
 
 #[test]
+fn the_no_newline_mark_is_reachable_at_the_end_of_the_diff() {
+    let f = Fixture::new();
+    f.write("n.txt", "a\n");
+    f.commit("base", NOW - DAY);
+    f.write("n.txt", format!("a\n{}", "q".repeat(300)));
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.split_pref = Some(false);
+    t.key(KeyCode::Char('1'));
+    t.select_change("n.txt");
+    t.render(140, 30);
+    t.app.focus = Focus::Diff;
+    for _ in 0..100 {
+        t.key(KeyCode::Char('l'));
+    }
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 302 - t.app.diff.as_ref().unwrap().visible);
+    assert!(text(&t.render(140, 30)).contains("q ⊘"));
+}
+
+#[test]
+fn a_refresh_that_turns_text_into_binary_resets_the_viewer_scroll() {
+    let f = Fixture::new();
+    f.write("wide.txt", format!("{}\n", "x".repeat(300)));
+    f.commit("base", NOW - DAY);
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, "wide.txt");
+    t.render(140, 30);
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('l'));
+    assert_eq!(t.app.files_tab.hscroll, 8);
+    f.write("wide.txt", b"ab\0cd");
+    t.app.refresh_files();
+    t.pump();
+    assert!(matches!(t.app.files_tab.viewing, gitty::app::files::Viewing::Ready(gitty::msg::FileView::Binary { .. })));
+    assert_eq!((t.app.files_tab.hscroll, t.app.files_tab.widest), (0, 0));
+}
+
+#[test]
 fn a_megabyte_single_line_file_scrolls_to_the_cap_without_slowness() {
     let f = Fixture::new();
     f.write("one.txt", "x\n");

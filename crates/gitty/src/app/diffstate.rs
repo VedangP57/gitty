@@ -104,12 +104,14 @@ impl DiffState {
         for i in 0..self.view.row_count() {
             let lines = match self.view.row(i) {
                 Row::Gap { .. } => [None, None],
-                Row::Context { old, new } => [Some(d.old.line(old)), Some(d.new.line(new))],
-                Row::Del { old, .. } => [Some(d.old.line(old)), None],
-                Row::Add { new, .. } => [None, Some(d.new.line(new))],
+                Row::Context { old, new } => [Some((&d.old, old)), Some((&d.new, new))],
+                Row::Del { old, .. } => [Some((&d.old, old)), None],
+                Row::Add { new, .. } => [None, Some((&d.new, new))],
             };
-            for l in lines.into_iter().flatten() {
-                w = w.max(line_width(l, tab, &mut scratch));
+            for (text, line) in lines.into_iter().flatten() {
+                // the " ⊘" after a last line without a newline takes two more columns
+                let eol = if line + 1 == text.len() && text.no_eol() { 2 } else { 0 };
+                w = w.max(line_width(text.line(line), tab, &mut scratch) + eol);
             }
         }
         self.widest = Some(w);

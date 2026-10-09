@@ -326,7 +326,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     // columns of text right of the gutters, the +/- marker and its space; a split view scrolls
     // both sides together
     let text_width = |w: u16, gutters: u16| w.saturating_sub(gutters * (digits + 2) + 2);
-    d.visible = if split { text_width(mid - x, 1).min(text_width(right - (mid + 1), 1)) } else { text_width(body.width, numbers) };
+    d.visible = if split { text_width(mid - x, 1).min(text_width(right.saturating_sub(mid + 1), 1)) } else { text_width(body.width, numbers) };
     // the pane may have been resized since the last scroll: pull the offset back to the new end
     d.hscroll = d.hscroll.min(d.max_hscroll(app.config.tab_size));
     let d = app.diff.as_ref().expect("checked above");
