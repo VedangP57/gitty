@@ -114,6 +114,19 @@ Limits: the match is by name, so a secret under an innocent name (or a hard link
 that only looks like one through Unicode lookalikes) is shown as any file. Masking applies to the
 Files tab only: an untracked `.env` still appears in the Changes tab's diff.
 
+### Merge in progress
+
+When a merge, rebase, cherry-pick or revert has stopped (started in gitty's terminal or any
+other), the top bar shows `MERGING topic · 2 conflicts` (or `REBASING feat · step 2/5 · 1 conflict`,
+`CHERRY-PICKING`, `REVERTING`) in the warning colour; on a narrow terminal it drops the branch
+and the step before it drops the word. Press `m` for the dialog: `c` continues once no file
+conflicts any more (resolve each file and stage it in the Changes tab first; the dialog says why
+Continue is not available yet), `a` aborts after asking, `Esc` closes. Continue never opens an
+editor: a merge uses its prepared message, and a rebase or pick keeps the commit's own. If the
+next step of a rebase or pick conflicts too, you are told and the bar shows the new count.
+Hooks run as they do for a commit, and a hook that fails leaves the operation open and its
+output is in the error details (`!`). `m` with nothing in progress says so.
+
 ### In herdr
 
 gitty ships a [herdr](https://herdr.dev) plugin that opens it in a popup on the repository of the
@@ -164,6 +177,7 @@ reported at startup:
 | `T` | theme picker | `theme` |
 | `B` | branches: switch, create, rename, delete, merge | `branches` |
 | `S` | stashes: apply, pop, drop | `stashes` |
+| `m` | the merge, rebase, cherry-pick or revert in progress: continue or abort it | `operation` |
 | `?` | this help | `help` |
 | `!` | details of the last error | `error_details` |
 | `h` `←` | compare: previous tab | `compare_prev_tab` |

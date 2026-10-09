@@ -2051,3 +2051,119 @@ fn shift_wheel_events_are_not_merged_with_plain_ones() {
     let out = gitty::input::coalesce(vec![ev(KeyModifiers::NONE), ev(KeyModifiers::NONE), ev(KeyModifiers::SHIFT)]);
     assert_eq!(out.iter().map(|e| e.repeat).collect::<Vec<_>>(), [2, 1]);
 }
+
+// ---- a merge in progress ----
+
+/// `topic` and `main` both changed a.txt, and `git merge topic` stopped on it.
+fn merging() -> Fixture {
+    let f = Fixture::new();
+    f.write("a.txt", "base\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("a.txt", "topic\n");
+    f.commit("topic edit", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("a.txt", "main\n");
+    f.commit("main edit", 1_700_000_200);
+    let out = std::process::Command::new("git")
+        .current_dir(f.path())
+        .args(["merge", "topic"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    f
+}
+
+fn top_line(b: &Buffer, w: u16) -> String {
+    (0..w).map(|x| b[(x, 0)].symbol().to_string()).collect()
+}
+
+#[test]
+fn the_banner_names_the_merge_in_the_warning_colour() {
+    use gitty_core::forge::PrState;
+    let f = merging();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    with_pr(&mut t, 42, PrState::Open);
+    let b = t.render(140, 30);
+    let top = top_line(&b, 140);
+    assert!(top.contains("⎇ main  MERGING topic · 1 conflict"), "{top}");
+    let (x, y) = find(&b, "MERGING").unwrap();
+    let ui = t.app.theme.ui.clone();
+    assert_eq!(b[(x, y)].fg, ui.warning);
+    assert_eq!(b[(x, y)].bg, ui.status_bg);
+    // the PR badge comes after it and still answers clicks
+    let (px, py) = find(&b, "PR #42").unwrap();
+    assert!(px > x);
+    assert_eq!(t.app.hits.pr_badge, Some(ratatui::layout::Rect::new(px, py, 6, 1)));
+    assert!(top.contains("[2] History"), "{top}");
+}
+
+#[test]
+fn the_banner_gives_up_details_before_the_word_at_narrow_widths() {
+    use gitty_core::forge::PrState;
+    let f = merging();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    with_pr(&mut t, 12345, PrState::Open);
+    let b = t.render(80, 24);
+    let top = top_line(&b, 80);
+    assert!(top.contains("MERGING"), "{top}");
+    assert!(top.contains("[2] History") && top.contains("⎇ main"), "{top}");
+    let mut seen = std::collections::BTreeSet::new();
+    for w in (30..=140).rev() {
+        let b = t.render(w, 24);
+        let top = top_line(&b, w);
+        // below ~64 columns the repository name and branch use the room: no banner, no panic
+        assert!(w < 64 || top.contains("MERGING"), "{w}: {top}");
+        let badge = top.contains("PR #12345");
+        assert_eq!(badge, t.app.hits.pr_badge.is_some(), "{w}: {top}");
+        seen.insert((top.contains("MERGING topic"), top.contains("1 conflict")));
+    }
+    // full, then without the branch, then the bare word
+    assert!(seen.contains(&(true, true)) && seen.contains(&(false, true)) && seen.contains(&(false, false)), "{seen:?}");
+}
+
+#[test]
+fn no_operation_no_banner() {
+    let f = fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    assert!(find(&t.render(140, 30), "MERGING").is_none());
+}
+
+#[test]
+fn the_dialog_shows_continue_disabled_with_the_reason_then_enabled() {
+    let f = merging();
+    let mut t = H::new(&f, "github-dark", (100, 30));
+    t.key(KeyCode::Char('m'));
+    let b = t.render(100, 30);
+    let s = text(&b);
+    assert!(s.contains("Merge in progress"), "{s}");
+    assert!(s.contains("Merging topic into main"), "{s}");
+    assert!(s.contains("1 file still conflicts: resolve it and stage it first"), "{s}");
+    assert!(s.contains("c continue (not yet)") && s.contains("a abort") && s.contains("Esc close"), "{s}");
+    let (x, y) = find(&b, "c continue").unwrap();
+    assert_eq!(b[(x, y)].fg, t.app.theme.ui.muted, "disabled looks disabled");
+    // resolved and staged
+    f.write("a.txt", "both\n");
+    f.git(&["add", "a.txt"]);
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::STATE));
+    t.pump();
+    let b = t.render(100, 30);
+    let s = text(&b);
+    assert!(s.contains("No conflicts left") && !s.contains("still conflict") && s.contains("c continue ·"), "{s}");
+    let (x, y) = find(&b, "c continue").unwrap();
+    assert_eq!(b[(x, y)].fg, t.app.theme.ui.accent);
+}
+
+#[test]
+fn the_abort_question_shows_all_of_its_words_at_80_columns() {
+    let f = merging();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    t.key(KeyCode::Char('m'));
+    t.key(KeyCode::Char('a'));
+    let s = text(&t.render(80, 24));
+    assert!(s.contains("Abort the merge?"), "{s}");
+    assert!(s.contains("kept."), "the end of the sentence is not cut: {s}");
+    assert!(s.contains("Enter abort") && s.contains("Esc cancel"), "{s}");
+}

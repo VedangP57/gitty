@@ -90,6 +90,7 @@ actions! {
     Theme "theme" Global ["T"] "theme picker",
     Branches "branches" Global ["B"] "branches: switch, create, rename, delete, merge",
     Stashes "stashes" Global ["S"] "stashes: apply, pop, drop",
+    Operation "operation" Global ["m"] "the merge, rebase, cherry-pick or revert in progress: continue or abort it",
     Help "help" Global ["?"] "this help",
     ErrorDetails "error_details" Global ["!"] "details of the last error",
     CompareBehind "compare_prev_tab" Compare ["h", "left"] "compare: previous tab",

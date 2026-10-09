@@ -381,7 +381,7 @@ fn highlight_returns_spans_and_honours_cancel() {
 
 fn status_entry(f: &Fixture, path: &str) -> gitty_core::status::StatusEntry {
     match &run(f, Request::Status { generation: 1, mark: None })[..] {
-        [Msg::Status { generation: 1, result: Ok(st) }] => st.entries.iter().find(|e| e.path == path).cloned().expect("entry"),
+        [Msg::Status { generation: 1, result: Ok(st) }, Msg::OpState { generation: 1, .. }] => st.entries.iter().find(|e| e.path == path).cloned().expect("entry"),
         m => panic!("{m:?}"),
     }
 }

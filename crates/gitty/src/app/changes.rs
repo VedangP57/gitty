@@ -309,6 +309,16 @@ impl App {
                     self.request_status();
                 }
             }
+            Msg::OpState { generation, state } => {
+                // one that a newer status run has just superseded still beats the state shown
+                if generation + 1 >= self.changes.status_gen {
+                    self.op = state;
+                    // the state ended (finished or aborted anywhere): its dialog has nothing to act on
+                    if self.op.is_none() && matches!(self.overlay, Some(Overlay::InProgress)) {
+                        self.overlay = None;
+                    }
+                }
+            }
             Msg::ChangeDiff { generation, entry, key, diff, texts, staged, divergent } => {
                 if generation != self.changes.diff_gen || self.tab != Tab::Changes {
                     return None;

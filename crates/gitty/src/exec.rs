@@ -259,9 +259,15 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 mark.note();
             }
             let t = std::time::Instant::now();
-            let result = gitty_core::git_cli::GitCli::new(h.owner()).status().map_err(|e| format!("{e:#}"));
-            let slow = result.is_ok() && t.elapsed() >= SLOW_STATUS;
-            sink(Msg::Status { generation, result });
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            let status = cli.status();
+            let slow = status.is_ok() && t.elapsed() >= SLOW_STATUS;
+            // a state started or ended anywhere (the watcher saw MERGE_HEAD, rebase-merge…) arrives with the status it changes
+            let op = status.as_ref().ok().map(|st| cli.op_state(st));
+            sink(Msg::Status { generation, result: status.map_err(|e| format!("{e:#}")) });
+            if let Some(state) = op {
+                sink(Msg::OpState { generation, state });
+            }
             if slow {
                 sink(Msg::StatusSlow);
             }

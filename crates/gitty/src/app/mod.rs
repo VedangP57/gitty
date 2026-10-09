@@ -6,6 +6,7 @@ pub mod commit;
 pub mod branches;
 pub mod compare;
 pub mod net;
+pub mod operation;
 pub mod diffstate;
 pub mod files;
 mod input;
@@ -81,6 +82,8 @@ pub enum Overlay {
     Stashes { sel: usize },
     /// `q` while a network job runs.
     Quit { label: String },
+    /// `m`: continue or abort the merge, rebase, cherry-pick or revert in progress (read live from `App::op`).
+    InProgress,
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +304,8 @@ pub struct App {
     pub external: Option<crate::external::External>,
     /// A page for the main loop to open in the browser.
     pub open_url: Option<String>,
+    /// The merge, rebase, cherry-pick or revert in progress, whoever started it.
+    pub op: Option<gitty_core::op_state::OpState>,
     /// The current branch's pull request, for the top bar.
     pub pr_badge: Option<(String, PrInfo)>,
     /// The branch the badge was last asked for, and when.
@@ -419,6 +424,7 @@ impl App {
             compare: None,
             external: None,
             open_url: None,
+            op: None,
             pr_badge: None,
             pr_asked: None,
             pr_inflight: HashSet::new(),
@@ -735,7 +741,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
+            Msg::Status { .. } | Msg::OpState { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer(_) | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }

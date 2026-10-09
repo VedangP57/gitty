@@ -8,6 +8,7 @@ use gitty_core::Handle;
 use gitty_core::commit_files::BlobId;
 use gitty_core::git_cli::GitCli;
 use gitty_core::merge::{MergeOutcome, MidMerge};
+use gitty_core::op_state::{Aborted, Continued, RepoOp};
 use gitty_core::stage::{Plan, plan};
 
 use crate::msg::WriteOp;
@@ -261,6 +262,21 @@ fn merge_note(name: &str, into: &str, outcome: &MergeOutcome) -> String {
     }
 }
 
+/// The notice for continuing `op`.
+fn continue_note(op: RepoOp, outcome: Continued) -> String {
+    match outcome {
+        Continued::Finished => match op {
+            RepoOp::Merge => "Merge committed".to_string(),
+            RepoOp::Rebase => "Rebase finished".to_string(),
+            RepoOp::CherryPick => "Cherry-pick finished".to_string(),
+            RepoOp::Revert => "Revert finished".to_string(),
+        },
+        Continued::Stopped { conflicts: 0 } => format!("Continued; the {} stopped again at the next step", op.name()),
+        Continued::Stopped { .. } => "Continued; next step has conflicts".to_string(),
+        Continued::Gone => format!("The {} is no longer in progress", op.name()),
+    }
+}
+
 /// Runs one write. `log` receives git and hook output as it arrives. Returns the new HEAD for
 /// [`WriteOp::Commit`], the undone commit's message for [`WriteOp::UndoCommit`], and for
 /// discards a note saying where the copies went when that was not the Trash.
@@ -404,6 +420,14 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             // the changes go back whether or not the merge moved HEAD: it is the same branch
             let tail = if cli.current_branch() == branch { pop_back(&cli, &pushed) } else { "your changes are in the stash (stash@{0})".to_string() };
             return Ok(Some(format!("{note}; {tail}")));
+        }
+        WriteOp::ContinueOp { op } => return Ok(Some(continue_note(*op, cli.continue_op(*op, log)?))),
+        WriteOp::AbortOp { op } => {
+            let n = op.name();
+            return Ok(Some(match cli.abort_op(*op)? {
+                Aborted::Done => format!("Aborted the {n}"),
+                Aborted::Gone => format!("The {n} is no longer in progress"),
+            }));
         }
         WriteOp::Seq(ops) => {
             let mut note = None;

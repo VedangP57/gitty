@@ -8,6 +8,11 @@ All notable changes to gitty are listed here. The format follows
 
 ### Added
 
+- A merge, rebase, cherry-pick or revert that stopped (started in gitty or in another terminal) is
+  shown in the top bar with its conflict count (`MERGING topic · 2 conflicts`, `REBASING feat ·
+  step 2/5 · 1 conflict`). `m` opens a dialog to continue it once nothing conflicts, with no
+  editor and the prepared message, or to abort it after asking. If the next step of a rebase
+  conflicts too, it says so instead of failing.
 - A Files tab (`3`): the working tree as a lazily loaded tree (ignored files dimmed, symlinks and
   submodules as leaves) with a read-only, syntax-coloured viewer. `Enter`/`l` open a directory,
   `h` closes it, `e` or a double-click opens the file in `$EDITOR`. Files named like secrets

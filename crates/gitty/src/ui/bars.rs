@@ -57,6 +57,13 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
             x = text(buf, x, y, max_x, &s, base.fg(ui.ahead));
         }
     }
+    // a stopped merge, rebase, cherry-pick or revert comes before the PR badge and the fetch age;
+    // when it does not fit, it gives up its details one at a time, never the word itself
+    if let Some(op) = &app.op
+        && let Some(v) = op_banner(op).into_iter().find(|v| x + 2 + width(v) <= max_x)
+    {
+        x = text(buf, x + 2, y, max_x, &v, base.fg(ui.warning).add_modifier(Modifier::BOLD));
+    }
     let mut pr_hit = None;
     if let Some((_, pr)) = &app.pr_badge {
         let color = match pr.state {
@@ -91,6 +98,33 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
     }
     app.hits.tabs = tab_hits;
     app.hits.pr_badge = pr_hit;
+}
+
+/// The banner for a state in progress, from the full text to the bare word.
+fn op_banner(s: &gitty_core::op_state::OpState) -> Vec<String> {
+    use gitty_core::op_state::RepoOp;
+    let verb = match s.op {
+        RepoOp::Merge => "MERGING",
+        RepoOp::Rebase => "REBASING",
+        RepoOp::CherryPick => "CHERRY-PICKING",
+        RepoOp::Revert => "REVERTING",
+    };
+    let step = s.step.map(|(n, m)| format!("step {n}/{m}"));
+    let conflicts = match s.conflicts {
+        0 => "no conflicts".to_string(),
+        1 => "1 conflict".to_string(),
+        n => format!("{n} conflicts"),
+    };
+    let join = |parts: &[Option<String>]| parts.iter().flatten().cloned().collect::<Vec<_>>().join(" · ");
+    let named = if s.detail.is_empty() { verb.to_string() } else { format!("{verb} {}", s.detail) };
+    let mut out = vec![
+        join(&[Some(named), step.clone(), Some(conflicts.clone())]),
+        join(&[Some(verb.to_string()), step, Some(conflicts.clone())]),
+        join(&[Some(verb.to_string()), Some(conflicts)]),
+        verb.to_string(),
+    ];
+    out.dedup();
+    out
 }
 
 /// `G` stays `G`; named keys read lowercase (`enter`, `ctrl-d`).
