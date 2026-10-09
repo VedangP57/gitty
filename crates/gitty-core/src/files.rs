@@ -44,7 +44,7 @@ impl DirEntry {
 }
 
 /// A path inside the work tree: no `..`, no root, no prefix.
-fn relative(rel: &Path) -> anyhow::Result<()> {
+pub(crate) fn relative(rel: &Path) -> anyhow::Result<()> {
     if rel.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
         Ok(())
     } else {
@@ -56,7 +56,7 @@ fn relative(rel: &Path) -> anyhow::Result<()> {
 /// when `whole`): a link swapped in for a directory must not lead the listing or the reader out of
 /// the work tree. A check by `lstat` per level, so a swap between the check and the open is a
 /// narrow race that the final `O_NOFOLLOW` open only covers for the last component.
-fn no_symlinks(root: &Path, rel: &Path, whole: bool) -> anyhow::Result<()> {
+pub(crate) fn no_symlinks(root: &Path, rel: &Path, whole: bool) -> anyhow::Result<()> {
     let n = rel.components().count();
     let mut p = root.to_path_buf();
     for (i, c) in rel.components().enumerate() {

@@ -83,7 +83,7 @@ impl GitCli {
 
     /// The operation in progress, whichever it is (rebase, then cherry-pick and revert, then
     /// merge). `named`: also find the merged branch's name, which the writer has no use for.
-    fn read_op(&self, named: bool) -> Option<OpState> {
+    pub(crate) fn read_op(&self, named: bool) -> Option<OpState> {
         let mut args = vec!["rev-parse"];
         for p in PATHS {
             args.extend(["--git-path", p]);
@@ -131,7 +131,7 @@ impl GitCli {
 
     /// What to call the commit being merged: a branch that points at it, else the name in the
     /// merge message, else a bounded `name-rev`, else its short id.
-    fn merge_name(&self, id: &str, merge_msg: &PathBuf) -> String {
+    pub(crate) fn merge_name(&self, id: &str, merge_msg: &PathBuf) -> String {
         if id.is_empty() {
             return String::new();
         }
