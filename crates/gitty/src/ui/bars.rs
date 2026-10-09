@@ -146,7 +146,7 @@ fn hints(app: &App) -> Vec<(String, String)> {
     let list: &[(&[A], &str)] = if app.tab == Tab::Files {
         match app.focus {
             Focus::Diff => &[(&[A::Down, A::Up], "scroll"), (&[A::ScrollLeft, A::ScrollRight], "sideways"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::Back], "back"), (&[A::Help], "help")],
-            _ => &[(&[A::Down, A::Up], "move"), (&[A::FilesCollapse, A::FilesExpand], "fold"), (&[A::Open], "open"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit")],
+            _ => &[(&[A::Down, A::Up], "move"), (&[A::FilesCollapse, A::FilesExpand], "fold"), (&[A::Open], "open"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit"), (&[A::ToggleIgnored], "ignored")],
         }
     } else if app.tab == Tab::Changes {
         match app.focus {

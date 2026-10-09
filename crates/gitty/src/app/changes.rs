@@ -489,6 +489,7 @@ impl App {
         let keep = self.changes.selected().map(|e| e.path.clone());
         self.changes.status = Some(st);
         self.changes.status_error = None;
+        self.files_tab.marks = super::files::marks_of(self.changes.entries());
         let visible = self.changes.visible();
         let entries = self.changes.entries();
         let found = keep.and_then(|p| visible.iter().position(|&i| entries[i].path == p));

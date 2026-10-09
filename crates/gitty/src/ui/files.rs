@@ -6,6 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
+use super::changes::status_color;
 use super::commit_list::title;
 use super::paint::{centered, edge_marks, fill, glyphs, spans, text, width};
 use crate::app::files::{RowKind, Viewing};
@@ -37,6 +38,9 @@ pub fn draw_tree(app: &mut App, buf: &mut Buffer, r: Rect) {
         let st = Style::new().bg(bg).fg(ui.fg);
         fill(buf, Rect::new(rows.x, y, rows.width, 1), st);
         let x = rows.x + 1 + 2 * row.depth;
+        // the git mark sits in the last column, so names stop short of it
+        let mark = if matches!(row.kind, RowKind::Note { .. }) { None } else { row.path.to_str().and_then(|p| f.marks.get(p)) };
+        let right = if mark.is_some() { right.saturating_sub(2) } else { right };
         let muted = st.fg(ui.muted);
         // ignored entries are dimmed; directories take the accent colour
         let name_st = if row.ignored { muted } else { st };
@@ -67,6 +71,15 @@ pub fn draw_tree(app: &mut App, buf: &mut Buffer, r: Rect) {
             }
             RowKind::Note { error } => {
                 text(buf, x + 2, y, right, &row.name, if *error { st.fg(ui.error) } else { muted });
+            }
+        }
+        if let Some(m) = mark.filter(|_| rows.width > 3) {
+            let color = status_color(&ui, m.letter);
+            let at = rows.right() - 2;
+            if matches!(row.kind, RowKind::Dir { .. }) {
+                text(buf, at, y, rows.right() - 1, "●", st.fg(color));
+            } else {
+                text(buf, at, y, rows.right() - 1, &m.letter.to_string(), st.fg(color).add_modifier(Modifier::BOLD));
             }
         }
     }

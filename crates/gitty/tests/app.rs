@@ -5948,3 +5948,240 @@ fn resolve_now_does_not_move_focus_when_the_user_left_the_changes_tab() {
     assert_eq!(t.app.tab, gitty::app::Tab::History);
     assert!(t.app.toast.is_none(), "{:?}", t.app.toast);
 }
+
+// ---- Files tab: git marks and ignored files ----
+
+fn se(path: &str, x: char, y: char, kind: gitty_core::status::EntryKind) -> gitty_core::status::StatusEntry {
+    gitty_core::status::StatusEntry { path: path.into(), orig_path: None, x, y, kind, head_mode: 0, index_mode: 0, wt_mode: 0, head_blob: None, index_blob: None }
+}
+
+/// The mark letter the tree holds for `path`.
+fn mark(t: &H, path: &str) -> Option<char> {
+    t.app.files_tab.marks.get(path).map(|m| m.letter)
+}
+
+/// Runs a fresh status to completion and checks it re-listed no directory.
+fn restatus(t: &mut H) {
+    t.app.request_status();
+    let sent = drain_files(t);
+    assert!(sent.is_empty(), "a status must not list directories again: {sent:?}");
+}
+
+#[test]
+fn every_state_marks_its_file_and_the_folders_above_it() {
+    let f = files_fixture();
+    f.write("README.md", "# changed\n");
+    f.write("src/lib.rs", "pub fn lib() { 1 }\n");
+    f.git(&["add", "src/lib.rs"]);
+    f.write("src/new.rs", "// new\n");
+    f.git(&["add", "src/new.rs"]);
+    f.write("scratch/deep/x.txt", "x\n");
+    std::fs::remove_file(f.path().join("src/deep/mod.rs")).unwrap();
+    f.git(&["mv", "data.bin", "data2.bin"]);
+    let mut t = files_tab(&f);
+    assert_eq!(mark(&t, "README.md"), Some('M'));
+    assert_eq!(mark(&t, "src/lib.rs"), Some('M'), "staged shows what Changes shows");
+    assert_eq!(mark(&t, "src/new.rs"), Some('A'));
+    assert_eq!(mark(&t, "data2.bin"), Some('R'));
+    assert_eq!(mark(&t, "scratch/deep/x.txt"), Some('A'), "untracked is A, as in Changes");
+    // directories, collapsed: the strongest change below wins (deleted beats modified and added)
+    assert_eq!(mark(&t, "src"), Some('D'));
+    assert_eq!(mark(&t, "src/deep"), Some('D'), "a deleted file is not listed, its folder is marked");
+    assert_eq!(mark(&t, "scratch"), Some('A'));
+    assert_eq!(mark(&t, "scratch/deep"), Some('A'));
+    assert_eq!(mark(&t, "target"), None);
+    assert_eq!(mark(&t, ".gitignore"), None);
+    assert_eq!(mark(&t, ""), None, "the root itself has no row");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "src");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert!(!rows(&t).iter().any(|r| r.contains("mod.rs")), "the deleted file has no row: {:?}", rows(&t));
+    assert_eq!(mark(&t, "src"), Some('D'), "the same open");
+}
+
+#[test]
+fn a_conflicted_file_shows_its_letter_and_beats_everything_above_it() {
+    use gitty_core::status::EntryKind::{Ordinary, Unmerged, Untracked};
+    let m = gitty::app::files::marks_of(&[se("a/b/c.txt", 'U', 'U', Unmerged), se("a/b/d.txt", '.', 'M', Ordinary), se("a/e.txt", '?', '?', Untracked)]);
+    let letters = |p: &str| m.get(p).map(|m| m.letter);
+    assert_eq!(letters("a/b/c.txt"), Some('U'));
+    assert_eq!(letters("a/b"), Some('U'));
+    assert_eq!(letters("a"), Some('U'));
+}
+
+#[test]
+fn directory_marks_rank_conflicted_deleted_modified_untracked_whatever_the_order() {
+    use gitty_core::status::EntryKind::{Ordinary, Renamed, Unmerged, Untracked};
+    let untracked = se("d/u", '?', '?', Untracked);
+    let modified = se("d/m", '.', 'M', Ordinary);
+    let renamed = se("d/r", 'R', '.', Renamed);
+    let deleted = se("d/x", '.', 'D', Ordinary);
+    let staged_delete = se("d/y", 'D', '.', Ordinary);
+    let conflict = se("d/z", 'U', 'U', Unmerged);
+    let top = |es: &[&gitty_core::status::StatusEntry]| {
+        let v: Vec<_> = es.iter().map(|e| (*e).clone()).collect();
+        let mut rev = v.clone();
+        rev.reverse();
+        let (a, b) = (gitty::app::files::marks_of(&v), gitty::app::files::marks_of(&rev));
+        assert_eq!(a.get("d"), b.get("d"), "order does not matter");
+        a.get("d").map(|m| m.letter)
+    };
+    assert_eq!(top(&[&untracked]), Some('A'));
+    assert_eq!(top(&[&untracked, &modified]), Some('M'));
+    assert_eq!(top(&[&untracked, &renamed]), Some('M'), "renamed counts as modified for a folder");
+    assert_eq!(top(&[&untracked, &modified, &deleted]), Some('D'));
+    assert_eq!(top(&[&modified, &staged_delete]), Some('D'));
+    assert_eq!(top(&[&untracked, &modified, &deleted, &conflict]), Some('U'));
+    // the file's own mark is its Changes letter, not the folder's
+    let m = gitty::app::files::marks_of(&[renamed.clone(), conflict.clone()]);
+    assert_eq!(m.get("d/r").map(|m| m.letter), Some('R'));
+    assert_eq!(m.get("d/z").map(|m| m.letter), Some('U'));
+}
+
+#[test]
+fn marks_follow_a_new_status_without_listing_anything_again() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(mark(&t, "src"), None);
+    f.write("src/main.rs", "fn main() { changed(); }\n");
+    restatus(&mut t);
+    assert_eq!(mark(&t, "src/main.rs"), Some('M'));
+    assert_eq!(mark(&t, "src"), Some('M'));
+    f.git(&["add", "src/main.rs"]);
+    restatus(&mut t);
+    assert_eq!(mark(&t, "src/main.rs"), Some('M'), "staged still shows");
+    f.git(&["commit", "-q", "-m", "second"]);
+    restatus(&mut t);
+    assert_eq!(mark(&t, "src/main.rs"), None);
+    assert_eq!(mark(&t, "src"), None, "a folder loses its mark with its last change");
+}
+
+#[test]
+fn i_hides_ignored_entries_and_shows_them_again_keeping_what_was_open() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    assert!(rows(&t).contains(&"target".to_string()));
+    select(&mut t, "target");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "out.txt");
+    t.pump();
+    let open = rows(&t);
+    assert!(open.contains(&"  out.txt".to_string()), "{open:?}");
+    t.ch('i');
+    let hidden = rows(&t);
+    assert!(!hidden.iter().any(|r| r.trim() == "target" || r.trim() == "out.txt"), "{hidden:?}");
+    assert!(hidden.contains(&"src".to_string()) && hidden.contains(&".env".to_string()), "only the ignored go: {hidden:?}");
+    assert!(t.app.files_tab.selected().is_some(), "the selection landed on a row that is still there");
+    assert_ne!(t.app.files_tab.shown.as_deref(), Some(std::path::Path::new("target/out.txt")), "the viewer follows");
+    assert_eq!(t.app.toast.as_ref().map(|t| t.what.as_str()), Some("ignored files hidden"));
+    t.ch('i');
+    assert_eq!(rows(&t), open, "shown again, and still expanded");
+    assert_eq!(t.app.toast.as_ref().map(|t| t.what.as_str()), Some("ignored files shown"));
+    // neither toggle listed anything again
+    assert!(drain_files(&mut t).iter().all(|l| !l.starts_with("dir")), "toggling reads nothing");
+}
+
+#[test]
+fn hiding_keeps_the_selection_on_a_file_that_stays() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "README.md");
+    t.ch('i');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "README.md");
+    t.ch('i');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "README.md");
+}
+
+#[test]
+fn files_show_ignored_false_starts_with_them_hidden() {
+    let f = files_fixture();
+    let mut t = H::with(&f, Config { files_show_ignored: false, ..Config::default() }, None);
+    t.app.workdir = Some(f.path().to_path_buf());
+    t.pump();
+    t.key(KeyCode::Char('3'));
+    t.pump();
+    assert!(!t.app.files_tab.show_ignored);
+    assert!(!rows(&t).contains(&"target".to_string()), "{:?}", rows(&t));
+    assert!(rows(&t).contains(&"src".to_string()));
+    t.ch('i');
+    assert!(rows(&t).contains(&"target".to_string()));
+}
+
+#[test]
+fn a_renamed_file_marks_the_folders_on_both_ends() {
+    use gitty_core::status::EntryKind::Renamed;
+    let mut e = se("new/x", 'R', '.', Renamed);
+    e.orig_path = Some("old/x".into());
+    let m = gitty::app::files::marks_of(&[e]);
+    let letters = |p: &str| m.get(p).map(|m| m.letter);
+    assert_eq!(letters("new/x"), Some('R'));
+    assert_eq!(letters("new"), Some('M'));
+    assert_eq!(letters("old"), Some('D'), "the file left that folder");
+    assert_eq!(letters("old/x"), None, "the old name has no row to mark");
+}
+
+#[test]
+fn an_own_mark_never_replaces_a_stronger_one_on_the_same_path() {
+    use gitty_core::status::EntryKind::Ordinary;
+    // a file that became a folder: "a" itself is changed, and so is something below it
+    let own = se("a", 'T', '.', Ordinary);
+    let below = se("a/x", '.', 'D', Ordinary);
+    for es in [vec![own.clone(), below.clone()], vec![below, own]] {
+        let m = gitty::app::files::marks_of(&es);
+        assert_eq!(m.get("a").map(|m| m.letter), Some('D'));
+    }
+}
+
+#[test]
+fn a_file_deleted_on_disk_keeps_the_selection_at_its_index() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "src");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "lib.rs");
+    std::fs::remove_file(f.path().join("src/lib.rs")).unwrap();
+    t.app.refresh_files();
+    drain_files(&mut t);
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "main.rs", "the next sibling, not the folder");
+}
+
+#[test]
+fn hiding_the_row_under_the_selection_moves_it_to_the_folder_above() {
+    let f = files_fixture();
+    f.write(".gitignore", "target/\nsrc/cache/\n");
+    f.write("src/cache/a.txt", "a\n");
+    let mut t = files_tab(&f);
+    select(&mut t, "src");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "cache");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "a.txt");
+    t.ch('i');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "src");
+}
+
+#[test]
+fn i_in_the_viewer_toggles_and_a_revealed_secret_stays_revealed() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    t.pump();
+    t.ch('v');
+    t.pump();
+    assert!(t.app.files_tab.reveal);
+    t.app.focus = Focus::Diff;
+    t.ch('i');
+    t.pump();
+    assert!(!t.app.files_tab.show_ignored);
+    assert!(!rows(&t).contains(&"target".to_string()));
+    assert!(t.app.files_tab.reveal, "the selection did not change, so the reveal stands");
+    assert!(viewing_text(&t).is_some_and(|s| s.contains(FAKE_SECRET)));
+}
