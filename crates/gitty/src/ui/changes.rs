@@ -38,6 +38,10 @@ pub fn draw_files(app: &mut App, buf: &mut Buffer, r: Rect) {
     if app.changes.filter != Filter::All {
         extra.push_str(&format!(" · {}", app.changes.filter.label()));
     }
+    let conflicts = app.changes.entries().iter().filter(|e| e.is_conflicted()).count();
+    if conflicts > 0 {
+        extra.push_str(&format!(" · {conflicts} conflict{}", if conflicts == 1 { "" } else { "s" }));
+    }
     if app.changes.busy > 0 {
         extra.push_str(" · working…");
     }
@@ -97,12 +101,18 @@ pub fn draw_files(app: &mut App, buf: &mut Buffer, r: Rect) {
         let right = rows.right().saturating_sub(1);
         let x = text(buf, rows.x + 1, y, right, checkbox(check), cst) + 1;
         let x = text(buf, x, y, right, &letter.to_string(), row.fg(color).add_modifier(Modifier::BOLD)) + 1;
-        let shown = truncate_middle(&e.path, right.saturating_sub(x) as usize);
+        // a conflicted file says how many blocks it holds, once that is known
+        let count = e.is_conflicted().then(|| app.changes.conflict_counts.get(&e.path)).flatten().map(|n| (format!(" ({n})"), if *n > 0 { row.fg(ui.error) } else { row.fg(ui.muted) }));
+        let count_w = count.as_ref().map_or(0, |(c, _)| c.len() as u16);
+        let shown = truncate_middle(&e.path, right.saturating_sub(x + count_w) as usize);
         let (dir, name) = match shown.rfind('/') {
             Some(p) => shown.split_at(p + 1),
             None => ("", shown.as_str()),
         };
-        spans(buf, x, y, right, &[(dir, row.fg(ui.muted)), (name, row)]);
+        let end = spans(buf, x, y, right, &[(dir, row.fg(ui.muted)), (name, row)]);
+        if let Some((c, st)) = count {
+            text(buf, end, y, right, &c, st);
+        }
     }
 }
 

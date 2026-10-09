@@ -6,7 +6,7 @@ use std::time::UNIX_EPOCH;
 
 use gitty_core::Handle;
 
-use crate::msg::{DiffKey, FileView, FilesOf, Gens, HlKey, Msg, Request};
+use crate::msg::{ConflictBody, DiffKey, FileView, FilesOf, Gens, HlKey, Msg, Request};
 
 /// History entries appended per write-lock hold; the first chunk is small so the first screen
 /// of rows appears quickly even without a commit-graph.
@@ -72,6 +72,9 @@ fn file_view(c: gitty_core::files::FileContent, path: &std::path::Path) -> FileV
         C::Masked => FileView::Masked,
     }
 }
+
+/// Bytes of conflicted files read for the file list's counts in one request.
+const CONFLICT_COUNT_BUDGET: usize = 16 << 20;
 
 /// A clean status this slow usually means racily clean index entries being re-hashed each run.
 const SLOW_STATUS: std::time::Duration = std::time::Duration::from_millis(100);
@@ -278,6 +281,40 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             Ok((key, diff, texts, staged, divergent)) => sink(Msg::ChangeDiff { generation, entry, key, diff, texts, staged, divergent }),
             Err(e) => sink(Msg::ChangeDiffError { generation, path: entry.path, detail: format!("{e:#}") }),
         },
+        Request::ConflictFile { generation, entry } => {
+            use gitty_core::conflicts::Loaded;
+            let sides = gitty_core::git_cli::GitCli::new(h.owner()).conflict_sides();
+            let result = match h.owner().workdir() {
+                Some(root) => gitty_core::conflicts::read(root, std::path::Path::new(&entry.path))
+                    .map(|loaded| match loaded {
+                        Loaded::Text { bytes, conflicts } => {
+                            let key = HlKey { blob: gitty_core::commit_files::BlobId::hash_of(&bytes), path: entry.path.clone() };
+                            ConflictBody::Text { text: Arc::new(gitty_core::diff::text::Text::new(bytes)), key, conflicts: Arc::new(conflicts) }
+                        }
+                        Loaded::Other(why) => ConflictBody::Other(why),
+                    })
+                    .map_err(|e| format!("{e:#}")),
+                None => Err("bare repository".to_string()),
+            };
+            sink(Msg::ConflictFile { generation, entry, sides, result });
+        }
+        Request::ConflictCounts { paths } => {
+            let mut counts = Vec::new();
+            if let Some(root) = h.owner().workdir() {
+                // a tree of hundreds of conflicted big files must not hold a reader for long
+                let mut budget = CONFLICT_COUNT_BUDGET;
+                for p in &paths {
+                    if budget == 0 {
+                        break;
+                    }
+                    if let Ok(gitty_core::conflicts::Loaded::Text { bytes, conflicts }) = gitty_core::conflicts::read(root, std::path::Path::new(p)) {
+                        budget = budget.saturating_sub(bytes.len());
+                        counts.push((p.clone(), conflicts.len()));
+                    }
+                }
+            }
+            sink(Msg::ConflictCounts { asked: paths, counts });
+        }
         Request::ReadDir { generation, dir } => {
             if !Gens::is(&gens.files_dirs, generation) {
                 return;

@@ -1,6 +1,7 @@
 //! Changes tab state: working-tree status, the selected file's HEAD → worktree diff with its
 //! staged lines, and the write queue's progress.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -139,6 +140,13 @@ pub struct Changes {
     pub scroll: usize,
     pub filter: Filter,
     pub current: Option<ChangeView>,
+    /// The selected conflicted file's view (replaces the diff while it is selected).
+    pub conflict: Option<super::conflict::ConflictView>,
+    /// Conflict blocks per conflicted file, for the file list; filled as files are read.
+    pub conflict_counts: HashMap<String, usize>,
+    pub(super) counts_asked: HashSet<String>,
+    /// Resolutions made in the conflict view, newest last, for `u`.
+    pub(super) undo: Vec<super::conflict::Undo>,
     pub diff_error: Option<(String, String)>,
     /// Writes queued or running.
     pub busy: usize,
@@ -148,7 +156,7 @@ pub struct Changes {
     status_in_flight: bool,
     status_again: bool,
     last_status: Option<Instant>,
-    diff_gen: u64,
+    pub(super) diff_gen: u64,
     pub(super) force_text: bool,
     /// `v`: the other end of the line range.
     pub visual: Option<usize>,
@@ -164,9 +172,12 @@ impl Changes {
     pub fn entries(&self) -> &[StatusEntry] {
         self.status.as_ref().map_or(&[], |s| &s.entries)
     }
-    /// Indices into [`Changes::entries`] that pass the filter.
+    /// Indices into [`Changes::entries`] that pass the filter, conflicted files first (their own
+    /// section at the top of the list), each group in path order.
     pub fn visible(&self) -> Vec<usize> {
-        self.entries().iter().enumerate().filter(|(_, e)| self.filter.keeps(e)).map(|(i, _)| i).collect()
+        let mut v: Vec<usize> = self.entries().iter().enumerate().filter(|(_, e)| self.filter.keeps(e)).map(|(i, _)| i).collect();
+        v.sort_by_key(|&i| !self.entries()[i].is_conflicted());
+        v
     }
     pub fn selected(&self) -> Option<&StatusEntry> {
         self.visible().get(self.sel).map(|&i| &self.entries()[i])
@@ -194,6 +205,7 @@ impl App {
         self.diff_wanted = None;
         self.diff_error = None;
         self.changes.current = None;
+        self.changes.conflict = None;
         self.file_gen = crate::msg::Gens::bump(&self.gens.file);
         // History's pane focus comes back when leaving the other two tabs for it
         if from == Tab::History {
@@ -239,8 +251,19 @@ impl App {
         let Some(entry) = self.changes.selected().cloned() else {
             self.diff = None;
             self.changes.current = None;
+            self.changes.conflict = None;
             return;
         };
+        if entry.is_conflicted() {
+            self.diff = None;
+            self.changes.current = None;
+            if self.changes.conflict.as_ref().is_some_and(|v| v.entry.path != entry.path) {
+                self.changes.conflict = None;
+            }
+            self.outbox.push(Request::ConflictFile { generation: self.changes.diff_gen, entry });
+            return;
+        }
+        self.changes.conflict = None;
         self.outbox.push(Request::ChangeDiff { generation: self.changes.diff_gen, entry, opts: self.diff_opts(), force_text: self.changes.force_text });
     }
 
@@ -319,6 +342,7 @@ impl App {
                     }
                 }
             }
+            m @ (Msg::ConflictFile { .. } | Msg::ConflictCounts { .. }) => return self.handle_conflict_msg(m),
             Msg::ChangeDiff { generation, entry, key, diff, texts, staged, divergent } => {
                 if generation != self.changes.diff_gen || self.tab != Tab::Changes {
                     return None;
@@ -347,6 +371,7 @@ impl App {
                     Ok(Some(note)) => self.toast = Some(Toast { what: note, detail: String::new(), error: false }),
                     Ok(None) => {}
                     Err(detail) if self.offer_force_delete(&op, &detail) => {}
+                    Err(detail) if self.conflict_write_failed(&op, &detail) => {}
                     Err(detail) => {
                         let what = format!("{} failed", op.label());
                         self.toast = Some(Toast { what, detail, error: true });
@@ -402,6 +427,7 @@ impl App {
         self.changes.scroll = self.changes.scroll.min(self.changes.sel);
         // the selected file may have changed on disk or in the index
         self.request_change_diff();
+        self.request_conflict_counts();
     }
 
     fn install_change_diff(&mut self, key: DiffKey, view: ChangeView) {
@@ -450,6 +476,7 @@ impl App {
     pub fn toggle_file(&mut self, visible_pos: usize) {
         let Some(e) = self.changes.visible().get(visible_pos).map(|&i| self.changes.entries()[i].clone()) else { return };
         let paths = Self::whole_file_paths(&e);
+        self.warn_staged_markers(&paths);
         if e.check() == gitty_core::status::Check::Staged {
             self.write(WriteOp::Unstage(paths));
         } else {
@@ -459,6 +486,8 @@ impl App {
 
     /// `a` in the file list / header checkbox: everything staged, or nothing.
     pub fn toggle_all_files(&mut self) {
+        let marked: Vec<String> = self.changes.entries().iter().filter(|e| e.is_conflicted()).map(|e| e.path.clone()).collect();
+        self.warn_staged_markers(&marked);
         let all = !self.changes.entries().is_empty() && self.changes.entries().iter().all(|e| e.check() == gitty_core::status::Check::Staged);
         self.write(if all { WriteOp::UnstageAll } else { WriteOp::StageAll });
     }

@@ -9,6 +9,10 @@ use crate::app::{Focus, Tab};
 /// Where an action applies. Earlier contexts win when two active ones share a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ctx {
+    /// Changes tab with a conflicted file selected (its conflict view is on screen). Ahead of
+    /// Global and Changes on purpose: `p` and `u` mean something else there, and a conflicted file
+    /// is the one place where resolving beats pulling or undoing a commit.
+    Conflict,
     Global,
     /// History tab, compare mode, history pane focused.
     Compare,
@@ -36,12 +40,15 @@ pub struct State {
     pub tab: Tab,
     pub focus: Focus,
     pub compare: bool,
+    /// The selected Changes file is conflicted.
+    pub conflict: bool,
 }
 
 impl Ctx {
     fn active(self, s: State) -> bool {
         match self {
             Ctx::Global | Ctx::Diff | Ctx::Nav => true,
+            Ctx::Conflict => s.tab == Tab::Changes && s.conflict,
             Ctx::Compare => s.tab == Tab::History && s.compare && s.focus == Focus::History,
             Ctx::Changes => s.tab == Tab::Changes,
             Ctx::ChangesList => s.tab == Tab::Changes && s.focus != Focus::Diff,
@@ -55,7 +62,7 @@ impl Ctx {
     fn overlaps(self, other: Ctx) -> bool {
         use Ctx::*;
         let tab = |c: Ctx| match c {
-            Changes | ChangesList | ChangesDiff => Some(Tab::Changes),
+            Conflict | Changes | ChangesList | ChangesDiff => Some(Tab::Changes),
             History | Compare => Some(Tab::History),
             Files | FilesTree => Some(Tab::Files),
             Global | Diff | Nav => None,
@@ -77,6 +84,13 @@ macro_rules! actions {
 }
 
 actions! {
+    ConflictOurs "conflict_ours" Conflict ["o"] "Conflict: keep the first side (Current; Base branch in a rebase)",
+    ConflictTheirs "conflict_theirs" Conflict ["t"] "Conflict: take the second side (Incoming; Your commit in a rebase)",
+    ConflictBoth "conflict_both" Conflict ["b"] "Conflict: keep both, first side then second",
+    ConflictNext "conflict_next" Conflict ["n"] "Conflict: next conflict in the file",
+    ConflictPrev "conflict_prev" Conflict ["p"] "Conflict: previous conflict in the file",
+    ConflictUndo "conflict_undo" Conflict ["u"] "Conflict: undo the last resolution of this file",
+    ConflictEdit "conflict_edit" Conflict ["e"] "Conflict: open the file in $EDITOR at the conflict",
     Quit "quit" Global ["q"] "quit",
     ChangesTab "changes_tab" Global ["1"] "Changes tab",
     HistoryTab "history_tab" Global ["2"] "History tab",

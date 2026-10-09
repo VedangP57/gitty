@@ -323,6 +323,16 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             std::fs::write(&full, bytes).with_context(|| format!("writing {path}"))?;
             return Ok(note);
         }
+        WriteOp::ResolveConflict { path, bytes, expect, left } => {
+            gitty_core::conflicts::write_resolved(&workdir(h)?, Path::new(path), *expect, bytes)?;
+            return Ok((*left == 0).then(|| format!("No conflicts left in {path}; press Space to stage it")));
+        }
+        WriteOp::TakeSide { path, theirs, delete } => {
+            // the file as it is now (markers, or the side git left in the tree) is kept in the Trash
+            let note = fallback_note(to_trash(&workdir(h)?.join(path))?);
+            cli.take_side(path, *theirs, *delete)?;
+            return Ok(note);
+        }
         WriteOp::DiscardFiles { restore, remove } => {
             let root = workdir(h)?;
             let mut fallback = None;

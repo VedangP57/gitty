@@ -168,6 +168,13 @@ reported at startup:
 <!-- keys:start -->
 | Keys | Action | Config name |
 |---|---|---|
+| `o` | Conflict: keep the first side (Current; Base branch in a rebase) | `conflict_ours` |
+| `t` | Conflict: take the second side (Incoming; Your commit in a rebase) | `conflict_theirs` |
+| `b` | Conflict: keep both, first side then second | `conflict_both` |
+| `n` | Conflict: next conflict in the file | `conflict_next` |
+| `p` | Conflict: previous conflict in the file | `conflict_prev` |
+| `u` | Conflict: undo the last resolution of this file | `conflict_undo` |
+| `e` | Conflict: open the file in $EDITOR at the conflict | `conflict_edit` |
 | `q` | quit | `quit` |
 | `1` | Changes tab | `changes_tab` |
 | `2` | History tab | `history_tab` |

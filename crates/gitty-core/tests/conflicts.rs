@@ -11,7 +11,7 @@ use gitty_core::git_cli::GitCli;
 use gitty_core::op_state::{Continued, RepoOp};
 
 fn cli(f: &Fixture) -> GitCli {
-    GitCli::new(&Repo::open(&f.path()).unwrap())
+    GitCli::new(&Repo::open(f.path()).unwrap())
 }
 
 fn try_git(f: &Fixture, args: &[&str]) -> bool {

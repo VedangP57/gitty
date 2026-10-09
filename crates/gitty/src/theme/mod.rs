@@ -142,6 +142,15 @@ pub struct DiffColors {
     pub expand_fg: Color,
     pub filler: Color,
     pub cursor: Color,
+    /// The conflict view: each side's rows, the side of the block the cursor is in, and its header.
+    pub ours_bg: Color,
+    pub ours_current_bg: Color,
+    pub ours_head: Color,
+    pub theirs_bg: Color,
+    pub theirs_current_bg: Color,
+    pub theirs_head: Color,
+    /// The merge base of a diff3 block.
+    pub base_bg: Color,
 }
 
 #[derive(Debug, Clone)]
@@ -445,6 +454,9 @@ fn build(spec: &Spec, depth: ColorDepth, emph_override: Option<f32>) -> anyhow::
     let del_bg = d("del_bg", del_accent.blend(ui_bg, row_alpha))?;
     let hunk_bg = d("hunk_bg", blue.blend(ui_bg, 0.12))?;
     let ui_muted = r.get("ui", "muted", || Ok(muted))?;
+    let ours_accent = d("ours_accent", green)?;
+    let theirs_accent = d("theirs_accent", blue)?;
+    let strong = |a: Rgb, k: f32| a.blend(ui_bg, (row_alpha * k).min(1.0));
     let diff = DiffColors {
         add_bg: c(add_bg),
         del_bg: c(del_bg),
@@ -464,6 +476,13 @@ fn build(spec: &Spec, depth: ColorDepth, emph_override: Option<f32>) -> anyhow::
         expand_fg: c(d("expand_fg", ui_accent)?),
         filler: c(d("filler", ui_fg.blend(ui_bg, 0.04))?),
         cursor: c(d("cursor", ui_accent.blend(ui_bg, 0.30))?),
+        ours_bg: c(d("ours_bg", strong(ours_accent, 1.0))?),
+        ours_current_bg: c(d("ours_current_bg", strong(ours_accent, 1.8))?),
+        ours_head: c(d("ours_head", strong(ours_accent, 3.0))?),
+        theirs_bg: c(d("theirs_bg", strong(theirs_accent, 1.0))?),
+        theirs_current_bg: c(d("theirs_current_bg", strong(theirs_accent, 1.8))?),
+        theirs_head: c(d("theirs_head", strong(theirs_accent, 3.0))?),
+        base_bg: c(d("base_bg", ui_fg.blend(ui_bg, 0.04))?),
     };
 
     let defaults = [red, green, yellow, blue, magenta, cyan, orange, accent];

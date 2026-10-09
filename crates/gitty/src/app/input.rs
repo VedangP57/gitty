@@ -1,6 +1,7 @@
 //! Keyboard and mouse handling.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use gitty_core::conflicts::Choice;
 use gitty_core::diff::ops::WsMode;
 use gitty_core::diff::view::{Expand, Row, SplitRow};
 use ratatui::layout::{Position, Rect};
@@ -81,7 +82,7 @@ impl App {
         if self.search.bar.is_some() {
             return self.search_bar_key(k);
         }
-        let state = State { tab: self.tab, focus: self.focus, compare: self.compare.is_some() };
+        let state = State { tab: self.tab, focus: self.focus, compare: self.compare.is_some(), conflict: self.conflict_active() };
         if let Some(a) = self.keymap.resolve(&k, state) {
             self.act(a);
         }
@@ -103,6 +104,13 @@ impl App {
         }
         let comparing = self.compare.is_some();
         match a {
+            Action::ConflictOurs => self.conflict_resolve(Choice::Ours),
+            Action::ConflictTheirs => self.conflict_resolve(Choice::Theirs),
+            Action::ConflictBoth => self.conflict_resolve(Choice::Both),
+            Action::ConflictNext => self.conflict_nav(1),
+            Action::ConflictPrev => self.conflict_nav(-1),
+            Action::ConflictUndo => self.conflict_undo(),
+            Action::ConflictEdit => self.conflict_edit(),
             Action::Quit => self.request_quit(),
             Action::ChangesTab => self.set_tab(Tab::Changes),
             Action::HistoryTab => self.set_tab(Tab::History),
@@ -398,6 +406,14 @@ impl App {
                 let max = self.view_lines().saturating_sub(self.diff_capacity());
                 self.files_tab.vscroll = target(self.files_tab.vscroll, max + 1, self.diff_capacity(), m);
             }
+            // the conflict view scrolls by lines too
+            Focus::Diff if self.conflict_active() => {
+                let cap = self.conflict_capacity();
+                if let Some(v) = self.changes.conflict.as_mut() {
+                    let max = v.lines().saturating_sub(cap);
+                    v.vscroll = target(v.vscroll, max + 1, cap, m);
+                }
+            }
             Focus::Diff => {
                 let split = self.split_active();
                 let (cap, wrap) = (self.diff_capacity(), self.diff_wrap());
@@ -452,6 +468,9 @@ impl App {
             self.files_tab.scroll_sideways(by);
             return;
         }
+        if self.conflict_active() {
+            return self.conflict_scroll_sideways(by);
+        }
         if let Some(d) = self.diff.as_mut().filter(|_| !self.wrap) {
             let max = i32::from(d.max_hscroll(self.config.tab_size));
             d.hscroll = (i32::from(d.hscroll) + by).clamp(0, max) as u16;
@@ -459,6 +478,9 @@ impl App {
     }
 
     fn hunk(&mut self, dir: i32, split: bool) {
+        if self.conflict_active() {
+            return self.conflict_nav(i64::from(dir));
+        }
         if let Some(d) = self.diff.as_mut() {
             d.next_hunk(split, dir);
         }
@@ -746,6 +768,11 @@ impl App {
         } else if inside(self.hits.panes.files, x, y).is_some() {
             let n = self.file_rows().len();
             self.file_scroll = scroll(self.file_scroll, n.saturating_sub(self.files_capacity()));
+        } else if inside(self.hits.panes.diff, x, y).is_some() && self.conflict_active() {
+            let cap = self.conflict_capacity();
+            if let Some(v) = self.changes.conflict.as_mut() {
+                v.vscroll = scroll(v.vscroll, v.lines().saturating_sub(cap));
+            }
         } else if inside(self.hits.panes.diff, x, y).is_some() {
             let split = self.split_active();
             let cap = self.diff_capacity();

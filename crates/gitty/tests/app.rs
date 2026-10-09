@@ -1102,6 +1102,8 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::StashAndMerge { name, .. } => format!("stash and merge {name}"),
                 gitty::msg::WriteOp::ContinueOp { op, .. } => format!("continue {}", op.name()),
                 gitty::msg::WriteOp::AbortOp { op, .. } => format!("abort {}", op.name()),
+                gitty::msg::WriteOp::ResolveConflict { path, left, .. } => format!("resolve {path} left {left}"),
+                gitty::msg::WriteOp::TakeSide { path, theirs, delete } => format!("take {path} theirs {theirs} delete {delete}"),
             }),
             _ => None,
         })

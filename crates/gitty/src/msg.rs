@@ -112,6 +112,15 @@ pub enum FileView {
     Masked,
 }
 
+/// What the conflict view has of one conflicted file.
+pub enum ConflictBody {
+    /// UTF-8 text with the blocks parsed out of it (none: the markers are gone from the file).
+    /// `key.blob` is the hash of the text: a resolution is written only over a file that still has it.
+    Text { text: Arc<Text>, key: HlKey, conflicts: Arc<Vec<gitty_core::conflicts::Conflict>> },
+    /// Not shown line by line, and why.
+    Other(String),
+}
+
 /// A mutating git operation, run in order on the writer thread.
 #[derive(Clone)]
 pub enum WriteOp {
@@ -165,6 +174,12 @@ pub enum WriteOp {
     ContinueOp { op: RepoOp, id: String, accepted: Vec<String> },
     /// Give it up: the repository goes back to before it started.
     AbortOp { op: RepoOp, id: String },
+    /// Replace a conflicted file with `bytes` (one block resolved, or that undone) if it still
+    /// holds the text that hashes to `expect`. `left` blocks remain in `bytes`.
+    ResolveConflict { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId, left: usize },
+    /// Settle a conflict without markers for the whole file: take a side and stage it, or with
+    /// `delete` (that side has no such file) remove the path.
+    TakeSide { path: String, theirs: bool, delete: bool },
     /// Runs in order and stops at the first failure (a line discard that unstages first).
     Seq(Vec<WriteOp>),
 }
@@ -193,6 +208,7 @@ impl WriteOp {
             WriteOp::StashAndMerge { .. } => "stashing and merging",
             WriteOp::ContinueOp { .. } => "continuing",
             WriteOp::AbortOp { .. } => "aborting",
+            WriteOp::ResolveConflict { .. } | WriteOp::TakeSide { .. } => "resolving the conflict",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
@@ -239,6 +255,10 @@ pub enum Request {
     Status { generation: u64, mark: Option<gitty_core::watch::IndexMark> },
     /// HEAD → worktree diff of one status entry, with its staged lines.
     ChangeDiff { generation: u64, entry: StatusEntry, opts: DiffOptions, force_text: bool },
+    /// Changes tab: a conflicted file's text, its blocks and the sides' names.
+    ConflictFile { generation: u64, entry: StatusEntry },
+    /// How many conflict blocks each of these conflicted files holds (the file list shows it).
+    ConflictCounts { paths: Vec<String> },
     /// Files tab: one directory of the working tree (`dir` relative to its root, empty for the root).
     ReadDir { generation: u64, dir: std::path::PathBuf },
     /// Files tab: one file for the viewer; the file generation is `Gens::file`. A secret file is
@@ -327,6 +347,9 @@ pub enum Msg {
     /// content of its own: `divergent`).
     ChangeDiff { generation: u64, entry: StatusEntry, key: DiffKey, diff: Arc<FileDiff>, texts: Texts, staged: Option<Vec<bool>>, divergent: bool },
     ChangeDiffError { generation: u64, path: String, detail: String },
+    ConflictFile { generation: u64, entry: StatusEntry, sides: gitty_core::conflicts::Sides, result: Result<ConflictBody, String> },
+    /// Blocks per file; a file that could not be read has no entry.
+    ConflictCounts { asked: Vec<String>, counts: Vec<(String, usize)> },
     Dir { generation: u64, dir: std::path::PathBuf, result: Result<Vec<gitty_core::files::DirEntry>, String> },
     File { generation: u64, path: std::path::PathBuf, result: Result<FileView, String> },
     /// A line of hook or git output from the running write.
@@ -390,6 +413,8 @@ impl std::fmt::Debug for Msg {
                 write!(f, "ChangeDiff {{ generation: {generation}, {}: staged {:?}, divergent: {divergent} }}", entry.path, staged.as_ref().map(|s| s.iter().filter(|b| **b).count()))
             }
             Msg::ChangeDiffError { path, detail, .. } => write!(f, "ChangeDiffError {{ {path}: {detail} }}"),
+            Msg::ConflictFile { generation, entry, result, .. } => write!(f, "ConflictFile {{ generation: {generation}, {}: {} }}", entry.path, if result.is_ok() { "ok" } else { "error" }),
+            Msg::ConflictCounts { counts, .. } => write!(f, "ConflictCounts {{ {counts:?} }}"),
             Msg::Dir { generation, dir, result } => write!(f, "Dir {{ generation: {generation}, {}: {:?} }}", dir.display(), result.as_ref().map(Vec::len)),
             Msg::File { generation, path, result } => write!(f, "File {{ generation: {generation}, {}: {} }}", path.display(), if result.is_ok() { "ok" } else { "error" }),
             Msg::WriteLog { line } => write!(f, "WriteLog {{ {line} }}"),

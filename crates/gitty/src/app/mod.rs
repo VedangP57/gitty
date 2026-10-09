@@ -3,6 +3,7 @@
 
 pub mod changes;
 pub mod commit;
+pub mod conflict;
 pub mod branches;
 pub mod compare;
 pub mod net;
@@ -741,7 +742,7 @@ impl App {
             Msg::Error { what, detail } => self.toast = Some(Toast { what, detail, error: true }),
             Msg::RangeCount { oldest, newest, extra } => self.range_count = Some(((oldest, newest), extra)),
             // handled by handle_changes_msg
-            Msg::Status { .. } | Msg::OpState { .. } | Msg::StagedMarkers { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
+            Msg::ConflictFile { .. } | Msg::ConflictCounts { .. } | Msg::Status { .. } | Msg::OpState { .. } | Msg::StagedMarkers { .. } | Msg::ChangeDiff { .. } | Msg::ChangeDiffError { .. } | Msg::WriteLog { .. } | Msg::WriteDone { .. } | Msg::Changed(_) | Msg::HeadMessage { .. } | Msg::StashList { .. } | Msg::StatusSlow | Msg::StaleIndexLock { .. } | Msg::Dir { .. } | Msg::File { .. } => {}
             Msg::NetStarted { .. } | Msg::NetProgress { .. } | Msg::NetDone { .. } | Msg::ForceOffer(_) | Msg::Ask(_) | Msg::Tuned { .. } => {}
             Msg::SearchHits { .. } | Msg::SearchPaths { .. } | Msg::CommitRows { .. } | Msg::Compare { .. } => {}
         }
