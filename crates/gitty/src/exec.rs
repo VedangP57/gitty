@@ -262,7 +262,9 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             let cli = gitty_core::git_cli::GitCli::new(h.owner());
             let status = cli.status();
             let slow = status.is_ok() && t.elapsed() >= SLOW_STATUS;
-            // a state started or ended anywhere (the watcher saw MERGE_HEAD, rebase-merge…) arrives with the status it changes
+            // a state started or ended anywhere (the watcher saw MERGE_HEAD, rebase-merge…) arrives
+            // with the status it changes. A failed status run sends none: the last known state stays
+            // on screen, which is safer than hiding an operation that is half done.
             let op = status.as_ref().ok().map(|st| cli.op_state(st));
             sink(Msg::Status { generation, result: status.map_err(|e| format!("{e:#}")) });
             if let Some(state) = op {
@@ -294,10 +296,19 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             sink(Msg::File { generation, path, result });
         }
         Request::Write(op) => {
-            let result = {
+            let ran = {
                 let _write = crate::write::lock();
-                crate::write::run(h, &op, &mut |line| sink(Msg::WriteLog { line: line.to_string() })).map_err(|e| format!("{e:#}"))
+                crate::write::run(h, &op, &mut |line| sink(Msg::WriteLog { line: line.to_string() }))
             };
+            // a continue that found staged conflict markers is a question, not a failure
+            let markers = match (&op, &ran) {
+                (crate::msg::WriteOp::ContinueOp { op, id, .. }, Err(e)) => e.downcast_ref::<gitty_core::op_state::StagedMarkers>().map(|m| Msg::StagedMarkers { op: *op, id: id.clone(), files: m.0.clone() }),
+                _ => None,
+            };
+            let result = if markers.is_some() { Ok(None) } else { ran.map_err(|e| format!("{e:#}")) };
+            if let Some(ask) = markers {
+                sink(ask);
+            }
             let stale = match &result {
                 Err(e) if !matches!(op, crate::msg::WriteOp::RemoveIndexLock { .. }) => crate::write::stale_index_lock(h, e),
                 _ => None,

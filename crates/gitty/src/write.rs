@@ -421,10 +421,10 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             let tail = if cli.current_branch() == branch { pop_back(&cli, &pushed) } else { "your changes are in the stash (stash@{0})".to_string() };
             return Ok(Some(format!("{note}; {tail}")));
         }
-        WriteOp::ContinueOp { op } => return Ok(Some(continue_note(*op, cli.continue_op(*op, log)?))),
-        WriteOp::AbortOp { op } => {
+        WriteOp::ContinueOp { op, id, accepted } => return Ok(Some(continue_note(*op, cli.continue_op(*op, id, accepted, log)?))),
+        WriteOp::AbortOp { op, id } => {
             let n = op.name();
-            return Ok(Some(match cli.abort_op(*op)? {
+            return Ok(Some(match cli.abort_op(*op, id)? {
                 Aborted::Done => format!("Aborted the {n}"),
                 Aborted::Gone => format!("The {n} is no longer in progress"),
             }));

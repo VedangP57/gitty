@@ -58,7 +58,8 @@ pub fn top(app: &mut App, buf: &mut Buffer, r: Rect) {
         }
     }
     // a stopped merge, rebase, cherry-pick or revert comes before the PR badge and the fetch age;
-    // when it does not fit, it gives up its details one at a time, never the word itself
+    // when it does not fit, it gives up its details one at a time and the bare word last; when
+    // even that does not fit (a very narrow terminal), nothing is drawn
     if let Some(op) = &app.op
         && let Some(v) = op_banner(op).into_iter().find(|v| x + 2 + width(v) <= max_x)
     {

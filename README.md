@@ -124,8 +124,12 @@ conflicts any more (resolve each file and stage it in the Changes tab first; the
 Continue is not available yet), `a` aborts after asking, `Esc` closes. Continue never opens an
 editor: a merge uses its prepared message, and a rebase or pick keeps the commit's own. If the
 next step of a rebase or pick conflicts too, you are told and the bar shows the new count.
-Hooks run as they do for a commit, and a hook that fails leaves the operation open and its
-output is in the error details (`!`). `m` with nothing in progress says so.
+Hooks run for the commit that finishes the stopped step, and a hook that fails leaves the
+operation open and its output is in the error details (`!`). If a file you staged still has
+conflict markers in it (`<<<<<<<`), Continue asks "Continue anyway?" before committing it.
+Because no editor opens, a cherry-pick, revert or reworded commit keeps its message as it was.
+Abort restores the branch as it was before the operation; what the operation did is discarded.
+`m` with nothing in progress says so.
 
 ### In herdr
 

@@ -22,8 +22,8 @@ pub fn continue_blocked(s: &OpState) -> Option<String> {
 fn abort_question(op: RepoOp) -> (String, String) {
     let n = op.name();
     let body = match op {
-        RepoOp::Rebase => "The rebase is undone and the branch goes back to where it was. Your resolved conflicts are discarded.".to_string(),
-        _ => format!("Your resolved conflicts and everything done by the {n} are discarded; your own earlier work is kept."),
+        RepoOp::Rebase => "The branch goes back to where it was before the rebase; any changes or commits made during the rebase are discarded.".to_string(),
+        _ => format!("Your resolved conflicts and everything done by the {n} are discarded. Changes you had before it started are kept where git can restore them."),
     };
     (format!("Abort the {n}?"), body)
 }
@@ -38,6 +38,19 @@ impl App {
         }
     }
 
+    /// Git found staged files that still contain conflict markers: committing them is the user's
+    /// call. Enter continues with exactly these files accepted; the writer looks again.
+    pub(super) fn offer_continue_anyway(&mut self, op: RepoOp, id: String, files: Vec<String>) {
+        let shown = files.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
+        let more = if files.len() > 3 { format!(" and {} more", files.len() - 3) } else { String::new() };
+        let (n, s) = (files.len(), if files.len() == 1 { "" } else { "s" });
+        self.overlay = Some(Overlay::Confirm {
+            title: "Continue anyway?".into(),
+            body: format!("{n} staged file{s} still contain{} conflict markers ({shown}{more}). Continuing commits them as they are.", if n == 1 { "s" } else { "" }),
+            op: WriteOp::ContinueOp { op, id, accepted: files },
+        });
+    }
+
     /// Keys in the dialog: `c` continue, `a` abort, Esc close.
     pub(super) fn operation_key(&mut self, k: KeyEvent) {
         let Some(state) = self.op.clone() else { return };
@@ -48,11 +61,11 @@ impl App {
                     self.toast = say(&why);
                     self.overlay = Some(Overlay::InProgress);
                 }
-                None => self.write(WriteOp::ContinueOp { op: state.op }),
+                None => self.write(WriteOp::ContinueOp { op: state.op, id: state.id, accepted: Vec::new() }),
             },
             KeyCode::Char('a') => {
                 let (title, body) = abort_question(state.op);
-                self.overlay = Some(Overlay::Confirm { title, body, op: WriteOp::AbortOp { op: state.op } });
+                self.overlay = Some(Overlay::Confirm { title, body, op: WriteOp::AbortOp { op: state.op, id: state.id } });
             }
             _ => self.overlay = Some(Overlay::InProgress),
         }

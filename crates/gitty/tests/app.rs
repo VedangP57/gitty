@@ -1100,8 +1100,8 @@ fn writes(r: &[Request]) -> Vec<String> {
                 gitty::msg::WriteOp::StashAndSwitch { name, .. } => format!("stash and switch {name}"),
                 gitty::msg::WriteOp::Merge { name, remote } => format!("merge {name} {remote}"),
                 gitty::msg::WriteOp::StashAndMerge { name, .. } => format!("stash and merge {name}"),
-                gitty::msg::WriteOp::ContinueOp { op } => format!("continue {}", op.name()),
-                gitty::msg::WriteOp::AbortOp { op } => format!("abort {}", op.name()),
+                gitty::msg::WriteOp::ContinueOp { op, .. } => format!("continue {}", op.name()),
+                gitty::msg::WriteOp::AbortOp { op, .. } => format!("abort {}", op.name()),
             }),
             _ => None,
         })
@@ -4605,7 +4605,7 @@ fn a_huge_listing_is_rebuilt_once_per_batch() {
     eprintln!("100k-entry rebuild: {took:?} (whole test {:?})", start.elapsed());
     // generous: unoptimised builds on a loaded machine
     if std::env::var_os("GITTY_SKIP_TIMING").is_none() {
-        assert!(took < Duration::from_secs(2), "{took:?}");
+        assert!(took < Duration::from_secs(5), "{took:?}");
     }
 }
 
@@ -4746,7 +4746,7 @@ fn abort_asks_in_plain_words_then_restores_the_branch() {
     match &t.app.overlay {
         Some(gitty::app::Overlay::Confirm { title, body, op: WriteOp::AbortOp { .. } }) => {
             assert_eq!(title, "Abort the merge?");
-            assert_eq!(body, "Your resolved conflicts and everything done by the merge are discarded; your own earlier work is kept.");
+            assert_eq!(body, "Your resolved conflicts and everything done by the merge are discarded. Changes you had before it started are kept where git can restore them.");
         }
         _ => panic!("no abort question"),
     }
@@ -4810,4 +4810,81 @@ fn the_dialog_closes_when_the_state_ends_under_it() {
     f.git(&["merge", "--abort"]);
     state_changed(&mut t);
     assert!(t.app.overlay.is_none());
+}
+
+#[test]
+fn staged_conflict_markers_ask_before_anything_is_committed() {
+    let f = conflicting_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    stops(&f, &["merge", "topic"]);
+    state_changed(&mut t);
+    f.write("a.txt", "<<<<<<< HEAD\nmain a\n=======\ntopic a\n>>>>>>> topic\n");
+    f.write("b.txt", "fine\n");
+    f.git(&["add", "a.txt", "b.txt"]);
+    state_changed(&mut t);
+    t.ch('m');
+    t.ch('c');
+    t.pump();
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { title, body, op: WriteOp::ContinueOp { accepted, .. } }) => {
+            assert_eq!(title, "Continue anyway?");
+            assert!(body.starts_with("1 staged file still contains conflict markers (a.txt)."), "{body}");
+            assert_eq!(accepted, &["a.txt".to_string()]);
+        }
+        _ => panic!("no question: {:?}", t.app.toast),
+    }
+    assert!(t.app.toast.as_ref().is_none_or(|t| !t.error), "a question, not a failure");
+    assert_eq!(parent_count(&f), 1, "nothing is committed before the answer");
+    // Esc: nothing happens, the merge is still open
+    t.key(KeyCode::Esc);
+    assert_eq!(parent_count(&f), 1);
+    assert!(f.path().join(".git/MERGE_HEAD").exists());
+    // ask again and say yes
+    t.ch('m');
+    t.ch('c');
+    t.pump();
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(!toast.error && toast.what == "Merge committed", "{toast:?}");
+    assert_eq!(parent_count(&f), 2);
+}
+
+#[test]
+fn no_markers_no_question() {
+    let f = conflicting_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    stops(&f, &["merge", "topic"]);
+    resolve_all(&f);
+    state_changed(&mut t);
+    t.ch('m');
+    t.ch('c');
+    t.pump();
+    assert!(t.app.overlay.is_none());
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "Merge committed");
+}
+
+#[test]
+fn a_dialog_that_saw_one_merge_will_not_abort_the_next() {
+    let f = conflicting_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    stops(&f, &["merge", "topic"]);
+    state_changed(&mut t);
+    t.ch('m');
+    t.ch('a');
+    // another terminal aborts it and starts a merge of another commit before the answer
+    f.git(&["merge", "--abort"]);
+    f.git(&["switch", "-q", "-c", "topic2", "topic"]);
+    f.write("a.txt", "topic two a\n");
+    f.commit("topic two", 1_700_000_900);
+    f.git(&["switch", "-q", "main"]);
+    stops(&f, &["merge", "topic2"]);
+    t.key(KeyCode::Enter);
+    t.pump();
+    let toast = t.app.toast.as_ref().unwrap();
+    assert!(toast.error && toast.detail.contains("a different merge is in progress now"), "{toast:?}");
+    assert!(f.path().join(".git/MERGE_HEAD").exists(), "the new merge was not aborted");
 }

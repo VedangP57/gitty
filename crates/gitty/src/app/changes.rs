@@ -360,6 +360,7 @@ impl App {
                     self.outbox.push(Request::StashList);
                 }
             }
+            Msg::StagedMarkers { op, id, files } => self.offer_continue_anyway(op, id, files),
             Msg::HeadMessage { result } => self.install_head_message(result),
             Msg::StaleIndexLock { seen } => {
                 // queued like the other dialogs: it never replaces an open overlay
