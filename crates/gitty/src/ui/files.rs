@@ -7,7 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use super::commit_list::title;
-use super::paint::{centered, fill, glyphs, spans, text, width};
+use super::paint::{centered, edge_marks, fill, glyphs, spans, text, width};
 use crate::app::files::{RowKind, Viewing};
 use crate::app::{App, Focus, digits};
 use crate::msg::FileView;
@@ -142,8 +142,12 @@ pub fn draw_viewer(app: &mut App, buf: &mut Buffer, r: Rect) {
     let syntax: Vec<Option<Style>> = if hl.is_some() { CAPTURES.iter().map(|c| theme.syntax.get(*c).map(|s| Style { bg: None, ..*s })).collect() } else { Vec::new() };
     let digits = digits(lines as u32) as u16;
     let gutter = base.fg(theme.diff.lineno);
-    let (hscroll, tab) = (u32::from(app.files_tab.hscroll), app.config.tab_size);
+    let tab = app.config.tab_size;
     let tx = body.x + digits + 2;
+    // the pane may have been resized since the last scroll: pull the offset back to the new end
+    app.files_tab.visible = body.right().saturating_sub(tx);
+    app.files_tab.hscroll = app.files_tab.hscroll.min(app.files_tab.max_hscroll());
+    let hscroll = u32::from(app.files_tab.hscroll);
     let mut scratch: Vec<Glyph> = Vec::new();
     // clipped, not wrapped: `W` does not apply here, `h` and `l` scroll sideways
     for k in 0..usize::from(body.height) {
@@ -170,5 +174,6 @@ pub fn draw_viewer(app: &mut App, buf: &mut Buffer, r: Rect) {
                 None => base,
             }
         });
+        edge_marks(buf, tx, y, body.right(), hscroll, &scratch, ui.muted);
     }
 }

@@ -2011,37 +2011,243 @@ fn sideways_wheel_scrolls_the_viewer_only_and_stops_at_the_longest_line() {
     mouse(&mut t, MouseEventKind::ScrollUp, vx, vy, KeyModifiers::SHIFT);
     assert_eq!(t.app.files_tab.hscroll, 0);
     assert_eq!(t.app.files_tab.vscroll, 0, "Shift+wheel does not scroll down");
-    // the end of the longest line (203 columns) is the limit
+    // the end of the longest line (203 columns) is the limit: its last column is the pane's last
+    let max = 203 - t.app.files_tab.visible;
     for _ in 0..100 {
         mouse(&mut t, MouseEventKind::ScrollRight, vx, vy, none);
     }
-    assert_eq!(t.app.files_tab.hscroll, 202);
+    assert_eq!(t.app.files_tab.hscroll, max);
     let s = text(&t.render(140, 30));
-    assert!(s.contains("2 D"), "the last column of the longest line is shown: {s}");
+    assert!(s.contains("END"), "the end of the longest line is shown: {s}");
     // the keys obey the same limit
     t.app.focus = Focus::Diff;
     for _ in 0..40 {
         t.key(KeyCode::Char('l'));
     }
-    assert_eq!(t.app.files_tab.hscroll, 202);
+    assert_eq!(t.app.files_tab.hscroll, max);
     t.key(KeyCode::Char('h'));
-    assert_eq!(t.app.files_tab.hscroll, 194);
+    assert_eq!(t.app.files_tab.hscroll, max - 8);
+}
+
+/// The cells of the diff or viewer pane that hold `sym`.
+fn marks(t: &H, b: &Buffer, sym: &str) -> Vec<(u16, u16)> {
+    let r = t.app.hits.panes.diff.unwrap();
+    (r.y..r.bottom()).flat_map(|y| (r.x..r.right()).map(move |x| (x, y))).filter(|&(x, y)| b[(x, y)].symbol() == sym).collect()
+}
+
+fn no_marks(t: &H, b: &Buffer) -> bool {
+    marks(t, b, "‹").is_empty() && marks(t, b, "›").is_empty()
+}
+
+fn wide_changes(size: (u16, u16)) -> (Fixture, H) {
+    let f = Fixture::new();
+    f.write("wide.txt", "short\nkeep\n");
+    f.commit("base", NOW - DAY);
+    f.write("wide.txt", format!("short\n{}END\n", "y".repeat(300)));
+    let mut t = H::new(&f, "github-dark", size);
+    t.key(KeyCode::Char('1'));
+    t.select_change("wide.txt");
+    t.render(size.0, size.1);
+    (f, t)
 }
 
 #[test]
-fn sideways_wheel_scrolls_the_diff_pane_too() {
-    let f = changes_fixture();
-    let mut t = H::new(&f, "github-dark", (140, 30));
-    t.key(KeyCode::Char('1'));
-    t.select_change("src/main.rs");
-    t.render(140, 30);
+fn diff_sideways_scroll_stops_at_the_widest_line_and_marks_hidden_text() {
+    let (_f, mut t) = wide_changes((140, 30));
+    let none = KeyModifiers::NONE;
     let (x, y) = (120, 10);
-    mouse(&mut t, MouseEventKind::ScrollRight, x, y, KeyModifiers::NONE);
+    let b = t.render(140, 30);
+    assert!(marks(&t, &b, "‹").is_empty(), "nothing hidden on the left yet");
+    assert_eq!(marks(&t, &b, "›").len(), 1, "only the long line continues");
+    mouse(&mut t, MouseEventKind::ScrollRight, x, y, none);
     assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 8);
     mouse(&mut t, MouseEventKind::ScrollDown, x, y, KeyModifiers::SHIFT);
     assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 16);
-    mouse(&mut t, MouseEventKind::ScrollLeft, x, y, KeyModifiers::NONE);
+    mouse(&mut t, MouseEventKind::ScrollLeft, x, y, none);
     assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 8);
+    let b = t.render(140, 30);
+    assert_eq!(marks(&t, &b, "‹").len(), 3, "every line has text hidden on the left");
+    assert_eq!(marks(&t, &b, "›").len(), 1);
+    // 303 columns of text is the limit
+    let max = 303 - t.app.diff.as_ref().unwrap().visible;
+    for _ in 0..100 {
+        mouse(&mut t, MouseEventKind::ScrollRight, x, y, none);
+    }
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, max);
+    let b = t.render(140, 30);
+    assert!(text(&b).contains("END"));
+    assert!(marks(&t, &b, "›").is_empty(), "the end is reached");
+    assert_eq!(marks(&t, &b, "‹").len(), 3);
+    t.app.focus = Focus::Diff;
+    for _ in 0..3 {
+        t.key(KeyCode::Char('l'));
+    }
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, max);
+}
+
+#[test]
+fn diff_sideways_scroll_does_nothing_when_everything_fits() {
+    let f = Fixture::new();
+    f.write("a.txt", "one\n");
+    f.commit("base", NOW - DAY);
+    f.write("a.txt", "one\ntwo\n");
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("a.txt");
+    t.render(140, 30);
+    mouse(&mut t, MouseEventKind::ScrollRight, 120, 10, KeyModifiers::NONE);
+    mouse(&mut t, MouseEventKind::ScrollDown, 120, 10, KeyModifiers::SHIFT);
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('l'));
+    t.key(KeyCode::Right);
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 0);
+    let b = t.render(140, 30);
+    assert!(no_marks(&t, &b));
+}
+
+#[test]
+fn split_diff_scrolls_by_the_narrower_side_and_a_wrapped_diff_not_at_all() {
+    let (_f, mut t) = wide_changes((140, 30));
+    t.app.split_pref = Some(true);
+    let b = t.render(140, 30);
+    // each half has one gutter (3 columns here), the marker and its space
+    let w = t.app.hits.panes.diff.unwrap().width;
+    let (left, right) = ((w - 1) / 2, w - (w - 1) / 2 - 1);
+    let visible = t.app.diff.as_ref().unwrap().visible;
+    assert_eq!(visible, left.min(right) - 5, "the narrower half decides");
+    assert!(!marks(&t, &b, "›").is_empty());
+    t.app.focus = Focus::Diff;
+    for _ in 0..100 {
+        t.key(KeyCode::Char('l'));
+    }
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 303 - visible);
+    // wrapped: nothing to scroll, nothing marked
+    t.key(KeyCode::Char('W'));
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 0);
+    t.key(KeyCode::Char('l'));
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 0);
+    let b = t.render(140, 30);
+    assert!(no_marks(&t, &b));
+}
+
+#[test]
+fn a_resize_keeps_the_diff_scroll_valid() {
+    let (_f, mut t) = wide_changes((100, 30));
+    t.app.split_pref = Some(false);
+    t.app.focus = Focus::Diff;
+    for _ in 0..100 {
+        t.key(KeyCode::Char('l'));
+    }
+    t.render(100, 30);
+    let narrow = t.app.diff.as_ref().unwrap().hscroll;
+    assert_eq!(narrow, 303 - t.app.diff.as_ref().unwrap().visible);
+    // a wider pane shows more: the end moves left and the offset follows it
+    t.render(160, 30);
+    let d = t.app.diff.as_ref().unwrap();
+    assert!(d.hscroll < narrow);
+    assert_eq!(d.hscroll, 303 - d.visible);
+    // a narrower pane's end is farther: the offset stays valid and can grow again
+    t.render(100, 30);
+    assert!(t.app.diff.as_ref().unwrap().hscroll <= narrow);
+    t.key(KeyCode::Char('l'));
+    for _ in 0..100 {
+        t.key(KeyCode::Char('l'));
+    }
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, narrow);
+    // wide enough for every line: back at the left edge, no markers
+    let b = t.render(400, 30);
+    assert_eq!(t.app.diff.as_ref().unwrap().hscroll, 0);
+    assert!(no_marks(&t, &b));
+}
+
+#[test]
+fn files_viewer_resize_open_and_refresh_follow_the_rule() {
+    let f = Fixture::new();
+    f.write("wide.txt", format!("short\n{}END\n", "x".repeat(200)));
+    f.write("other.txt", format!("{}\n", "z".repeat(200)));
+    f.write("tiny.txt", "t\n");
+    f.commit("base", NOW - DAY);
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, "wide.txt");
+    t.render(140, 30);
+    t.app.focus = Focus::Diff;
+    for _ in 0..50 {
+        t.key(KeyCode::Char('l'));
+    }
+    let b = t.render(140, 30);
+    let at140 = t.app.files_tab.hscroll;
+    assert_eq!(u32::from(at140), 203 - u32::from(t.app.files_tab.visible));
+    assert!(marks(&t, &b, "›").is_empty());
+    assert_eq!(marks(&t, &b, "‹").len(), 2, "both lines have text hidden on the left");
+    // growing the pane pulls the offset back to the new end
+    t.render(180, 30);
+    assert_eq!(u32::from(t.app.files_tab.hscroll), 203 - u32::from(t.app.files_tab.visible));
+    assert!(t.app.files_tab.hscroll < at140);
+    // shrinking keeps it valid
+    t.render(100, 30);
+    assert!(u32::from(t.app.files_tab.hscroll) <= 203 - u32::from(t.app.files_tab.visible));
+    // the same file read again keeps the place
+    t.render(140, 30);
+    let before = t.app.files_tab.hscroll;
+    t.app.refresh_files();
+    t.pump();
+    assert_eq!(t.app.files_tab.hscroll, before);
+    // another file starts at the left edge, and one that fits cannot scroll
+    t.app.focus = Focus::Files;
+    pick(&mut t, "other.txt");
+    assert_eq!(t.app.files_tab.hscroll, 0);
+    pick(&mut t, "tiny.txt");
+    t.app.focus = Focus::Diff;
+    t.render(140, 30);
+    t.key(KeyCode::Char('l'));
+    mouse(&mut t, MouseEventKind::ScrollRight, 100, 10, KeyModifiers::NONE);
+    assert_eq!(t.app.files_tab.hscroll, 0);
+    let b = t.render(140, 30);
+    assert!(no_marks(&t, &b));
+}
+
+#[test]
+fn viewer_edge_marks_show_only_where_text_is_hidden() {
+    let f = Fixture::new();
+    f.write("wide.txt", format!("short\n{}END\n", "x".repeat(200)));
+    f.commit("base", NOW - DAY);
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, "wide.txt");
+    let b = t.render(140, 30);
+    let (tx, y) = find(&b, "short").unwrap();
+    let r = t.app.hits.panes.diff.unwrap();
+    assert_eq!(b[(r.right() - 1, y + 1)].symbol(), "›", "the long line runs on");
+    assert_ne!(b[(r.right() - 1, y)].symbol(), "›", "the short line does not");
+    assert_eq!(b[(tx, y + 1)].symbol(), "x", "no left mark at the left edge");
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('l'));
+    let b = t.render(140, 30);
+    assert_eq!(b[(tx, y + 1)].symbol(), "‹");
+    assert_eq!(b[(tx, y)].symbol(), "‹", "a line scrolled out of view entirely has hidden text too");
+    assert_eq!(b[(tx - 1, y + 1)].symbol(), " ", "the gutter is untouched");
+}
+
+#[test]
+fn a_megabyte_single_line_file_scrolls_to_the_cap_without_slowness() {
+    let f = Fixture::new();
+    f.write("one.txt", "x\n");
+    f.commit("base", NOW - DAY);
+    f.write("huge.txt", "w".repeat(1_000_000));
+    let mut t = files_tab(&f, (140, 30));
+    let start = Instant::now();
+    pick(&mut t, "huge.txt");
+    t.render(140, 30);
+    assert_eq!(t.app.files_tab.widest, 10_000);
+    t.app.focus = Focus::Diff;
+    for _ in 0..1300 {
+        t.key(KeyCode::Char('l'));
+    }
+    let b = t.render(140, 30);
+    assert_eq!(u32::from(t.app.files_tab.hscroll), 10_000 - u32::from(t.app.files_tab.visible));
+    assert!(text(&b).contains("www"));
+    if std::env::var_os("GITTY_SKIP_TIMING").is_none() {
+        assert!(start.elapsed() < Duration::from_secs(10), "{:?}", start.elapsed());
+    }
 }
 
 #[test]

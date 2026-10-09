@@ -13,7 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use super::commit_list::title;
-use super::paint::{fill, glyphs, spans, text, width};
+use super::paint::{edge_marks, fill, glyphs, spans, text, width};
 use crate::app::diffstate::VRow;
 use crate::app::{App, Focus, Tab, digits};
 use crate::text::{Glyph, layout, layout_until, wrap_starts};
@@ -182,6 +182,9 @@ impl Ctx<'_> {
             let skip = if self.wrap { gs.get(s).map_or(0, |g| g.col) } else { self.hscroll };
             end = glyphs(buf, tx, y + k as u16, max_x, skip, &gs[s..e], &mut style_of);
         }
+        if !self.wrap {
+            edge_marks(buf, tx, y, max_x, self.hscroll, gs, self.theme.ui.muted);
+        }
         let last = (starts.len() - 1) as u16;
         if l.no_eol && end > tx.saturating_sub(1) && last < self.lines {
             text(buf, end, y + last, max_x, " ⊘", st.text.fg(self.theme.ui.muted));
@@ -314,11 +317,22 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let d = app.diff.as_mut().expect("checked above");
     let rows = d.rows(split);
     d.scroll = d.scroll.min(rows.saturating_sub(1));
+    let digits = digits(fd.old.len().max(fd.new.len())) as u16;
+    // an added or deleted file (always unified) has no line numbers on its other side
+    let solo = fd.old.is_empty() || fd.new.is_empty();
+    let numbers = if solo { 1 } else { 2 };
+    let (x, right) = (body.x, body.right());
+    let mid = x + body.width.saturating_sub(1) / 2;
+    // columns of text right of the gutters, the +/- marker and its space; a split view scrolls
+    // both sides together
+    let text_width = |w: u16, gutters: u16| w.saturating_sub(gutters * (digits + 2) + 2);
+    d.visible = if split { text_width(mid - x, 1).min(text_width(right - (mid + 1), 1)) } else { text_width(body.width, numbers) };
+    // the pane may have been resized since the last scroll: pull the offset back to the new end
+    d.hscroll = d.hscroll.min(d.max_hscroll(app.config.tab_size));
     let d = app.diff.as_ref().expect("checked above");
     let view = if app.tab == Tab::Changes { app.changes.current.as_ref() } else { None };
     let staged = |line: u32, old: bool| view.is_some_and(|v| v.is_staged(line, old));
     let range = view.and(app.changes.visual).map(|a| a.min(d.cursor)..=a.max(d.cursor));
-    let digits = digits(fd.old.len().max(fd.new.len())) as u16;
     let mut cx = Ctx {
         theme: &theme,
         digits,
@@ -331,11 +345,6 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         scratch: Vec::new(),
         starts: Vec::new(),
     };
-    let (x, right) = (body.x, body.right());
-    let mid = x + body.width.saturating_sub(1) / 2;
-    // an added or deleted file (always unified) has no line numbers on its other side
-    let solo = fd.old.is_empty() || fd.new.is_empty();
-    let numbers = if solo { 1 } else { 2 };
     if split {
         app.hits.diff_old_gutter = (x, digits + 2);
         app.hits.diff_new_gutter = (mid + 1, digits + 2);

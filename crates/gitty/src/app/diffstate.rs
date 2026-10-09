@@ -8,7 +8,7 @@ use gitty_core::diff::FileDiff;
 use gitty_core::diff::view::{DiffView, Expand, Row, SplitRow};
 
 use crate::msg::DiffKey;
-use crate::text::{Glyph, layout, wrap_starts};
+use crate::text::{Glyph, layout, line_width, max_hscroll, wrap_starts};
 
 /// Text widths for wrapped rows: `left` is the unified text width, or the left split half's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,11 @@ pub struct DiffState {
     pub cursor: usize,
     pub scroll: usize,
     pub hscroll: u16,
+    /// Display width (capped) of the widest line the view shows; measured when first needed and
+    /// again after the view expands.
+    widest: Option<u32>,
+    /// Columns of text each side showed last frame: what sideways scrolling is measured against.
+    pub visible: u16,
     /// Header for the first hunk when no gap row precedes it.
     pub first_header: Option<String>,
     /// Every change block's pairing has been applied to the split layout.
@@ -58,7 +63,7 @@ struct Anchor {
 impl DiffState {
     pub fn new(key: DiffKey, diff: Arc<FileDiff>) -> DiffState {
         let view = diff.view();
-        let mut s = DiffState { key, diff, view, cursor: 0, scroll: 0, hscroll: 0, first_header: None, paired_all: false };
+        let mut s = DiffState { key, diff, view, cursor: 0, scroll: 0, hscroll: 0, widest: None, visible: 0, first_header: None, paired_all: false };
         s.apply_ready_pairing(false);
         s.refresh_header();
         s
@@ -87,6 +92,33 @@ impl DiffState {
             }
         let j = i - self.offset();
         Some(if split { VRow::Split(self.view.split_row(j)) } else { VRow::Row(self.view.row(j)) })
+    }
+
+    /// Width of the widest line of the view, tabs expanded as drawn (measured once per view).
+    pub fn widest(&mut self, tab: u8) -> u32 {
+        if let Some(w) = self.widest {
+            return w;
+        }
+        let (mut scratch, mut w) = (Vec::new(), 0);
+        let d = &self.diff;
+        for i in 0..self.view.row_count() {
+            let lines = match self.view.row(i) {
+                Row::Gap { .. } => [None, None],
+                Row::Context { old, new } => [Some(d.old.line(old)), Some(d.new.line(new))],
+                Row::Del { old, .. } => [Some(d.old.line(old)), None],
+                Row::Add { new, .. } => [None, Some(d.new.line(new))],
+            };
+            for l in lines.into_iter().flatten() {
+                w = w.max(line_width(l, tab, &mut scratch));
+            }
+        }
+        self.widest = Some(w);
+        w
+    }
+
+    /// The farthest the diff can scroll sideways: to the end of its widest line.
+    pub fn max_hscroll(&mut self, tab: u8) -> u16 {
+        max_hscroll(self.widest(tab), u32::from(self.visible)) as u16
     }
 
     fn refresh_header(&mut self) {
@@ -162,6 +194,7 @@ impl DiffState {
         let anchor = self.anchor(self.cursor, split);
         let on_gap = self.gap_at(self.cursor, split);
         self.view.expand(e);
+        self.widest = None;
         self.refresh_header();
         // on a gap or header row the cursor keeps its position
         if let (Some(a), None) = (anchor, on_gap) {
