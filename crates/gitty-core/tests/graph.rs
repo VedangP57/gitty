@@ -124,8 +124,8 @@ fn the_octopus_and_the_merges_fan_out_on_their_own_row() {
     }
     for (i, (_, parents)) in walked.iter().enumerate() {
         let t = history.graph_row(i).unwrap().text();
-        // a merge opens (╮, ╭) or links (┤, ├) one lane per other parent
-        let links = t.matches(['╮', '╭', '┤', '├']).count();
+        // a merge opens (╮, ╭, ┬) or links (┤, ├, ┼) one lane per other parent
+        let links = t.matches(['╮', '╭', '┬', '┤', '├', '┼']).count();
         assert!(links >= parents.len().saturating_sub(1), "row {i} {t:?} for {} parents", parents.len());
     }
 }

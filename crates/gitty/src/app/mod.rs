@@ -213,6 +213,9 @@ pub struct App {
     requested_rows: HashSet<usize>,
     /// `L`: History lists git's topological order and draws its commit graph.
     pub show_graph: bool,
+    /// The widest graph row drawn since the walk began, in columns: the graph column keeps this
+    /// width, so the subjects do not shift sideways as rows scroll past.
+    pub graph_cols: u16,
     pub selected: usize,
     pub list_scroll: usize,
     selected_id: Option<CommitId>,
@@ -371,6 +374,7 @@ impl App {
             rows: HashMap::new(),
             requested_rows: HashSet::new(),
             show_graph: false,
+            graph_cols: 0,
             selected: 0,
             list_scroll: 0,
             selected_id: None,
@@ -816,6 +820,7 @@ impl App {
         self.history = None;
         self.history_len = 0;
         self.history_done = false;
+        self.graph_cols = 0;
         self.rows.clear();
         self.requested_rows.clear();
         // indices of the old walk mean nothing in the new one

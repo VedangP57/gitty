@@ -120,6 +120,45 @@ pub struct UiColors {
     pub pr_draft: Color,
     pub pr_merged: Color,
     pub pr_closed: Color,
+    /// The commit graph's lane colours, one per colour index of a lane (see [`lane_palette`]).
+    pub lanes: [Color; LANE_COLOURS],
+}
+
+/// Colour indices a graph lane cycles through.
+pub const LANE_COLOURS: usize = gitty_core::graph::COLOURS as usize;
+
+/// Two colours a reader would take for one another.
+fn same_looking(a: Rgb, b: Rgb) -> bool {
+    let d = |x: u8, y: u8| i32::from(x).abs_diff(i32::from(y));
+    d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2) < 48
+}
+
+/// The graph's lane colours: the distinct `hues` (none like a background in `avoid`, nor like an
+/// earlier hue, nor the same colour once mapped to the terminal's depth), in order. A theme with
+/// fewer than [`LANE_COLOURS`] of them cycles those, and no two neighbours in the cycle (the last
+/// and the first included) are the same while it has three or more.
+fn lane_palette(hues: &[Rgb], avoid: &[Rgb], color: impl Fn(Rgb) -> Color) -> [Color; LANE_COLOURS] {
+    let mut picked: Vec<(Rgb, Color)> = Vec::new();
+    for &h in hues {
+        let c = color(h);
+        if avoid.iter().any(|&a| same_looking(a, h) || color(a) == c) || picked.iter().any(|&(p, pc)| same_looking(p, h) || pc == c) {
+            continue;
+        }
+        picked.push((h, c));
+        if picked.len() == LANE_COLOURS {
+            break;
+        }
+    }
+    if picked.is_empty() {
+        // no hue at all stands out: the accent everywhere
+        picked.push((hues[0], color(hues[0])));
+    }
+    let n = picked.len();
+    let mut out: [Color; LANE_COLOURS] = std::array::from_fn(|i| picked[i % n].1);
+    if n >= 3 && out[LANE_COLOURS - 1] == out[0] {
+        out[LANE_COLOURS - 1] = picked[1].1;
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -413,7 +452,9 @@ fn build(spec: &Spec, depth: ColorDepth, emph_override: Option<f32>) -> anyhow::
         u("pr_closed", red)?,
     ];
     let c = |x: Rgb| r.color(x);
+    let lanes = lane_palette(&[ui_accent, green, yellow, blue, red, magenta, cyan, orange], &[ui_bg, ui_panel, ui[3], ui[4]], c);
     let ui = UiColors {
+        lanes,
         bg: c(ui_bg),
         panel: c(ui_panel),
         fg: c(ui_fg),

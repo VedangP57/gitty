@@ -74,6 +74,34 @@ fn added_themes_are_legible_and_flagged_by_their_background() {
 }
 
 #[test]
+fn every_builtin_gives_the_graph_lanes_distinct_colours_off_the_background() {
+    let r = Registry::load(None);
+    for depth in [ColorDepth::True, ColorDepth::Ansi256] {
+        for name in BUILTIN_NAMES {
+            let t = r.resolve(name, depth, None).unwrap();
+            let lanes = t.ui.lanes;
+            let mut distinct = lanes.to_vec();
+            distinct.sort_by_key(|c| format!("{c:?}"));
+            distinct.dedup();
+            // the distinct ones come first, then the cycle repeats them
+            let n = distinct.len();
+            for (i, a) in lanes[..n].iter().enumerate() {
+                assert!(!lanes[i + 1..n].contains(a), "{name} {depth:?}: lane colour {i} repeats among the first {n}: {lanes:?}");
+            }
+            // most builtins have all seven; the fewest is everforest-dark's five (its accent is
+            // its green, its orange is near its red)
+            assert!(n >= 5, "{name} {depth:?}: only {n} lane colours: {lanes:?}");
+            for i in 0..lanes.len() {
+                assert_ne!(lanes[i], lanes[(i + 1) % lanes.len()], "{name} {depth:?}: lane colours {i} and the next look alike");
+                for bg in [t.ui.bg, t.ui.panel, t.ui.selection, t.ui.selection_inactive] {
+                    assert_ne!(lanes[i], bg, "{name} {depth:?}: a lane colour is a background");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn builtin_kind_flag_matches_background_luminance() {
     let r = Registry::load(None);
     for name in BUILTIN_NAMES {

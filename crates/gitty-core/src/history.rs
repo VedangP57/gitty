@@ -85,7 +85,7 @@ impl History {
 }
 
 impl Handle {
-    /// An empty history to fill with [`History::push`].
+    /// An empty history to fill with [`History::push_laid_out`].
     pub fn empty_history(&self) -> History {
         History { entries: Vec::new(), overflow: Vec::new(), graph: self.commit_graph().map(Arc::new), lanes: Default::default() }
     }

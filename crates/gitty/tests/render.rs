@@ -570,7 +570,7 @@ fn the_commit_graph_at_80_and_140_columns() {
         t.app.focus = Focus::History;
         let b = t.render(w, 24);
         let s = text(&b);
-        assert!(s.contains("●─╮─╮─╮") && s.contains('╯'), "the octopus opens its lanes on its own row: {s}");
+        assert!(s.contains("●─┬─┬─╮") && s.contains("●─┴─┴─┴─╮"), "the octopus opens its lanes on its own row: {s}");
         assert!(s.contains("Release 1.0") && s.contains("Parse nested lists"), "subjects stay readable: {s}");
         insta::assert_snapshot!(format!("graph_{w}_text"), s);
         insta::assert_snapshot!(format!("graph_{w}_style"), digest(&b));
@@ -620,6 +620,26 @@ fn the_graph_leaves_with_a_search_and_comes_back() {
     // too narrow for it: the subjects keep the room
     let s = text(&t.render(33, 24));
     assert!(!s.contains('●'), "{s}");
+}
+
+#[test]
+fn the_graph_column_keeps_its_width_while_scrolling_back() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 7));
+    t.app.focus = Focus::History;
+    t.render(80, 7);
+    t.key(KeyCode::Char('G'));
+    let (bottom, _) = find(&t.render(80, 7), "Initial commit").expect("the last row");
+    t.key(KeyCode::Char('g'));
+    let b = t.render(80, 7);
+    let (top, _) = find(&b, "Release 1.0").expect("the first row");
+    assert_eq!(top, bottom, "the subjects stay where they were: {}", text(&b));
+    // a new walk starts narrow again
+    t.key(KeyCode::Char('r'));
+    t.render(80, 7);
+    t.key(KeyCode::Char('r'));
+    let (again, _) = find(&t.render(80, 7), "Release 1.0").unwrap();
+    assert!(again < top, "{again} {top}");
 }
 
 #[test]

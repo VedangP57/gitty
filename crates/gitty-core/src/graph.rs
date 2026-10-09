@@ -29,8 +29,8 @@ const GAP_COLOUR: u16 = 9;
 const GAP_COLOUR_MASK: u16 = 0b111 << GAP_COLOUR;
 /// On a row's last stored lane: the row has more lanes than are stored.
 const MORE: u16 = 1 << 12;
-/// Lane colours cycle through this many indices; the theme maps each to one of its seven hues
-/// (accent, green, yellow, blue, red, magenta, cyan), so no two indices share a colour.
+/// Lane colours cycle through this many indices. The UI maps them to a palette of this many
+/// entries built from the theme's distinct hues (fewer distinct ones repeat in the cycle).
 pub const COLOURS: u8 = 7;
 /// Lanes stored per row: no pane draws more, and a pathological history stays small.
 const MAX_LANES: usize = 48;
@@ -67,7 +67,19 @@ impl Lanes {
 
     /// Lays out the next commit of a topological walk and appends its row to `out`.
     pub fn row(&mut self, id: CommitId, parents: &[CommitId], out: &mut Rows) {
-        let matches: SmallVec<[usize; 4]> = (0..self.lanes.len()).filter(|&i| self.lanes[i].is_some_and(|l| l.want == id)).collect();
+        let waiting = |lanes: &[Option<Lane>]| -> SmallVec<[usize; 4]> { (0..lanes.len()).filter(|&i| lanes[i].is_some_and(|l| l.want == id)).collect() };
+        let mut matches = waiting(&self.lanes);
+        // nothing but free lanes left of the commit's lane (lanes that ended above): the commit
+        // moves over to the leftmost and its lane joins it there with `╯`, so a branch does not
+        // run on far to the right of an empty stretch. (Not a merge, which opens a lane into the
+        // free room instead, nor a root, which ends its lane anyway.)
+        if let (Some(&k), 1) = (matches.first(), parents.len()) {
+            let f = self.free(&[]);
+            if f < k && self.lanes[f..k].iter().all(Option::is_none) {
+                self.lanes[f] = Some(Lane { want: id, colour: self.lanes[k].expect("a waiting lane").colour });
+                matches = waiting(&self.lanes);
+            }
+        }
         let c = match matches.first() {
             Some(&c) => c,
             // a branch tip: a new lane
@@ -155,6 +167,10 @@ impl Lanes {
         if cells.len() > MAX_LANES {
             cells.truncate(MAX_LANES);
             cells[MAX_LANES - 1] |= MORE;
+            if c >= MAX_LANES {
+                // the commit's own lane is cut off: its dot takes the last stored lane
+                cells[MAX_LANES - 1] = COMMIT | MORE | colour(own);
+            }
         }
         out.push(&cells);
     }
@@ -210,9 +226,11 @@ fn glyph(cell: u16) -> Option<char> {
         (true, true, true, true) => '┼',
         (true, true, true, false) => '┤',
         (true, true, false, true) => '├',
-        // a link that runs on past a lane opening or ending there: drawn as the corner
-        (false, true, true, _) => '╮',
-        (true, false, true, _) => '╯',
+        // a link that runs on past a lane opening or ending there
+        (false, true, true, true) => '┬',
+        (true, false, true, true) => '┴',
+        (false, true, true, false) => '╮',
+        (true, false, true, false) => '╯',
         (false, true, false, true) => '╭',
         (true, false, false, true) => '╰',
         (_, _, false, false) => '│',
@@ -328,7 +346,7 @@ mod tests {
     #[test]
     fn an_octopus_merge_opens_and_closes_several_lanes_in_one_row() {
         let h: &[(usize, &[usize])] = &[(9, &[1, 2, 3]), (3, &[0]), (2, &[0]), (1, &[0]), (0, &[])];
-        assert_eq!(text(h), ["●─╮─╮", "│ │ ●", "│ ● │", "● │ │", "●─╯─╯"]);
+        assert_eq!(text(h), ["●─┬─╮", "│ │ ●", "│ ● │", "● │ │", "●─┴─╯"]);
         // each stretch of the fan-out has the colour of the lane it leads to
         let (rows, _) = layout(h);
         let g: Vec<u8> = rows.get(0).unwrap().glyphs().flatten().map(|g| g.1).collect();
@@ -368,6 +386,25 @@ mod tests {
     }
 
     #[test]
+    fn a_link_running_on_past_an_opening_lane_tees_into_it() {
+        // 10, 11 and 12 hold lanes 0 to 2; 1 and 2 end lanes 0 and 1; then 5, in lane 2, opens
+        // two lanes to its left
+        let h: &[(usize, &[usize])] = &[(10, &[1]), (11, &[2]), (12, &[5]), (1, &[]), (2, &[]), (5, &[3, 4, 6]), (4, &[3]), (6, &[3]), (3, &[])];
+        assert_eq!(text(h)[5], "╭─┬─●");
+    }
+
+    #[test]
+    fn a_branch_left_alone_on_the_right_moves_over_to_the_free_lanes() {
+        // three lanes meet at 10, a merge that opens a lane for 12 past the two that end; 12
+        // then moves into the room they left
+        let h: &[(usize, &[usize])] = &[(30, &[10]), (31, &[10]), (32, &[10]), (10, &[11, 12]), (12, &[11]), (11, &[])];
+        assert_eq!(text(h), ["●", "│ ●", "│ │ ●", "●─┴─┴─╮", "│ ●───╯", "●─╯"]);
+        // and keeps its colour
+        let (rows, _) = layout(h);
+        assert_eq!(commit_colour(rows.get(4).unwrap()), rows.get(3).unwrap().glyphs().flatten().last().unwrap().1);
+    }
+
+    #[test]
     fn rows_wider_than_the_store_are_marked() {
         let tips: Vec<(usize, Vec<usize>)> = (0..60).map(|i| (100 + i, vec![0])).collect();
         let h: Vec<(usize, &[usize])> = tips.iter().map(|(c, p)| (*c, p.as_slice())).chain([(0, &[][..])]).collect();
@@ -375,6 +412,11 @@ mod tests {
         let last = rows.get(60).unwrap();
         assert!(last.clipped() && last.columns() == MAX_LANES * 2 - 1);
         assert!(!rows.get(0).unwrap().clipped());
+        // a commit in a lane past the store keeps its dot, in the last stored lane
+        let far = rows.get(55).unwrap();
+        assert!(far.clipped());
+        assert_eq!(far.glyphs().flatten().filter(|g| g.0 == '●').count(), 1);
+        assert_eq!(far.glyphs().last().flatten().map(|g| g.0), Some('●'));
         assert!(lanes.lanes.is_empty());
     }
 

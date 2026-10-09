@@ -5,15 +5,15 @@ expression: s
  gitty repo  ⎇ main                                                                                                [1] Changes  [2] History
  History · 10                                           │ Release 1.0
    ●         Release 1.0                main  TU Sep 10 │ TU Test User · e5653cd · +1 −0 · Sep 10
-   ●─╮─╮─╮   Merge branches 'docs', 'ci' and… TU Sep 22 │───────────────────────────────────────────────────────────────────────────────────
+   ●─┬─┬─╮   Merge branches 'docs', 'ci' and… TU Sep 22 │───────────────────────────────────────────────────────────────────────────────────
    │ │ │ ●   Update lint                 lint  TU Sep 9 │ 1 changed file
    │ │ ● │   Update ci                     ci  TU Sep 8 │ A Release_1.0.txt                                                           +1 −0
    │ ● │ │   Update docs                 docs  TU Sep 7 │
-   ●─╯─╯─╯─╮ Merge branch 'feature'           TU Sep 12 │ Release_1.0.txt  +1 −0
-   │       ● Parse nested lists       feature  TU Sep 5 │     @@ -0,0 +1,1 @@
-   │       ● Add the parser                    TU Sep 4 │ 1 + x
-   ●       │ Fix the build                     TU Sep 6 │
-   ●───────╯ Initial commit                    TU Sep 3 │
+   ●─┴─┴─┴─╮ Merge branch 'feature'           TU Sep 12 │ Release_1.0.txt  +1 −0
+   │ ●─────╯ Parse nested lists       feature  TU Sep 5 │     @@ -0,0 +1,1 @@
+   │ ●       Add the parser                    TU Sep 4 │ 1 + x
+   ● │       Fix the build                     TU Sep 6 │
+   ●─╯       Initial commit                    TU Sep 3 │
                                                         │
                                                         │
                                                         │

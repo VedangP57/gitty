@@ -6,7 +6,7 @@ expression: "text(&t.render(80, 30))"
  History · 10
    ●         Release 1.0                                                  main
    │         TU Test User · Sep 10
-   ●─╮─╮─╮   Merge branches 'docs', 'ci' and 'lint'
+   ●─┬─┬─╮   Merge branches 'docs', 'ci' and 'lint'
    │ │ │ │   TU Test User · Sep 22
    │ │ │ ●   Update lint                                                  lint
    │ │ │ │   TU Test User · Sep 9
@@ -14,15 +14,15 @@ expression: "text(&t.render(80, 30))"
    │ │ │ │   TU Test User · Sep 8
    │ ● │ │   Update docs                                                  docs
    │ │ │ │   TU Test User · Sep 7
-   ●─╯─╯─╯─╮ Merge branch 'feature'
+   ●─┴─┴─┴─╮ Merge branch 'feature'
    │       │ TU Test User · Sep 12
-   │       ● Parse nested lists                                        feature
-   │       │ TU Test User · Sep 5
-   │       ● Add the parser
-   │       │ TU Test User · Sep 4
-   ●       │ Fix the build
-   │       │ TU Test User · Sep 6
-   ●───────╯ Initial commit
+   │ ●─────╯ Parse nested lists                                        feature
+   │ │       TU Test User · Sep 5
+   │ ●       Add the parser
+   │ │       TU Test User · Sep 4
+   ● │       Fix the build
+   │ │       TU Test User · Sep 6
+   ●─╯       Initial commit
              TU Test User · Sep 3
 
 

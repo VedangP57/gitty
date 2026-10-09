@@ -89,11 +89,13 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             })
             .collect()
     };
+    // the widest row so far this walk, so the column does not narrow and widen while scrolling
+    let widest = ids.iter().filter_map(|r| r.2.as_ref()).map(|g| g.cells.len() + usize::from(g.clipped)).max().unwrap_or(0) as u16;
+    app.graph_cols = app.graph_cols.max(widest);
+    let graph_w = if shown { app.graph_cols.min(rows.width.saturating_sub(GRAPH_REST)) } else { 0 };
     let app: &App = app;
     let focused = app.focus == Focus::History;
     let range = app.selected_range();
-    let widest = ids.iter().filter_map(|r| r.2.as_ref()).map(|g| g.cells.len() + usize::from(g.clipped)).max().unwrap_or(0) as u16;
-    let graph_w = widest.min(rows.width.saturating_sub(GRAPH_REST));
     for (k, (i, id, graph)) in ids.into_iter().enumerate() {
         let y = rows.y + k as u16 * row_h;
         let selected = i == app.selected;
@@ -123,12 +125,11 @@ struct Graph {
 }
 
 /// One line of the graph, each lane in its colour. A row wider than `w` columns (or wider than
-/// the lanes stored) ends in `›`.
+/// the lanes stored) ends in `›`, or in the commit's dot when the cut hides it.
 #[allow(clippy::too_many_arguments)]
 fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Option<(char, u8)>], clipped: bool, bg: ratatui::style::Color) {
     let ui = &app.theme.ui;
-    // one theme hue per lane colour index (gitty_core::graph::COLOURS of them)
-    let palette = [ui.accent, ui.status_added, ui.status_modified, ui.status_renamed, ui.status_deleted, ui.pr_merged, ui.behind];
+    let palette = &ui.lanes;
     let w = w as usize;
     let cut = clipped || cells.len() > w;
     let shown = if cut { w.saturating_sub(1) } else { w };
@@ -148,8 +149,13 @@ fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Opti
         }
     }
     if cut && w > 0 {
-        let pad = shown.saturating_sub(cells.len().min(shown));
-        parts.push((format!("{}›", " ".repeat(pad)), Style::new().bg(bg).fg(ui.muted)));
+        let pad = " ".repeat(shown.saturating_sub(cells.len().min(shown)));
+        // a commit whose lane is cut off keeps its dot, at the cut
+        let dot = cells.iter().skip(shown).flatten().find(|g| g.0 == '●');
+        match dot {
+            Some(&(g, c)) => parts.push((format!("{pad}{g}"), Style::new().bg(bg).fg(palette[c as usize % palette.len()]))),
+            None => parts.push((format!("{pad}›"), Style::new().bg(bg).fg(ui.muted))),
+        }
     }
     let parts: Vec<(&str, Style)> = parts.iter().map(|(s, st)| (s.as_str(), *st)).collect();
     spans(buf, x, y, x + w as u16, &parts);
