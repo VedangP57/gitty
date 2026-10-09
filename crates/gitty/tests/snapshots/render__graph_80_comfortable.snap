@@ -4,26 +4,26 @@ expression: "text(&t.render(80, 30))"
 ---
  gitty repo  ⎇ main                                    [1] Changes  [2] History
  History · 10
-   ○       Release 1.0                                                    main
-   │       TU Test User · Sep 10
-   ◎─┬─┬─╮ Merge branches 'docs', 'ci' and 'lint'
+   ● Release 1.0                                                          main
+   │ TU Test User · Sep 10
+   ◉─┬─┬─╮ Merge branches 'docs', 'ci' and 'lint'
    │ │ │ │ TU Test User · Sep 22
-   │ │ │ ○ Update lint                                                    lint
+   │ │ │ ● Update lint                                                    lint
    │ │ │ │ TU Test User · Sep 9
-   │ │ ○ │ Update ci                                                        ci
+   │ │ ● │ Update ci                                                        ci
    │ │ │ │ TU Test User · Sep 8
-   │ ○ │ │ Update docs                                                    docs
+   │ ● │ │ Update docs                                                    docs
    │ │ │ │ TU Test User · Sep 7
-   ◎─│─┴─╯ Merge branch 'feature'
+   ◉─│─┴─╯ Merge branch 'feature'
    │ │     TU Test User · Sep 12
-   │ ○     Parse nested lists                                          feature
-   │ │     TU Test User · Sep 5
-   │ ○     Add the parser
-   │ │     TU Test User · Sep 4
-   ○ │     Fix the build
-   │ │     TU Test User · Sep 6
-   ○─╯     Initial commit
-           TU Test User · Sep 3
+   │ ● Parse nested lists                                              feature
+   │ │ TU Test User · Sep 5
+   │ ● Add the parser
+   │ │ TU Test User · Sep 4
+   ● │ Fix the build
+   │ │ TU Test User · Sep 6
+   ●─╯ Initial commit
+       TU Test User · Sep 3
 
 
 

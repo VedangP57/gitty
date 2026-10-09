@@ -105,7 +105,7 @@ fn a_topological_walk_streams_whole_history_with_its_lanes() {
     let h = history.read().unwrap();
     assert_eq!(h.ids(0..5), ids.iter().rev().map(|i| id(i)).collect::<Vec<_>>());
     let rows: Vec<String> = (0..5).map(|i| h.graph_row(i).unwrap().text()).collect();
-    assert_eq!(rows, ["○"; 5]);
+    assert_eq!(rows, ["●"; 5]);
     // the date walk lays out no lanes
     let msgs = run(&f, Request::Walk { session: 0, tips: tips(&f), topo: false });
     let Msg::HistoryStarted { history, .. } = &msgs[0] else { panic!() };

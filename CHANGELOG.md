@@ -9,7 +9,7 @@ All notable changes to gitty are listed here. The format follows
 ### Added
 
 - A commit graph in History, laid out and drawn like lazygit's (its layout ported, MIT): one row
-  per commit, `○` for commits and `◎` for merges, each branch in a theme colour it keeps all the
+  per commit, `●` for commits and `◉` for merges, each branch in a theme colour it keeps all the
   way down. With the graph on, History lists commits in topological order
   (`git rev-list --topo-order`) and lays out the graph as the walk streams in. `L` shows or hides
   it, and `history_graph = false` starts with it hidden. It steps aside during a search, a

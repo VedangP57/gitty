@@ -88,13 +88,21 @@ fn every_builtin_gives_the_graph_lanes_distinct_colours_off_the_background() {
             for (i, a) in lanes[..n].iter().enumerate() {
                 assert!(!lanes[i + 1..n].contains(a), "{name} {depth:?}: lane colour {i} repeats among the first {n}: {lanes:?}");
             }
-            // most builtins have all seven; the fewest is everforest-dark's five (its accent is
-            // its green, its orange is near its red)
+            // most builtins have all seven vivid hues; rose-pine-dawn, nord and everforest-dark
+            // have five (pale or near-alike hues drop out)
             assert!(n >= 5, "{name} {depth:?}: only {n} lane colours: {lanes:?}");
             for i in 0..lanes.len() {
                 assert_ne!(lanes[i], lanes[(i + 1) % lanes.len()], "{name} {depth:?}: lane colours {i} and the next look alike");
                 for bg in [t.ui.bg, t.ui.panel, t.ui.selection, t.ui.selection_inactive] {
                     assert_ne!(lanes[i], bg, "{name} {depth:?}: a lane colour is a background");
+                }
+                // never the list's text colours, which would read as grey
+                for text in [t.ui.fg, t.ui.muted, t.ui.status_fg] {
+                    assert_ne!(lanes[i], text, "{name} {depth:?}: a lane colour is a text colour");
+                }
+                if let Color::Rgb(r, g, b) = lanes[i] {
+                    let chroma = r.max(g).max(b) - r.min(g).min(b);
+                    assert!(chroma >= 40, "{name}: lane colour {i} {:?} is nearly grey", lanes[i]);
                 }
             }
         }

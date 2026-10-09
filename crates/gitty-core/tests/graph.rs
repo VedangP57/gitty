@@ -105,7 +105,7 @@ fn the_walk_lists_children_before_parents_with_and_without_a_commit_graph() {
         assert_eq!(history.ids(0..walked.len()), walked.iter().map(|w| w.0).collect::<Vec<_>>());
         for i in 0..walked.len() {
             let row = history.graph_row(i).unwrap();
-            assert_eq!(row.text().matches(['○', '◎']).count(), 1, "row {i}: {}", row.text());
+            assert_eq!(row.text().matches(['●', '◉']).count(), 1, "row {i}: {}", row.text());
         }
         assert!(history.graph_row(walked.len()).is_none());
     }
@@ -124,9 +124,9 @@ fn the_octopus_and_the_merges_are_drawn_as_merges() {
     }
     for (i, (_, parents)) in walked.iter().enumerate() {
         let t = history.graph_row(i).unwrap().text();
-        // a merge is drawn as ◎ (its other parents' lines start on its row, though box drawing
+        // a merge is drawn as ◉ (its other parents' lines start on its row, though box drawing
         // can show one as a plain │ where it bends into a column a line ends in)
-        assert_eq!(t.contains('◎'), parents.len() > 1, "row {i} {t:?} for {} parents", parents.len());
+        assert_eq!(t.contains('◉'), parents.len() > 1, "row {i} {t:?} for {} parents", parents.len());
     }
 }
 

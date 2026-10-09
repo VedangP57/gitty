@@ -11,8 +11,9 @@
 //!
 //! What differs from lazygit: commits stream in from a topological walk ([`topo_walk`]) and the
 //! layout state carries over from one chunk to the next; rows are stored compactly ([`Rows`])
-//! and cut at [`MAX_LANES`] columns; there is no highlighting of the selected commit's lines
-//! (the list draws its own selection); and a pipe's colour is not its commit author's but a
+//! and cut at [`MAX_LANES`] columns; commits are drawn as a filled `●` and merges as `◉` (lazygit
+//! draws `○` and `◎`), which stand out better in the list; there is no highlighting of the
+//! selected commit's lines (the list draws its own selection); and a pipe's colour is not its commit author's but a
 //! lane colour that stays with a branch: a commit's first-parent pipe keeps the colour of the
 //! pipe it took its column from, and a merge's other pipes each open a new one.
 
@@ -47,8 +48,10 @@ const MORE: u16 = 1 << 12;
 /// `rightStyle` was set (lazygit's nil check).
 const HAS_RIGHT_STYLE: u16 = 1 << 13;
 
-pub const COMMIT_SYMBOL: char = '○';
-pub const MERGE_SYMBOL: char = '◎';
+/// A commit, filled so it reads at a glance (lazygit draws `○`).
+pub const COMMIT_SYMBOL: char = '●';
+/// A merge commit (lazygit draws `◎`).
+pub const MERGE_SYMBOL: char = '◉';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PipeKind {
@@ -471,7 +474,12 @@ mod tests {
     /// lazygit's `TestRenderCommitGraph` output: each row as "<name> <graph>".
     fn graph(history: &[(&str, &[&str])]) -> String {
         let (rows, _) = layout(history);
-        history.iter().enumerate().map(|(i, (c, _))| format!("{c} {}", rows.get(i).unwrap().text()).trim().to_string() + "\n").collect()
+        lazygit_look(history.iter().enumerate().map(|(i, (c, _))| format!("{c} {}", rows.get(i).unwrap().text()).trim().to_string() + "\n").collect())
+    }
+
+    /// Our commit symbols as lazygit's, so its expected strings carry over unchanged.
+    fn lazygit_look(s: String) -> String {
+        s.replace(COMMIT_SYMBOL, "○").replace(MERGE_SYMBOL, "◎")
     }
 
     fn expected(s: &str) -> String {
@@ -660,7 +668,7 @@ mod tests {
         let mut rows = Rows::default();
         render(pipes, &mut rows);
         let g: Vec<Option<(char, u8)>> = rows.get(0).unwrap().glyphs().collect();
-        (g.iter().map(|g| g.map_or(' ', |g| g.0)).collect(), g.iter().map(|g| g.map(|g| g.1)).collect())
+        (lazygit_look(g.iter().map(|g| g.map_or(' ', |g| g.0)).collect()), g.iter().map(|g| g.map(|g| g.1)).collect())
     }
 
     use PipeKind::{Continues as C, Starts as S, Terminates as T};
@@ -756,7 +764,7 @@ mod tests {
         assert_ne!(c[2], c[0], "the branch has its own");
         // the join is drawn in the branch's colour
         let last: Vec<(char, u8)> = rows.get(4).unwrap().glyphs().flatten().collect();
-        assert_eq!(last, [('○', c[0]), ('─', c[2]), ('╯', c[2])]);
+        assert_eq!(last, [(COMMIT_SYMBOL, c[0]), ('─', c[2]), ('╯', c[2])]);
     }
 
     #[test]

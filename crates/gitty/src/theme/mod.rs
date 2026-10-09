@@ -133,13 +133,24 @@ fn same_looking(a: Rgb, b: Rgb) -> bool {
     d(a.0, b.0) + d(a.1, b.1) + d(a.2, b.2) < 48
 }
 
-/// The graph's lane colours: the distinct `hues` (none like a background in `avoid`, nor like an
-/// earlier hue, nor the same colour once mapped to the terminal's depth), in order. A theme with
-/// fewer than [`LANE_COLOURS`] of them cycles those, and no two neighbours in the cycle (the last
-/// and the first included) are the same while it has three or more.
+/// How far a colour is from grey: its largest channel less its smallest.
+fn chroma(c: Rgb) -> u8 {
+    c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2)
+}
+
+/// Below this a hue reads as grey next to the list's text.
+const VIVID: u8 = 40;
+
+/// The graph's lane colours: the vivid, distinct `hues`, the most vivid first (lane 0, the main
+/// line, gets the strongest). None is like a colour in `avoid` (the backgrounds and the text
+/// colours), nor like an earlier hue, nor the same colour once mapped to the terminal's depth. A
+/// theme with fewer than [`LANE_COLOURS`] of them cycles those, and no two neighbours in the cycle
+/// (the last and the first included) are the same while it has three or more.
 fn lane_palette(hues: &[Rgb], avoid: &[Rgb], color: impl Fn(Rgb) -> Color) -> [Color; LANE_COLOURS] {
+    let mut hues = hues.to_vec();
+    hues.sort_by_key(|&h| std::cmp::Reverse(chroma(h)));
     let mut picked: Vec<(Rgb, Color)> = Vec::new();
-    for &h in hues {
+    for &h in hues.iter().filter(|&&h| chroma(h) >= VIVID) {
         let c = color(h);
         if avoid.iter().any(|&a| same_looking(a, h) || color(a) == c) || picked.iter().any(|&(p, pc)| same_looking(p, h) || pc == c) {
             continue;
@@ -150,7 +161,7 @@ fn lane_palette(hues: &[Rgb], avoid: &[Rgb], color: impl Fn(Rgb) -> Color) -> [C
         }
     }
     if picked.is_empty() {
-        // no hue at all stands out: the accent everywhere
+        // no hue at all stands out: the most colourful one everywhere
         picked.push((hues[0], color(hues[0])));
     }
     let n = picked.len();
@@ -452,7 +463,7 @@ fn build(spec: &Spec, depth: ColorDepth, emph_override: Option<f32>) -> anyhow::
         u("pr_closed", red)?,
     ];
     let c = |x: Rgb| r.color(x);
-    let lanes = lane_palette(&[ui_accent, green, yellow, blue, red, magenta, cyan, orange], &[ui_bg, ui_panel, ui[3], ui[4]], c);
+    let lanes = lane_palette(&[ui_accent, green, yellow, blue, red, magenta, cyan, orange], &[ui_bg, ui_panel, ui[3], ui[4], ui_fg, ui[2]], c);
     let ui = UiColors {
         lanes,
         bg: c(ui_bg),

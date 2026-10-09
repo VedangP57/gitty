@@ -89,10 +89,8 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             })
             .collect()
     };
-    // the widest row so far this walk, so the column does not narrow and widen while scrolling
-    let widest = ids.iter().filter_map(|r| r.2.as_ref()).map(|g| g.cells.len() + usize::from(g.clipped)).max().unwrap_or(0) as u16;
-    app.graph_cols = app.graph_cols.max(widest);
-    let graph_w = if shown { app.graph_cols.min(rows.width.saturating_sub(GRAPH_REST)) } else { 0 };
+    // each row's subject starts one column after its own graph, which leaves the rest room
+    let room = rows.width.saturating_sub(GRAPH_REST) as usize;
     let app: &App = app;
     let focused = app.focus == Focus::History;
     let range = app.selected_range();
@@ -105,6 +103,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             (true, _) | (false, true) => ui.selection_inactive,
             _ => ui.bg,
         };
+        let graph_w = graph.as_ref().map_or(0, |g| (g.cells.len() + usize::from(g.clipped)).min(room)) as u16;
         draw_row(app, buf, rows, y, id, app.rows.get(&i), bg, app.search.hits.contains(&i), graph_w);
         if let Some(g) = graph {
             let x = rows.x + 3;
@@ -138,7 +137,7 @@ fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Opti
     for cell in cells.iter().take(shown) {
         match (cell, parts.last_mut()) {
             (Some((g, c)), last) => {
-                let st = Style::new().bg(bg).fg(palette[*c as usize % palette.len()]);
+                let st = lane_style(palette, *g, *c, bg);
                 match last {
                     Some((s, l)) if *l == st => s.push(*g),
                     _ => parts.push((g.to_string(), st)),
@@ -153,12 +152,21 @@ fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Opti
         // a commit whose lane is cut off keeps its dot, at the cut
         let dot = cells.iter().skip(shown).flatten().find(|g| g.0 == gitty_core::graph::COMMIT_SYMBOL || g.0 == gitty_core::graph::MERGE_SYMBOL);
         match dot {
-            Some(&(g, c)) => parts.push((format!("{pad}{g}"), Style::new().bg(bg).fg(palette[c as usize % palette.len()]))),
+            Some(&(g, c)) => {
+                parts.push((pad, Style::new().bg(bg)));
+                parts.push((g.to_string(), lane_style(palette, g, c, bg)));
+            }
             None => parts.push((format!("{pad}›"), Style::new().bg(bg).fg(ui.muted))),
         }
     }
     let parts: Vec<(&str, Style)> = parts.iter().map(|(s, st)| (s.as_str(), *st)).collect();
     spans(buf, x, y, x + w as u16, &parts);
+}
+
+/// A graph glyph in its lane's colour; commit symbols bold, so they stand out from the lines.
+fn lane_style(palette: &[ratatui::style::Color], g: char, c: u8, bg: ratatui::style::Color) -> Style {
+    let st = Style::new().bg(bg).fg(palette[c as usize % palette.len()]);
+    if g == gitty_core::graph::COMMIT_SYMBOL || g == gitty_core::graph::MERGE_SYMBOL { st.add_modifier(ratatui::style::Modifier::BOLD) } else { st }
 }
 
 /// Compare mode: title, the Behind / Ahead / Files tabs, then the tab's commits.

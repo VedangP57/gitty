@@ -95,7 +95,7 @@ open it in `$EDITOR` at that line.
 The History tab lists the commits of the checked-out branch and its upstream (`r` switches to all
 branches and tags). A graph column to the left of the subjects draws the branches the way
 [lazygit](https://github.com/jesseduffield/lazygit) does (its layout, ported): one row per commit,
-`○` for a commit and `◎` for a merge, `╮` where a merge brings a branch in and `╯` where a branch
+`●` for a commit and `◉` for a merge, `╮` where a merge brings a branch in and `╯` where a branch
 joins back. A branch keeps its theme colour from top to bottom, and lines wider than the pane
 allows are cut with `›`. With the graph on, the list is in topological order (from
 `git rev-list --topo-order`, so a branch's commits stay together); `L` hides it and lists commits by

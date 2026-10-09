@@ -6238,7 +6238,7 @@ fn the_graph_is_on_by_default_and_lists_git_topological_order() {
     assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "--topo-order", "main"]));
     assert_ne!(history_ids(&t), git_ids(&f, &["rev-list", "main"]), "the fixture's time order differs");
     let rows: Vec<String> = (0..t.app.history_len).map(|i| lanes(&t, i).expect("laid out")).collect();
-    assert_eq!(rows, ["◎─╮", "│ ○", "│ ○", "○ │", "○ │", "○─╯"]);
+    assert_eq!(rows, ["◉─╮", "│ ●", "│ ●", "● │", "● │", "●─╯"]);
 }
 
 #[test]
@@ -6415,9 +6415,9 @@ fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
     assert_eq!(len, 1200 + 1200 / 4);
     for i in 0..len {
         let row = lanes(&t, i).unwrap_or_else(|| panic!("row {i} has no lanes"));
-        assert_eq!(row.matches(['○', '◎']).count(), 1, "row {i}: {row}");
+        assert_eq!(row.matches(['●', '◉']).count(), 1, "row {i}: {row}");
     }
-    assert_eq!(lanes(&t, len - 1).as_deref(), Some("○"), "the root ends alone");
+    assert_eq!(lanes(&t, len - 1).as_deref(), Some("●"), "the root ends alone");
     // one line per commit: a page moves by the pane's rows
     t.ch('g');
     let page = t.app.list_capacity();
