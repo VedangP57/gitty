@@ -11,11 +11,13 @@
 //!
 //! What differs from lazygit: commits stream in from a topological walk ([`topo_walk`]) and the
 //! layout state carries over from one chunk to the next; rows are stored compactly ([`Rows`])
-//! and cut at [`MAX_LANES`] columns; commits are drawn as a filled `●` and merges as `◉` (lazygit
-//! draws `○` and `◎`), which stand out better in the list; there is no highlighting of the
-//! selected commit's lines (the list draws its own selection); and a pipe's colour is not its commit author's but a
-//! lane colour that stays with a branch: a commit's first-parent pipe keeps the colour of the
-//! pipe it took its column from, and a merge's other pipes each open a new one.
+//! and cut at [`MAX_LANES`] columns; commits are drawn as a filled `●`, merges as `◉` (lazygit
+//! draws `○` and `◎`) and the checked-out commit as `◎`; the checked-out commit's first-parent
+//! line (the current branch) is drawn with heavy strokes; there is no highlighting of the
+//! selected commit's lines (the list draws its own selection); and a pipe's colour is not its
+//! commit author's but a lane colour that stays with a branch: a commit's first-parent pipe
+//! keeps the colour of the pipe it took its column from, and a merge's other pipes each open a
+//! new one.
 
 use smallvec::SmallVec;
 
@@ -37,21 +39,32 @@ const TYPE: u16 = 4;
 const TYPE_MASK: u16 = 0b11 << TYPE;
 const COMMIT: u16 = 1 << TYPE;
 const MERGE: u16 = 2 << TYPE;
+/// The checked-out commit.
+const HEAD: u16 = 3 << TYPE;
 /// The colour of the cell's own glyph.
 const STYLE: u16 = 6;
 const STYLE_MASK: u16 = 0b111 << STYLE;
-/// The colour of the horizontal line after it (lazygit's `rightStyle`).
+/// The colour of the horizontal line after it (lazygit's `rightStyle`, else the glyph's).
 const RIGHT_STYLE: u16 = 9;
 const RIGHT_STYLE_MASK: u16 = 0b111 << RIGHT_STYLE;
 /// On a row's last stored cell: the row has more columns than are stored.
 const MORE: u16 = 1 << 12;
-/// `rightStyle` was set (lazygit's nil check).
-const HAS_RIGHT_STYLE: u16 = 1 << 13;
+/// Every vertical line in the cell is the current branch's: drawn heavy.
+const HEAVY_V: u16 = 1 << 14;
+/// Every horizontal line in the cell is the current branch's: drawn heavy.
+const HEAVY_H: u16 = 1 << 15;
 
 /// A commit, filled so it reads at a glance (lazygit draws `○`).
 pub const COMMIT_SYMBOL: char = '●';
 /// A merge commit (lazygit draws `◎`).
 pub const MERGE_SYMBOL: char = '◉';
+/// The checked-out commit.
+pub const HEAD_SYMBOL: char = '◎';
+
+/// Whether `g` is one of the commit symbols.
+pub fn is_node(g: char) -> bool {
+    matches!(g, COMMIT_SYMBOL | MERGE_SYMBOL | HEAD_SYMBOL)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PipeKind {
@@ -70,6 +83,8 @@ struct Pipe {
     to_pos: usize,
     kind: PipeKind,
     colour: u8,
+    /// On the checked-out commit's first-parent chain: the current branch's line.
+    heavy: bool,
 }
 
 impl Pipe {
@@ -87,6 +102,9 @@ pub struct Lanes {
     pipes: Vec<Pipe>,
     started: bool,
     opened: u32,
+    head: Option<CommitId>,
+    /// The next commit on the checked-out commit's first-parent chain.
+    chain: Option<CommitId>,
 }
 
 /// A set of columns (lazygit's `set.New[int]`).
@@ -106,6 +124,12 @@ impl Spots {
 }
 
 impl Lanes {
+    /// A layout that marks `head`, the checked-out commit, and draws its first-parent chain (the
+    /// current branch) heavy.
+    pub fn new(head: Option<CommitId>) -> Lanes {
+        Lanes { head, chain: head, ..Lanes::default() }
+    }
+
     fn open(&mut self) -> u8 {
         let c = (self.opened % u32::from(COLOURS)) as u8;
         self.opened = self.opened.wrapping_add(1);
@@ -117,11 +141,11 @@ impl Lanes {
         if !self.started {
             self.started = true;
             let colour = self.open();
-            self.pipes = vec![Pipe { from: None, to: Some(id), from_pos: 0, to_pos: 0, kind: PipeKind::Starts, colour }];
+            self.pipes = vec![Pipe { from: None, to: Some(id), from_pos: 0, to_pos: 0, kind: PipeKind::Starts, colour, heavy: false }];
         }
         let prev = std::mem::take(&mut self.pipes);
         self.pipes = self.next_pipes(&prev, id, parents);
-        render(&self.pipes, out);
+        render(&self.pipes, Some(id) == self.head, out);
     }
 
     /// lazygit's `getNextPipes`.
@@ -142,7 +166,11 @@ impl Lanes {
         // spots a current pipe ends on, and spots one starts on, ends on or passes through
         let mut taken = Spots::default();
         let mut traversed = Spots::default();
-        new.push(Pipe { from: Some(id), to: parents.first().copied(), from_pos: pos, to_pos: pos, kind: PipeKind::Starts, colour: own });
+        let heavy = self.chain.is_some() && self.chain == Some(id);
+        if heavy {
+            self.chain = parents.first().copied();
+        }
+        new.push(Pipe { from: Some(id), to: parents.first().copied(), from_pos: pos, to_pos: pos, kind: PipeKind::Starts, colour: own, heavy });
         let mut traversed_by_continuing = Spots::default();
         for p in &current {
             if p.to != Some(id) {
@@ -172,7 +200,7 @@ impl Lanes {
                 // a new pipe may not end on a taken spot, nor on one a continuing pipe traverses
                 let available = (0..).find(|&i| !taken.has(i) && !traversed_by_continuing.has(i)).expect("a free spot");
                 let colour = self.open();
-                new.push(Pipe { from: Some(id), to: Some(parent), from_pos: pos, to_pos: available, kind: PipeKind::Starts, colour });
+                new.push(Pipe { from: Some(id), to: Some(parent), from_pos: pos, to_pos: available, kind: PipeKind::Starts, colour, heavy: false });
                 taken.add(available);
             }
         }
@@ -207,48 +235,62 @@ struct Cell {
     ty: u16,
     style: Option<u8>,
     right_style: Option<u8>,
+    /// Which kinds of line (the current branch's, or others) its vertical and horizontal
+    /// strokes come from.
+    heavy_v: bool,
+    light_v: bool,
+    heavy_h: bool,
+    light_h: bool,
 }
 
 impl Cell {
-    fn set_up(&mut self, c: u8) {
+    fn stroke_v(&mut self, heavy: bool) {
+        if heavy { self.heavy_v = true } else { self.light_v = true }
+    }
+    fn stroke_h(&mut self, heavy: bool) {
+        if heavy { self.heavy_h = true } else { self.light_h = true }
+    }
+    fn set_up(&mut self, c: u8, heavy: bool) {
         self.up = true;
         self.style = Some(c);
+        self.stroke_v(heavy);
     }
-    fn set_down(&mut self, c: u8) {
+    fn set_down(&mut self, c: u8, heavy: bool) {
         self.down = true;
         self.style = Some(c);
+        self.stroke_v(heavy);
     }
-    fn set_left(&mut self, c: u8) {
+    fn set_left(&mut self, c: u8, heavy: bool) {
         self.left = true;
         if !self.up && !self.down {
             // vertical trumps left
             self.style = Some(c);
         }
+        self.stroke_h(heavy);
     }
-    fn set_right(&mut self, c: u8, over: bool) {
+    fn set_right(&mut self, c: u8, over: bool, heavy: bool) {
         self.right = true;
         if self.right_style.is_none() || over {
             self.right_style = Some(c);
         }
+        self.stroke_h(heavy);
     }
     fn pack(&self) -> u16 {
         let mut v = self.ty;
-        for (on, bit) in [(self.up, UP), (self.down, DOWN), (self.left, LEFT), (self.right, RIGHT)] {
+        for (on, bit) in [(self.up, UP), (self.down, DOWN), (self.left, LEFT), (self.right, RIGHT), (self.heavy_v && !self.light_v, HEAVY_V), (self.heavy_h && !self.light_h, HEAVY_H)] {
             if on {
                 v |= bit;
             }
         }
         let style = self.style.or(self.right_style).unwrap_or(0);
         v |= u16::from(style) << STYLE;
-        if let Some(r) = self.right_style {
-            v |= HAS_RIGHT_STYLE | u16::from(r) << RIGHT_STYLE;
-        }
+        v |= u16::from(self.right_style.unwrap_or(style)) << RIGHT_STYLE;
         v
     }
 }
 
 /// lazygit's `renderPipeSet` (no selected commit), appending the row's cells to `out`.
-fn render(pipes: &[Pipe], out: &mut Rows) {
+fn render(pipes: &[Pipe], head: bool, out: &mut Rows) {
     let mut max_pos = 0;
     let mut commit_pos = 0;
     let mut starts = 0;
@@ -271,21 +313,21 @@ fn render(pipes: &[Pipe], out: &mut Rows) {
         if left != right {
             for cell in cells.iter_mut().take(right.min(n)).skip(left + 1) {
                 // lazygit's setHorizontal
-                cell.set_left(p.colour);
-                cell.set_right(p.colour, over);
+                cell.set_left(p.colour, p.heavy);
+                cell.set_right(p.colour, over, p.heavy);
             }
             if left < n {
-                cells[left].set_right(p.colour, over);
+                cells[left].set_right(p.colour, over, p.heavy);
             }
             if right < n {
-                cells[right].set_left(p.colour);
+                cells[right].set_left(p.colour, p.heavy);
             }
         }
         if matches!(p.kind, PipeKind::Starts | PipeKind::Continues) && p.to_pos < n {
-            cells[p.to_pos].set_down(p.colour);
+            cells[p.to_pos].set_down(p.colour, p.heavy);
         }
         if matches!(p.kind, PipeKind::Terminates | PipeKind::Continues) && p.from_pos < n {
-            cells[p.from_pos].set_up(p.colour);
+            cells[p.from_pos].set_up(p.colour, p.heavy);
         }
     };
     for p in pipes.iter().filter(|p| p.kind == PipeKind::Starts) {
@@ -308,7 +350,13 @@ fn render(pipes: &[Pipe], out: &mut Rows) {
             cells[p.to_pos].down = false;
         }
     }
-    let ty = if starts > 1 { MERGE } else { COMMIT };
+    let ty = if head {
+        HEAD
+    } else if starts > 1 {
+        MERGE
+    } else {
+        COMMIT
+    };
     let mut packed: SmallVec<[u16; 16]> = cells.iter().map(Cell::pack).collect();
     if commit_pos < n {
         packed[commit_pos] = (packed[commit_pos] & !TYPE_MASK) | ty;
@@ -387,6 +435,29 @@ fn box_chars(cell: u16) -> (char, char) {
     }
 }
 
+/// [`box_chars`] with the current branch's strokes heavy. A vertical stroke is heavy when every
+/// vertical line in the cell is the current branch's, a horizontal one likewise; where a cell
+/// mixes a heavy stroke with a thin one and no glyph has that mix, it is drawn thin.
+fn chars(cell: u16) -> (char, char) {
+    let (first, second) = box_chars(cell);
+    let (v, h) = (cell & HEAVY_V != 0, cell & HEAVY_H != 0);
+    let first = match first {
+        '│' if v => '┃',
+        '╯' if v && h => '┛',
+        '╰' if v && h => '┗',
+        '╮' if v && h => '┓',
+        '╭' if v && h => '┏',
+        '┴' if v && h => '┻',
+        '┴' if v => '┸',
+        '┬' if v && h => '┳',
+        '┬' if v => '┰',
+        '─' if h => '━',
+        g => g,
+    };
+    let second = if second == '─' && h { '━' } else { second };
+    (first, second)
+}
+
 impl Row<'_> {
     /// Terminal columns the row's cells take.
     pub fn columns(&self) -> usize {
@@ -400,14 +471,15 @@ impl Row<'_> {
     /// trailing blank left off.
     pub fn glyphs(&self) -> impl Iterator<Item = Option<(char, u8)>> + '_ {
         self.0.iter().enumerate().flat_map(|(i, &cell)| {
-            let (mut first, second) = box_chars(cell);
+            let (mut first, second) = chars(cell);
             match cell & TYPE_MASK {
                 COMMIT => first = COMMIT_SYMBOL,
                 MERGE => first = MERGE_SYMBOL,
+                HEAD => first = HEAD_SYMBOL,
                 _ => {}
             }
             let style = ((cell & STYLE_MASK) >> STYLE) as u8;
-            let right = if cell & HAS_RIGHT_STYLE != 0 { ((cell & RIGHT_STYLE_MASK) >> RIGHT_STYLE) as u8 } else { style };
+            let right = ((cell & RIGHT_STYLE_MASK) >> RIGHT_STYLE) as u8;
             let own = (first != ' ').then_some((first, style));
             let after = (second != ' ').then_some((second, right));
             std::iter::once(own).chain((i + 1 < self.0.len()).then_some(after))
@@ -416,7 +488,8 @@ impl Row<'_> {
     /// The line under the row (a second line of text): every line that goes on down.
     pub fn filler(&self) -> impl Iterator<Item = Option<(char, u8)>> + '_ {
         self.0.iter().enumerate().flat_map(|(i, &cell)| {
-            let own = (cell & DOWN != 0).then_some(('│', ((cell & STYLE_MASK) >> STYLE) as u8));
+            let line = if cell & HEAVY_V != 0 { '┃' } else { '│' };
+            let own = (cell & DOWN != 0).then_some((line, ((cell & STYLE_MASK) >> STYLE) as u8));
             std::iter::once(own).chain((i + 1 < self.0.len()).then_some(None))
         })
     }
@@ -660,13 +733,13 @@ mod tests {
 
     fn pipe(from: &str, to: &str, from_pos: usize, to_pos: usize, kind: PipeKind, colour: u8) -> Pipe {
         let h = |s: &str| if s == "empty" { None } else { Some(id(s)) };
-        Pipe { from: h(from), to: h(to), from_pos, to_pos, kind, colour }
+        Pipe { from: h(from), to: h(to), from_pos, to_pos, kind, colour, heavy: false }
     }
 
     /// One row drawn from `pipes`: its glyphs and their colours, blanks as (' ', None).
     fn cells(pipes: &[Pipe]) -> (String, Vec<Option<u8>>) {
         let mut rows = Rows::default();
-        render(pipes, &mut rows);
+        render(pipes, false, &mut rows);
         let g: Vec<Option<(char, u8)>> = rows.get(0).unwrap().glyphs().collect();
         (lazygit_look(g.iter().map(|g| g.map_or(' ', |g| g.0)).collect()), g.iter().map(|g| g.map(|g| g.1)).collect())
     }
@@ -723,7 +796,7 @@ mod tests {
     fn pipe_set_root_commit_has_no_line_below() {
         let p = [pipe("a", "root", 0, 0, T, CYAN), pipe("root", "empty", 0, 0, S, GREEN)];
         let mut rows = Rows::default();
-        render(&p, &mut rows);
+        render(&p, false, &mut rows);
         assert_eq!(rows.get(0).unwrap().filler().flatten().count(), 0);
     }
 
@@ -733,7 +806,7 @@ mod tests {
     fn next_pipes() {
         let mut lanes = Lanes::default();
         let (a, b, c, d, e) = (id("a"), id("b"), id("c"), id("d"), id("e"));
-        let p = |from, to, from_pos, to_pos, kind| Pipe { from: Some(from), to, from_pos, to_pos, kind, colour: 0 };
+        let p = |from, to, from_pos, to_pos, kind| Pipe { from: Some(from), to, from_pos, to_pos, kind, colour: 0, heavy: false };
         let colourless = |v: Vec<Pipe>| v.into_iter().map(|p| Pipe { colour: 0, ..p }).collect::<Vec<_>>();
         assert_eq!(colourless(lanes.next_pipes(&[p(a, Some(b), 0, 0, S)], b, &[c])), [p(a, Some(b), 0, 0, T), p(b, Some(c), 0, 0, S)]);
         let prev = [p(a, Some(b), 0, 0, T), p(b, Some(c), 0, 0, S), p(b, Some(d), 0, 1, S)];
@@ -765,6 +838,41 @@ mod tests {
         // the join is drawn in the branch's colour
         let last: Vec<(char, u8)> = rows.get(4).unwrap().glyphs().flatten().collect();
         assert_eq!(last, [(COMMIT_SYMBOL, c[0]), ('─', c[2]), ('╯', c[2])]);
+    }
+
+    /// Rows laid out with `head` checked out, as text, and each row's filler.
+    fn with_head(history: &[(&str, &[&str])], head: &str) -> (Vec<String>, Vec<String>) {
+        let (mut lanes, mut rows) = (Lanes::new(Some(id(head))), Rows::default());
+        for (c, ps) in history {
+            let ps: Vec<CommitId> = ps.iter().map(|p| id(p)).collect();
+            lanes.row(id(c), &ps, &mut rows);
+        }
+        let filler = |i| rows.get(i).unwrap().filler().map(|g: Option<(char, u8)>| g.map_or(' ', |g| g.0)).collect::<String>().trim_end().to_string();
+        ((0..rows.len()).map(|i| rows.get(i).unwrap().text()).collect(), (0..rows.len()).map(filler).collect())
+    }
+
+    #[test]
+    fn the_current_branch_is_heavy_and_head_has_its_own_node() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("4", &["5"]), ("3", &["5"]), ("5", &[])];
+        let (rows, filler) = with_head(h, "1");
+        // the merge's other line and the branch it brings in stay thin
+        assert_eq!(rows, ["◎", "◉─╮", "┃ ●", "● │", "●─╯"]);
+        assert_eq!(filler, ["┃", "┃ │", "┃ │", "┃ │", ""]);
+        // nothing checked out: all thin, as lazygit draws it
+        let (mut lanes, mut out) = (Lanes::default(), Rows::default());
+        for (c, ps) in h {
+            let ps: Vec<CommitId> = ps.iter().map(|p| id(p)).collect();
+            lanes.row(id(c), &ps, &mut out);
+        }
+        assert!((0..out.len()).all(|i| !out.get(i).unwrap().text().contains(['┃', '━', '◎'])));
+    }
+
+    #[test]
+    fn a_current_branch_line_that_bends_uses_heavy_corners() {
+        // 3 is checked out, on the side of 1's merge; its line bends into 4 below 2
+        let h: &[(&str, &[&str])] = &[("1", &["2", "3"]), ("3", &["4"]), ("2", &["4"]), ("4", &[])];
+        let (rows, _) = with_head(h, "3");
+        assert_eq!(rows, ["◉─╮", "│ ◎", "● ┃", "●━┛"]);
     }
 
     #[test]

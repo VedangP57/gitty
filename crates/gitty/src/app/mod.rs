@@ -31,7 +31,7 @@ use gitty_highlight::Highlights;
 use gitty_core::refs::{HistoryScope, RefsSnapshot};
 use ratatui::layout::Rect;
 
-use crate::config::{Config, Density, UiState};
+use crate::config::{Config, Density, GraphStyle, UiState};
 use crate::dates::{DateMode, next_threshold};
 use crate::msg::{DiffKey, FilesOf, Gens, HlKey, Msg, PrUrlError, Request, SharedHistory};
 use crate::theme::{ColorDepth, Registry, Theme};
@@ -537,10 +537,13 @@ impl App {
         Mode::of(self.size.0)
     }
 
+    /// Lines per History row: two in comfortable density, and two while a roomy graph shows (its
+    /// lines run on through the second line, which carries the commit's author and date).
     pub fn row_height(&self) -> usize {
+        let roomy = self.config.history_graph_style == GraphStyle::Roomy && self.graph_shown();
         match self.density {
-            Density::Compact => 1,
-            Density::Comfortable => 2,
+            Density::Compact if !roomy => 1,
+            _ => 2,
         }
     }
 
@@ -810,6 +813,7 @@ impl App {
     fn start_walk(&mut self) {
         let Some(refs) = &self.refs else { return };
         let tips = refs.tips(self.scope);
+        let head = refs.head_id();
         self.session = Gens::bump(&self.gens.session);
         // a count's excluded rows belong to the old walk's list
         self.range_count = None;
@@ -820,7 +824,7 @@ impl App {
         self.requested_rows.clear();
         // indices of the old walk mean nothing in the new one
         self.range_anchor = None;
-        self.outbox.push(Request::Walk { session: self.session, tips, topo: self.show_graph });
+        self.outbox.push(Request::Walk { session: self.session, tips, topo: self.show_graph, head });
         self.restart_search();
     }
 

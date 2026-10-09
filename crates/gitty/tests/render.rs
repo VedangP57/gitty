@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use common::Fixture;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use gitty::app::{App, AppInit, Focus};
-use gitty::config::{Config, UiState};
+use gitty::config::{Config, GraphStyle, UiState};
 use gitty::exec::exec;
 use gitty::msg::{Gens, Msg};
 use gitty::theme::{ColorDepth, Registry};
@@ -38,7 +38,8 @@ impl H {
         let clock = Instant::now();
         let app = App::new(AppInit {
             repo_name: "repo".into(),
-            config: Config::default(),
+            // one line per commit unless a test asks for the roomy graph (see `roomy`)
+            config: Config { history_graph_style: GraphStyle::Compact, ..Config::default() },
             registry,
             theme,
             depth: ColorDepth::True,
@@ -562,34 +563,86 @@ fn graph_fixture() -> Fixture {
     f
 }
 
+const GRAPH_STYLES: [(GraphStyle, &str); 2] = [(GraphStyle::Roomy, "roomy"), (GraphStyle::Compact, "compact")];
+
 #[test]
 fn the_commit_graph_at_80_and_140_columns() {
     let f = graph_fixture();
-    for w in [80u16, 140] {
-        let mut t = H::new(&f, "github-dark", (w, 24));
-        t.app.focus = Focus::History;
-        let b = t.render(w, 24);
-        let s = text(&b);
-        assert!(s.contains("◉─┬─┬─╮"), "the octopus opens its lines on its own row: {s}");
-        assert!(s.contains("Release 1.0") && s.contains("Parse nested lists"), "subjects stay readable: {s}");
-        insta::assert_snapshot!(format!("graph_{w}_text"), s);
-        insta::assert_snapshot!(format!("graph_{w}_style"), digest(&b));
+    for (style, name) in GRAPH_STYLES {
+        for w in [80u16, 140] {
+            let mut t = H::new(&f, "github-dark", (w, 30));
+            t.app.config.history_graph_style = style;
+            t.app.focus = Focus::History;
+            let b = t.render(w, 30);
+            let s = text(&b);
+            assert!(s.contains("◉─┬─┬─╮"), "the octopus opens its lines on its own row: {s}");
+            assert!(s.contains("◎ Release 1.0"), "HEAD has its own node: {s}");
+            assert!(s.contains('┃'), "the current branch is heavy: {s}");
+            assert!(s.contains("Release 1.0") && s.contains("Parse nested lists"), "subjects stay readable: {s}");
+            insta::assert_snapshot!(format!("graph_{name}_{w}_text"), s);
+            insta::assert_snapshot!(format!("graph_{name}_{w}_style"), digest(&b));
+        }
     }
 }
 
 #[test]
 fn a_43_column_history_pane_keeps_the_graph() {
     let f = graph_fixture();
-    let mut t = H::new(&f, "github-dark", (180, 24));
-    t.app.ui_state.history_width = Some(43);
-    let b = t.render(180, 24);
-    assert_eq!(t.app.hits.panes.history.map(|r| r.width), Some(43));
+    for (style, name) in GRAPH_STYLES {
+        let mut t = H::new(&f, "github-dark", (180, 30));
+        t.app.config.history_graph_style = style;
+        t.app.ui_state.history_width = Some(43);
+        let b = t.render(180, 30);
+        assert_eq!(t.app.hits.panes.history.map(|r| r.width), Some(43));
+        let s = text(&b);
+        assert!(s.contains('●'), "{s}");
+        // the subjects keep their room, cut with an ellipsis
+        assert!(s.contains("Merge branches") && s.contains('…'), "{s}");
+        let pane: String = s.lines().map(|l| l.chars().take(43).collect::<String>().trim_end().to_string() + "\n").collect();
+        insta::assert_snapshot!(format!("graph_{name}_43_pane"), pane);
+    }
+}
+
+#[test]
+fn roomy_rows_continue_every_lane_and_carry_the_second_line() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 30));
+    t.app.config.history_graph_style = GraphStyle::Roomy;
+    t.app.focus = Focus::History;
+    let b = t.render(80, 30);
     let s = text(&b);
-    assert!(s.contains('●'), "{s}");
-    // the subjects keep their room, cut with an ellipsis
-    assert!(s.contains("Merge branches") && s.contains('…'), "{s}");
-    let pane: String = s.lines().map(|l| l.chars().take(43).collect::<String>().trim_end().to_string() + "\n").collect();
-    insta::assert_snapshot!("graph_43_pane", pane);
+    let lines: Vec<&str> = s.lines().collect();
+    let (_, y) = find(&b, "Release 1.0").unwrap();
+    // HEAD's node, then its heavy line on with the author and date beside it
+    assert!(lines[y as usize].contains("◎ Release 1.0"), "{s}");
+    assert!(lines[y as usize + 1].contains("┃ TU Test User"), "{s}");
+    let (_, y) = find(&b, "Update lint").unwrap();
+    assert!(lines[y as usize + 1].contains("┃ │ │ │ TU Test User"), "{s}");
+    // a click on either line selects the commit
+    let (_, y) = find(&b, "Update ci").unwrap();
+    t.click(40, y + 1);
+    let sel = t.app.selected;
+    t.click(40, y);
+    assert_eq!(t.app.selected, sel);
+    assert_eq!(t.app.rows.get(&sel).map(|r| r.summary.as_str()), Some("Update ci"));
+}
+
+#[test]
+fn branch_labels_take_their_commits_lane_colour() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (80, 24));
+    t.app.focus = Focus::History;
+    let b = t.render(80, 24);
+    let lanes = t.app.theme.ui.lanes;
+    for label in ["lint", "docs"] {
+        let (_, y) = find(&b, &format!("Update {label}")).unwrap();
+        let line: String = (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect();
+        let x = line.rfind(&format!(" {label} ")).unwrap();
+        let x = line[..x].chars().count() as u16 + 1;
+        let node = (3..20).find(|&x| gitty_core::graph::is_node(b[(x, y)].symbol().chars().next().unwrap_or(' '))).unwrap();
+        assert_eq!(b[(x, y)].bg, b[(node, y)].fg, "{label}: the pill is the lane's colour");
+        assert!(lanes.contains(&b[(x, y)].bg));
+    }
 }
 
 #[test]
@@ -631,7 +684,7 @@ fn each_subject_starts_right_after_its_own_rows_graph() {
     let s = text(&b);
     // (subject, its row's graph): the subject one column after the graph's last cell
     let mut ends = Vec::new();
-    for (subject, graph) in [("Release 1.0", "●"), ("Merge branches", "◉─┬─┬─╮"), ("Update lint", "│ │ │ ●"), ("Initial commit", "●─╯")] {
+    for (subject, graph) in [("Release 1.0", "◎"), ("Merge branches", "◉─┬─┬─╮"), ("Update lint", "┃ │ │ ●"), ("Initial commit", "●─╯")] {
         let (x, y) = find(&b, subject).unwrap_or_else(|| panic!("{subject}: {s}"));
         let line = s.lines().nth(y as usize).unwrap();
         assert_eq!(x as usize, 3 + graph.chars().count() + 1, "{subject}: {line}");

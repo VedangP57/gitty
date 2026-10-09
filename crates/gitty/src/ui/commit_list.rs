@@ -11,7 +11,6 @@ use ratatui::style::{Modifier, Style};
 use super::paint::{centered, fill, spans, text, width};
 use crate::app::compare::CompareTab;
 use crate::app::{App, Focus};
-use crate::config::Density;
 use crate::dates::{format_date, identity_hue, initials};
 use crate::text::truncate_end;
 
@@ -42,7 +41,22 @@ pub fn title(app: &App, buf: &mut Buffer, r: Rect, label: &str, focused: bool, e
     spans(buf, r.x + 1, r.y, r.right(), &[(label, st), (extra, base.fg(ui.muted))]);
 }
 
-fn badge_style(app: &App, l: &RefLabel) -> Style {
+/// A ref label's style. With the graph shown, `lane` is the colour of the commit's lane: branch
+/// labels become pills in that colour (solid for local branches, coloured text for remote ones),
+/// so a label reads as the branch it names; tags keep their own.
+fn badge_style(app: &App, l: &RefLabel, lane: Option<ratatui::style::Color>) -> Style {
+    let ui = &app.theme.ui;
+    match (l.kind, lane) {
+        (RefKind::LocalBranch, Some(c)) => {
+            let st = Style::new().fg(ui.bg).bg(c);
+            if l.is_head { st.add_modifier(Modifier::BOLD) } else { st }
+        }
+        (RefKind::RemoteBranch, Some(c)) => Style::new().fg(c).bg(ui.badge_remote_bg),
+        _ => badge_style_plain(app, l),
+    }
+}
+
+fn badge_style_plain(app: &App, l: &RefLabel) -> Style {
     let ui = &app.theme.ui;
     match l.kind {
         RefKind::LocalBranch if l.is_head => Style::new().fg(ui.badge_head_fg).bg(ui.badge_head_bg).add_modifier(Modifier::BOLD),
@@ -104,7 +118,9 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             _ => ui.bg,
         };
         let graph_w = graph.as_ref().map_or(0, |g| (g.cells.len() + usize::from(g.clipped)).min(room)) as u16;
-        draw_row(app, buf, rows, y, id, app.rows.get(&i), bg, app.search.hits.contains(&i), graph_w);
+        // the commit's lane colour, for its branch labels
+        let lane = graph.as_ref().and_then(|g| g.cells.iter().flatten().find(|c| gitty_core::graph::is_node(c.0))).map(|c| ui.lanes[c.1 as usize % ui.lanes.len()]);
+        draw_row(app, buf, rows, y, id, app.rows.get(&i), bg, app.search.hits.contains(&i), graph_w, lane);
         if let Some(g) = graph {
             let x = rows.x + 3;
             draw_graph(app, buf, x, y, graph_w, &g.cells, g.clipped, bg);
@@ -150,7 +166,7 @@ fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Opti
     if cut && w > 0 {
         let pad = " ".repeat(shown.saturating_sub(cells.len().min(shown)));
         // a commit whose lane is cut off keeps its dot, at the cut
-        let dot = cells.iter().skip(shown).flatten().find(|g| g.0 == gitty_core::graph::COMMIT_SYMBOL || g.0 == gitty_core::graph::MERGE_SYMBOL);
+        let dot = cells.iter().skip(shown).flatten().find(|g| gitty_core::graph::is_node(g.0));
         match dot {
             Some(&(g, c)) => {
                 parts.push((pad, Style::new().bg(bg)));
@@ -166,7 +182,7 @@ fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Opti
 /// A graph glyph in its lane's colour; commit symbols bold, so they stand out from the lines.
 fn lane_style(palette: &[ratatui::style::Color], g: char, c: u8, bg: ratatui::style::Color) -> Style {
     let st = Style::new().bg(bg).fg(palette[c as usize % palette.len()]);
-    if g == gitty_core::graph::COMMIT_SYMBOL || g == gitty_core::graph::MERGE_SYMBOL { st.add_modifier(ratatui::style::Modifier::BOLD) } else { st }
+    if gitty_core::graph::is_node(g) { st.add_modifier(ratatui::style::Modifier::BOLD) } else { st }
 }
 
 /// Compare mode: title, the Behind / Ahead / Files tabs, then the tab's commits.
@@ -227,14 +243,14 @@ fn draw_compare(app: &mut App, buf: &mut Buffer, r: Rect) {
     for (k, (i, id)) in list.iter().enumerate().skip(first).take(n).enumerate() {
         let y = rows.y + k as u16 * row_h;
         let bg = if i == sel { if focused { ui.selection } else { ui.selection_inactive } } else { ui.bg };
-        draw_row(app, buf, rows, y, *id, c.rows.get(id), bg, false, 0);
+        draw_row(app, buf, rows, y, *id, c.rows.get(id), bg, false, 0, None);
     }
 }
 
 /// One commit row at `y` (and the line below it in comfortable density), leaving `graph_w`
 /// columns after the marker for the graph.
 #[allow(clippy::too_many_arguments)]
-fn draw_row(app: &App, buf: &mut Buffer, rows: Rect, y: u16, id: gitty_core::CommitId, row: Option<&CommitRow>, bg: ratatui::style::Color, hit: bool, graph_w: u16) {
+fn draw_row(app: &App, buf: &mut Buffer, rows: Rect, y: u16, id: gitty_core::CommitId, row: Option<&CommitRow>, bg: ratatui::style::Color, hit: bool, graph_w: u16, lane: Option<ratatui::style::Color>) {
     let ui = &app.theme.ui;
     let row_h = app.row_height() as u16;
     let base = Style::new().bg(bg).fg(ui.fg);
@@ -265,10 +281,11 @@ fn draw_row(app: &App, buf: &mut Buffer, rows: Rect, y: u16, id: gitty_core::Com
     let ini = initials(&row.author.name);
     let ini_st = base.fg(app.theme.avatar[identity_hue(&row.author.email) as usize]).add_modifier(Modifier::BOLD);
     let labels: Vec<RefLabel> = app.refs.as_ref().and_then(|r| r.labels.get(&id)).cloned().unwrap_or_default();
-    let badges: Vec<(String, Style)> = labels.iter().map(|l| (format!(" {} ", truncate_end(&l.name, MAX_BADGE)), badge_style(app, l))).collect();
+    let badges: Vec<(String, Style)> = labels.iter().map(|l| (format!(" {} ", truncate_end(&l.name, MAX_BADGE)), badge_style(app, l, lane))).collect();
     let badges_w: u16 = badges.iter().map(|(s, _)| width(s) + 1).sum();
     let avail = right.saturating_sub(x0);
-    let comfortable = app.density == Density::Comfortable;
+    // the second line carries author and date (comfortable density, or a roomy graph)
+    let comfortable = app.row_height() > 1;
     let meta_w = if comfortable { 0 } else { width(&ini) + 1 + width(&date) + 1 };
     let (show_badges, show_date) = if avail >= MIN_SUMMARY + badges_w + meta_w {
         (true, true)

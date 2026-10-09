@@ -1,6 +1,6 @@
 ---
 source: crates/gitty/tests/render.rs
-expression: "text(&t.render(80, 30))"
+expression: s
 ---
  gitty repo  ⎇ main                                    [1] Changes  [2] History
  History · 10

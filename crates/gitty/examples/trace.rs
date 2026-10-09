@@ -25,7 +25,7 @@ fn main() {
         let t = Instant::now();
         let mut first = None;
         let mut msgs = 0;
-        exec(&h, Request::Walk { session: 0, tips: tips.clone(), topo }, &mut |m| {
+        exec(&h, Request::Walk { session: 0, tips: tips.clone(), topo, head: None }, &mut |m| {
             msgs += 1;
             match m {
                 Msg::HistoryStarted { history, .. } => hist = Some(history),

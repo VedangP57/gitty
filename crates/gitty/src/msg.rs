@@ -253,7 +253,8 @@ pub enum Request {
     Refs,
     /// `topo`: the graph view's walk, git's topological order with a graph row per commit,
     /// instead of commit-time order.
-    Walk { session: u64, tips: Vec<CommitId>, topo: bool },
+    /// `head`: the checked-out commit, whose node and first-parent line the graph marks.
+    Walk { session: u64, tips: Vec<CommitId>, topo: bool, head: Option<CommitId> },
     /// `upstream: None` is a branch never pushed: ahead is what pushing it would publish.
     AheadBehind { local: CommitId, upstream: Option<CommitId> },
     Rows { session: u64, ids: Vec<(usize, CommitId)> },

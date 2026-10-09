@@ -6238,7 +6238,7 @@ fn the_graph_is_on_by_default_and_lists_git_topological_order() {
     assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "--topo-order", "main"]));
     assert_ne!(history_ids(&t), git_ids(&f, &["rev-list", "main"]), "the fixture's time order differs");
     let rows: Vec<String> = (0..t.app.history_len).map(|i| lanes(&t, i).expect("laid out")).collect();
-    assert_eq!(rows, ["◉─╮", "│ ●", "│ ●", "● │", "● │", "●─╯"]);
+    assert_eq!(rows, ["◎─╮", "┃ ●", "┃ ●", "● │", "● │", "●─╯"], "HEAD, the merge, has its own node and its first-parent line is heavy");
 }
 
 #[test]
@@ -6406,7 +6406,7 @@ fn a_range_counts_its_extra_commits_in_topological_order() {
 }
 
 #[test]
-fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
+fn every_row_of_a_long_history_has_its_lanes_and_two_lines() {
     let f = Fixture::new();
     many_merges(&f, 1200);
     let mut t = H::new(&f);
@@ -6415,12 +6415,34 @@ fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
     assert_eq!(len, 1200 + 1200 / 4);
     for i in 0..len {
         let row = lanes(&t, i).unwrap_or_else(|| panic!("row {i} has no lanes"));
-        assert_eq!(row.matches(['●', '◉']).count(), 1, "row {i}: {row}");
+        assert_eq!(row.matches(['●', '◉', '◎']).count(), 1, "row {i}: {row}");
     }
     assert_eq!(lanes(&t, len - 1).as_deref(), Some("●"), "the root ends alone");
-    // one line per commit: a page moves by the pane's rows
+    // roomy rows are two lines: a page moves by the commits that fit
+    assert_eq!(t.app.row_height(), 2);
     t.ch('g');
     let page = t.app.list_capacity();
     t.key(KeyCode::PageDown);
     assert_eq!(t.app.selected, page);
+}
+
+#[test]
+fn the_graph_style_sets_the_rows_lines_and_density_still_applies_without_the_graph() {
+    let f = graph_fixture();
+    let mut t = H::new(&f);
+    t.pump();
+    assert_eq!(t.app.row_height(), 2, "roomy by default");
+    // without the graph (a search) the list keeps its own density
+    t.ch('/');
+    typed(&mut t, "f1");
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(t.app.row_height(), 1);
+    t.key(KeyCode::Esc);
+    let mut t = H::with(&f, Config { history_graph_style: gitty::config::GraphStyle::Compact, ..Config::default() }, None);
+    t.pump();
+    assert!(t.app.graph_shown());
+    assert_eq!(t.app.row_height(), 1, "compact");
+    t.ch('z');
+    assert_eq!(t.app.row_height(), 2, "comfortable density still gives two lines");
 }

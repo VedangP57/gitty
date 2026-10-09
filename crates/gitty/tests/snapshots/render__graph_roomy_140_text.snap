@@ -1,0 +1,34 @@
+---
+source: crates/gitty/tests/render.rs
+expression: s
+---
+ gitty repo  ⎇ main                                                                                                [1] Changes  [2] History
+ History · 10                                           │ Release 1.0
+   ◎ Release 1.0                                  main  │ TU Test User · e5653cd · +1 −0 · Sep 10
+   ┃ TU Test User · Sep 10                              │───────────────────────────────────────────────────────────────────────────────────
+   ◉─┬─┬─╮ Merge branches 'docs', 'ci' and 'lint'       │ 1 changed file
+   ┃ │ │ │ TU Test User · Sep 22                        │ A Release_1.0.txt                                                           +1 −0
+   ┃ │ │ ● Update lint                            lint  │
+   ┃ │ │ │ TU Test User · Sep 9                         │ Release_1.0.txt  +1 −0
+   ┃ │ ● │ Update ci                                ci  │     @@ -0,0 +1,1 @@
+   ┃ │ │ │ TU Test User · Sep 8                         │ 1 + x
+   ┃ ● │ │ Update docs                            docs  │
+   ┃ │ │ │ TU Test User · Sep 7                         │
+   ◉─│─┴─╯ Merge branch 'feature'                       │
+   ┃ │     TU Test User · Sep 12                        │
+   ┃ ● Parse nested lists                      feature  │
+   ┃ │ TU Test User · Sep 5                             │
+   ┃ ● Add the parser                                   │
+   ┃ │ TU Test User · Sep 4                             │
+   ● │ Fix the build                                    │
+   ┃ │ TU Test User · Sep 6                             │
+   ●─╯ Initial commit                                   │
+       TU Test User · Sep 3                             │
+                                                        │
+                                                        │
+                                                        │
+                                                        │
+                                                        │
+                                                        │
+                                                        │
+ j/k move  enter files  / search  V range  b compare  tab pane  r scope  ? help  q quit

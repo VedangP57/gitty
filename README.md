@@ -94,10 +94,13 @@ open it in `$EDITOR` at that line.
 
 The History tab lists the commits of the checked-out branch and its upstream (`r` switches to all
 branches and tags). A graph column to the left of the subjects draws the branches the way
-[lazygit](https://github.com/jesseduffield/lazygit) does (its layout, ported): one row per commit,
-`●` for a commit and `◉` for a merge, `╮` where a merge brings a branch in and `╯` where a branch
-joins back. A branch keeps its theme colour from top to bottom, and lines wider than the pane
-allows are cut with `›`. With the graph on, the list is in topological order (from
+[lazygit](https://github.com/jesseduffield/lazygit) does (its layout, ported): `●` for a commit,
+`◉` for a merge and `◎` for the checked-out commit, `╮` where a merge brings a branch in and `╯`
+where a branch joins back. Each commit takes two lines, its graph lines running on through the
+second next to the author and date (`history_graph_style = "compact"` gives one line per
+commit). The current branch, the checked-out commit's first-parent line, is drawn heavy (`┃`). A
+branch keeps its theme colour from top to bottom, its labels are pills in that colour, and lines
+wider than the pane allows are cut with `›`. With the graph on, the list is in topological order (from
 `git rev-list --topo-order`, so a branch's commits stay together); `L` hides it and lists commits by
 date (`history_graph = false` starts that way). The graph steps aside during a search, a range (`V`)
 and compare mode, and in a History pane narrower than 34 columns. On a large repository without a
@@ -342,6 +345,7 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `auto_tune` | `true` | tune large repositories (see below) |
 | `files_show_ignored` | `true` | list ignored files in the Files tab when it starts (`i` toggles them there) |
 | `history_graph` | `true` | start History with the commit graph and topological order (`L` toggles) |
+| `history_graph_style` | `"roomy"` | `"roomy"`: two lines per commit, the graph's lines running on through the second (with the author and date); `"compact"`: one line per commit (two in comfortable `density`) |
 | `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 
