@@ -90,6 +90,16 @@ panes and `?` shows every key. The mouse works throughout: click to select, scro
 gutter to pick lines, Shift-click for a commit range, and double-click a file or diff line to
 open it in `$EDITOR` at that line.
 
+### History
+
+The History tab lists the commits of the checked-out branch and its upstream (`r` switches to all
+branches and tags). A graph column draws them the way `git log --graph` does: a dot per commit and
+lines where branches split and merge, each lane in a theme colour. git draws the graph and gitty
+loads it a page at a time as you scroll. With the graph on, the list is in git's topological order
+(a branch's commits stay together); `L` hides it and lists commits by date (`history_graph = false`
+starts that way). The graph steps aside during a search, a range (`V`) and compare mode, and in a
+History pane narrower than 48 columns.
+
 ### Files
 
 The Files tab (`3`) browses the working tree, ignored files included, and shows the selected file
@@ -280,6 +290,7 @@ reported at startup:
 | `o` | expand the commit header | `header` |
 | `D` | date format | `dates` |
 | `z` | row density | `density` |
+| `L` | show or hide the commit graph | `graph` |
 | `h` `←` | scroll the diff left | `scroll_left` |
 | `l` `→` | scroll the diff right | `scroll_right` |
 | `[` | previous hunk | `prev_hunk` |
@@ -326,6 +337,7 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `auto_fetch_minutes` | `5` | 0 turns the background fetch off |
 | `auto_tune` | `true` | tune large repositories (see below) |
 | `files_show_ignored` | `true` | list ignored files in the Files tab when it starts (`i` toggles them there) |
+| `history_graph` | `true` | start History with the commit graph and topological order (`L` toggles) |
 | `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 
