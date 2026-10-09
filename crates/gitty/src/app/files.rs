@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gitty_core::files::{DirEntry, EntryKind, is_secret};
+use gitty_core::status::{EntryKind as StatusKind, StatusEntry};
 
 use super::{App, Focus, Tab, Toast};
 use crate::external::External;
@@ -47,6 +48,73 @@ impl Row {
     }
 }
 
+/// A git status mark on a row: the Changes tab's letter for a file, or for a directory the
+/// strongest change below it. `rank` orders them: conflicted (4) beats deleted (3) beats modified
+/// (2, which includes added, renamed and type changes) beats untracked (1), so the one mark a
+/// folded directory can show is the one that most needs attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mark {
+    pub letter: char,
+    rank: u8,
+}
+
+impl Mark {
+    fn of(e: &StatusEntry) -> Mark {
+        let rank = match (e.kind, e.letter()) {
+            (StatusKind::Unmerged, _) => 4,
+            (_, 'D') => 3,
+            (StatusKind::Untracked, _) => 1,
+            _ => 2,
+        };
+        Mark { letter: e.letter(), rank }
+    }
+
+    /// What a directory shows for its strongest change: a letter that picks the colour of that
+    /// rank (an untracked file is `A` in Changes, so it takes the added colour).
+    fn dir(rank: u8) -> Mark {
+        Mark { letter: ['A', 'A', 'M', 'D', 'U'][rank as usize], rank }
+    }
+}
+
+/// The mark of every changed file and of every directory above one, by path relative to the work
+/// tree. Built once per status in O(changes): once a directory holds a mark at least as strong,
+/// so do all of its parents, which ends the walk up.
+pub fn marks_of(entries: &[StatusEntry]) -> HashMap<String, Mark> {
+    let mut marks: HashMap<String, Mark> = HashMap::with_capacity(entries.len());
+    for e in entries {
+        let m = Mark::of(e);
+        // never weaker than what the same path already holds (a file that became a folder)
+        match marks.get_mut(&e.path) {
+            Some(o) if o.rank > m.rank => {}
+            Some(o) => *o = m,
+            None => {
+                marks.insert(e.path.clone(), m);
+            }
+        }
+        mark_above(&mut marks, &e.path, m.rank);
+        // a rename took the file out of its old folders, as a deletion would
+        if let Some(from) = &e.orig_path {
+            mark_above(&mut marks, from, 3);
+        }
+    }
+    marks
+}
+
+/// Gives every folder above `path` a mark of at least `rank`.
+fn mark_above(marks: &mut HashMap<String, Mark>, path: &str, rank: u8) {
+    let mut end = path.len();
+    while let Some(i) = path[..end].rfind('/') {
+        end = i;
+        match marks.get_mut(&path[..i]) {
+            Some(d) if d.rank >= rank => break,
+            Some(d) => *d = Mark::dir(rank),
+            None => {
+                marks.insert(path[..i].to_string(), Mark::dir(rank));
+            }
+        }
+    }
+}
+
 /// What the viewer has for the selected file.
 pub enum Viewing {
     Nothing,
@@ -68,6 +136,11 @@ pub struct FilesState {
     view_gen: u64,
     /// Listings changed since `rows` was built; rebuilt once per batch of messages.
     dirty: bool,
+    /// Git status marks by path, replaced whenever a status arrives (drawing only looks them up).
+    pub marks: HashMap<String, Mark>,
+    /// `i`: ignored files and directories are listed (dimmed). Not saved; `files_show_ignored`
+    /// sets the starting state.
+    pub show_ignored: bool,
     /// The file the viewer is for, and what it has of it.
     pub shown: Option<PathBuf>,
     pub viewing: Viewing,
@@ -93,6 +166,8 @@ impl Default for FilesState {
             dir_gen: 0,
             view_gen: 0,
             dirty: false,
+            marks: HashMap::new(),
+            show_ignored: true,
             shown: None,
             viewing: Viewing::Nothing,
             reveal: false,
@@ -168,7 +243,7 @@ fn push_dir(rows: &mut Vec<Row>, f: &FilesState, rel: &Path, depth: u16) {
             if entries.is_empty() && depth > 0 {
                 rows.push(Row { path: rel.join("(empty)"), name: "(empty)".into(), depth, kind: RowKind::Note { error: false }, ignored: false, secret: false });
             }
-            for e in entries {
+            for e in entries.iter().filter(|e| f.show_ignored || !e.ignored) {
                 let path = rel.join(&e.name);
                 let name = e.name.to_string_lossy().into_owned();
                 let secret = matches!(e.kind, EntryKind::File | EntryKind::Symlink { .. }) && is_secret(&path);
@@ -392,6 +467,23 @@ impl App {
         if !self.toggle_files_dir() && self.files_tab.selected().is_some_and(Row::viewable) {
             self.focus = Focus::Diff;
         }
+    }
+
+    /// `i`: list or hide ignored files and directories. Rows are rebuilt from the kept listings,
+    /// so expanded directories stay expanded and nothing is read again.
+    pub fn toggle_ignored(&mut self) {
+        self.files_tab.show_ignored = !self.files_tab.show_ignored;
+        let keep = self.files_tab.selected().map(|r| r.path.clone());
+        self.files_tab.rebuild();
+        // a selected row that was just hidden hands the selection to the nearest directory above
+        // it that is still listed (a file deleted on disk keeps the plain same-index rule)
+        if let Some(i) = keep.filter(|p| self.files_tab.row_at(p).is_none()).and_then(|p| p.ancestors().find_map(|a| self.files_tab.row_at(a))) {
+            self.files_tab.sel = i;
+        }
+        self.ensure_files_visible_sel();
+        self.sync_viewer();
+        let what = if self.files_tab.show_ignored { "ignored files shown" } else { "ignored files hidden" };
+        self.toast = Some(Toast { what: what.into(), detail: String::new(), error: false });
     }
 
     /// `v`: show or hide the selected secret file.

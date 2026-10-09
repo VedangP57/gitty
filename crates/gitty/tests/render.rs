@@ -1869,9 +1869,16 @@ fn a_big_tree_draws_within_the_frame_budget() {
         std::fs::write(f.path().join(format!("f{i:05}.txt")), "x").unwrap();
     }
     f.commit("many", NOW - DAY);
+    // every file changed: 5000 marks to look up, and each row draws one
+    for i in 0..5000 {
+        std::fs::write(f.path().join(format!("f{i:05}.txt")), "y").unwrap();
+    }
     let mut t = files_tab(&f, (140, 40));
     assert_eq!(t.app.files_tab.rows.len(), 5000);
-    t.render(140, 40);
+    assert_eq!(t.app.files_tab.marks.len(), 5000);
+    let ms = t.render(140, 40);
+    let m = ms.content.iter().filter(|c| c.symbol() == "M" && c.fg == t.app.theme.ui.status_modified).count();
+    assert!(m >= 30, "the visible rows carry their mark: {m}");
     let mut term = Terminal::new(TestBackend::new(140, 40)).unwrap();
     let start = Instant::now();
     for _ in 0..20 {
@@ -2615,4 +2622,61 @@ fn an_ambiguous_block_and_unknown_markers_are_flagged_on_screen() {
     let b = t.render(120, 24);
     assert!(find(&b, "Conflict markers not understood: open in the editor (e)").is_some());
     assert!(find(&b, "markers not understood").is_some());
+}
+
+/// The foreground of the first cell on row `y` that shows `sym` in colour `fg`.
+fn marked(b: &Buffer, y: u16, sym: &str, fg: Color) -> bool {
+    (0..b.area.width).any(|x| b[(x, y)].symbol() == sym && b[(x, y)].fg == fg)
+}
+
+#[test]
+fn marks_draw_in_the_changes_colours_and_folded_folders_carry_a_dot() {
+    let f = files_fixture();
+    f.write("README.md", "# changed\n");
+    f.write("src/main.rs", main_rs(1));
+    std::fs::remove_file(f.path().join("src/lib.rs")).unwrap();
+    for w in [100u16, 140] {
+        let mut t = files_tab(&f, (w, 30));
+        let ui = t.app.theme.ui.clone();
+        let b = t.render(w, 30);
+        let row = |name: &str| find(&b, name).unwrap_or_else(|| panic!("no {name}: {}", text(&b))).1;
+        // a modified file: its letter in the modified colour
+        assert!(marked(&b, row("README.md"), "M", ui.status_modified), "{w}: {}", text(&b));
+        // untracked is A in the added colour, like the Changes list
+        assert!(marked(&b, row("link ->"), "A", ui.status_added), "{w}: {}", text(&b));
+        // src is folded: one dot, in the strongest colour below it (deleted beats modified)
+        assert!(marked(&b, row("src/"), "●", ui.status_deleted), "{w}: {}", text(&b));
+        assert!(t.app.files_tab.rows.iter().all(|r| r.name != "main.rs"), "src is still folded");
+        // unchanged rows carry nothing
+        let y = row(".gitignore");
+        assert!(!(0..b.area.width).any(|x| matches!(b[(x, y)].symbol(), "●" | "M" | "A" | "D")), "{w}");
+        // opened: the file has its own letter and the folder keeps its dot
+        pick(&mut t, "src");
+        t.key(KeyCode::Enter);
+        let b = t.render(w, 30);
+        let y = find(&b, " main.rs").unwrap().1;
+        assert!(marked(&b, y, "M", ui.status_modified), "{w}: {}", text(&b));
+        assert!(marked(&b, find(&b, "src/").unwrap().1, "●", ui.status_deleted), "{w}");
+        assert!(!text(&b).contains("lib.rs"), "a deleted file is not listed");
+        // a selected row keeps its mark, on the selection background
+        pick(&mut t, "main.rs");
+        let b = t.render(w, 30);
+        let y = find(&b, " main.rs").unwrap().1;
+        let c = (0..b.area.width).map(|x| &b[(x, y)]).find(|c| c.symbol() == "M" && c.fg == ui.status_modified).unwrap();
+        assert_eq!(c.bg, ui.selection);
+        // the ignored toggle shows in the footer and the toast
+        t.key(KeyCode::Char('i'));
+        let s = text(&t.render(w, 30));
+        assert!(s.contains("ignored files hidden"), "{w}: {s}");
+        assert!(!s.contains("target"), "{w}: {s}");
+    }
+}
+
+#[test]
+fn the_files_footer_at_80_columns_keeps_help_and_quit() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (80, 24));
+    let b = t.render(80, 24);
+    let last = text(&b).lines().last().unwrap_or("").to_string();
+    assert!(last.contains("? help") && last.contains("q quit"), "{last}");
 }

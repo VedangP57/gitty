@@ -117,6 +117,7 @@ impl App {
             Action::FilesTab => self.set_tab(Tab::Files),
             Action::RevealSecret => self.toggle_reveal(),
             Action::OpenEditor => self.files_edit(),
+            Action::ToggleIgnored => self.toggle_ignored(),
             Action::FilesCollapse => self.files_collapse(),
             Action::FilesExpand => self.files_expand(),
             Action::Fetch => self.start_net(crate::msg::NetOp::Fetch),

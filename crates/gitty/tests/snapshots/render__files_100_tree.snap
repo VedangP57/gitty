@@ -11,7 +11,7 @@ expression: s
    .env (secret)
    .gitignore
    data.bin
-   link -> src/main.rs
+   link -> src/main.rs                                                                            A
    README.md
 
 
@@ -31,4 +31,4 @@ expression: s
 
 
 
- j/k move  h/l fold  enter open  e edit  v reveal  2 history  ? help  q quit
+ j/k move  h/l fold  enter open  e edit  v reveal  2 history  ? help  q quit  i ignored

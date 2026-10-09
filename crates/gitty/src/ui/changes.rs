@@ -3,7 +3,7 @@
 use gitty_core::status::Check;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 
 use super::commit_list::title;
 use super::paint::{centered, fill, spans, text, text_right};
@@ -12,6 +12,7 @@ use crate::app::commit::Field;
 use crate::app::{App, Focus};
 use crate::editor::Editor;
 use crate::text::truncate_middle;
+use crate::theme::UiColors;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -20,6 +21,17 @@ fn checkbox(c: Check) -> &'static str {
         Check::Staged => "[x]",
         Check::Partial => "[~]",
         Check::Unstaged => "[ ]",
+    }
+}
+
+/// The colour of a status letter (shared with the marks in the Files tree).
+pub fn status_color(ui: &UiColors, letter: char) -> Color {
+    match letter {
+        'A' => ui.status_added,
+        'D' => ui.status_deleted,
+        'R' | 'C' => ui.status_renamed,
+        'U' => ui.error,
+        _ => ui.status_modified,
     }
 }
 
@@ -91,13 +103,7 @@ pub fn draw_files(app: &mut App, buf: &mut Buffer, r: Rect) {
             Check::Unstaged => row.fg(ui.muted),
         };
         let letter = e.letter();
-        let color = match letter {
-            'A' => ui.status_added,
-            'D' => ui.status_deleted,
-            'R' | 'C' => ui.status_renamed,
-            'U' => ui.error,
-            _ => ui.status_modified,
-        };
+        let color = status_color(&ui, letter);
         let right = rows.right().saturating_sub(1);
         let x = text(buf, rows.x + 1, y, right, checkbox(check), cst) + 1;
         let x = text(buf, x, y, right, &letter.to_string(), row.fg(color).add_modifier(Modifier::BOLD)) + 1;

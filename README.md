@@ -98,6 +98,15 @@ closes one, or goes to the parent), so a large tree costs nothing until you go i
 shown as `name -> target` and never followed; submodules and nested repositories are leaves. Files
 over 2 MiB and binary files are not loaded (`e` opens them in `$EDITOR`).
 
+Changed files carry the same letter and colour as in the Changes tab in the last column (`M`, `A`
+for added or untracked, `D`, `R`, `U` for conflicted), and a directory with anything changed below
+it shows a `●` even when it is folded, so you can see which folders hold changes without opening
+them. The dot takes the colour of the strongest change inside: conflicted, then deleted, then
+modified (added and renamed count as modified), then untracked. A file deleted from the work tree
+or renamed away is not listed under its old name, but its old folders are marked as deleted. `i` hides the ignored files and directories (they are
+dimmed otherwise); expanded folders stay expanded. The `files_show_ignored` option sets whether
+they start out shown.
+
 Files that look like secrets are marked `(secret)` and are not read from disk until you press `v`
 on them: `.env` and its variants (`.env.*`, `.env-*`, `*.env`, `.envrc`; only the exact names
 `.env.example`, `.env.sample`, `.env.template` and `.env.dist` are shown), private keys and
@@ -237,6 +246,7 @@ reported at startup:
 | `H` | Changes: stage the hunk | `stage_hunk` |
 | `v` | Files: show or hide a secret file (.env, keys…) | `reveal_secret` |
 | `e` | Files: open the file in $EDITOR | `open_editor` |
+| `i` | Files: show or hide ignored files | `toggle_ignored` |
 | `h` `←` | Files: close the directory (or go to its parent) | `files_collapse` |
 | `l` `→` | Files: open the directory | `files_expand` |
 | `/` | search history (text, path:dir) | `search` |
@@ -296,6 +306,7 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `emph_alpha` | theme's | 0.0–1.0, strength of the changed-word highlight |
 | `auto_fetch_minutes` | `5` | 0 turns the background fetch off |
 | `auto_tune` | `true` | tune large repositories (see below) |
+| `files_show_ignored` | `true` | list ignored files in the Files tab when it starts (`i` toggles them there) |
 | `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 
