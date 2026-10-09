@@ -167,10 +167,11 @@ pub enum WriteOp {
     StashDrop { index: usize, expect: String },
     /// Stash the changes, then switch; if the switch fails the stash is popped back.
     StashAndSwitch { name: String, remote: bool, message: String },
-    /// Merge the branch into the checked-out one; `remote`: `name` is `origin/x`. Conflicts abort the
-    /// merge and come back as a note.
+    /// Merge the branch into the checked-out one; `remote`: `name` is `origin/x`. Conflicts leave the
+    /// merge open and come back as a [`Msg::Conflicted`].
     Merge { name: String, remote: bool },
-    /// Stash the changes, then merge; the stash is put back if nothing was merged.
+    /// Stash the changes, then merge; the stash is put back if nothing was merged. A merge with
+    /// conflicts stays open and the stash stays in the stash.
     StashAndMerge { name: String, remote: bool, message: String },
     /// Finish the stopped merge, rebase, cherry-pick or revert (everything resolved and staged).
     /// `id` is the [`OpState::id`] the dialog showed; `accepted` the staged files with conflict
@@ -178,6 +179,9 @@ pub enum WriteOp {
     ContinueOp { op: RepoOp, id: String, accepted: Vec<String> },
     /// Give it up: the repository goes back to before it started.
     AbortOp { op: RepoOp, id: String },
+    /// [`WriteOp::AbortOp`], then the changes stashed before the merge (`pushed`, the `refs/stash`
+    /// the push made) are popped back, unless the stash list moved since.
+    AbortAndUnstash { op: RepoOp, id: String, pushed: String },
     /// Replace a conflicted file with `bytes` (one block resolved, or that undone) if it still
     /// holds the text that hashes to `expect`. `left` blocks remain in `bytes`;
     /// `undo`: it puts an earlier text back.
@@ -212,19 +216,19 @@ impl WriteOp {
             WriteOp::Merge { .. } => "merging",
             WriteOp::StashAndMerge { .. } => "stashing and merging",
             WriteOp::ContinueOp { .. } => "continuing",
-            WriteOp::AbortOp { .. } => "aborting",
+            WriteOp::AbortOp { .. } | WriteOp::AbortAndUnstash { .. } => "aborting",
             WriteOp::ResolveConflict { .. } | WriteOp::TakeSide { .. } => "resolving the conflict",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
     /// Commits, undo and branch changes move HEAD or refs; refs and history refresh after them.
     pub fn moves_head(&self) -> bool {
-        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::Merge { .. } | WriteOp::StashAndMerge { .. } | WriteOp::ContinueOp { .. } | WriteOp::AbortOp { .. })
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::Merge { .. } | WriteOp::StashAndMerge { .. } | WriteOp::ContinueOp { .. } | WriteOp::AbortOp { .. } | WriteOp::AbortAndUnstash { .. })
     }
 
     /// The stash list changes after these.
     pub fn touches_stash(&self) -> bool {
-        matches!(self, WriteOp::StashPush { .. } | WriteOp::StashApply { .. } | WriteOp::StashPop { .. } | WriteOp::StashDrop { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::StashAndMerge { .. })
+        matches!(self, WriteOp::StashPush { .. } | WriteOp::StashApply { .. } | WriteOp::StashPop { .. } | WriteOp::StashDrop { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::StashAndMerge { .. } | WriteOp::AbortAndUnstash { .. })
     }
 }
 
@@ -346,6 +350,9 @@ pub enum Msg {
     Status { generation: u64, result: Result<Status, String> },
     /// A continue stopped: these staged files still contain conflict markers. Ask before going on.
     StagedMarkers { op: RepoOp, id: String, files: Vec<String> },
+    /// A merge was left open on conflicts (`doing`: "Merging a into main"): ask whether to resolve
+    /// them now. `state` is the merge as it was on disk, `stash` the stash gitty made before it.
+    Conflicted { doing: String, files: Vec<String>, state: OpState, stash: Option<String> },
     /// The merge, rebase, cherry-pick or revert in progress (None: none), read just after the
     /// status of the same `generation`, whose conflicts it counts.
     OpState { generation: u64, state: Option<OpState> },
@@ -416,6 +423,7 @@ impl std::fmt::Debug for Msg {
                 Err(e) => write!(f, "Status {{ generation: {generation}, error: {e} }}"),
             },
             Msg::StagedMarkers { op, files, .. } => write!(f, "StagedMarkers {{ {op:?}: {files:?} }}"),
+            Msg::Conflicted { doing, files, .. } => write!(f, "Conflicted {{ {doing}: {files:?} }}"),
             Msg::OpState { generation, state } => write!(f, "OpState {{ generation: {generation}, {:?} }}", state.as_ref().map(|s| (s.op, s.conflicts))),
             Msg::ChangeDiff { generation, entry, staged, divergent, .. } => {
                 write!(f, "ChangeDiff {{ generation: {generation}, {}: staged {:?}, divergent: {divergent} }}", entry.path, staged.as_ref().map(|s| s.iter().filter(|b| **b).count()))

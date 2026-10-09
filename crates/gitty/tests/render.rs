@@ -2616,3 +2616,24 @@ fn an_ambiguous_block_and_unknown_markers_are_flagged_on_screen() {
     assert!(find(&b, "Conflict markers not understood: open in the editor (e)").is_some());
     assert!(find(&b, "markers not understood").is_some());
 }
+
+#[test]
+fn the_resolve_now_prompt_shows_every_key_and_its_words_at_80_and_140_columns() {
+    let f = merging();
+    for (w, h) in [(80u16, 24u16), (140, 30)] {
+        let mut t = H::new(&f, "github-dark", (w, h));
+        let state = t.app.op.clone().unwrap();
+        let files = ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"].map(String::from).to_vec();
+        t.app.handle_msg(Msg::Conflicted { doing: "Merging topic into main".into(), files, state, stash: Some("abc".into()) });
+        let b = t.render(w, h);
+        let s = text(&b);
+        assert!(s.contains("Resolve now?"), "{w}: {s}");
+        assert!(s.contains("Merging topic into main hit conflicts in 5 files (a.rs, b.rs, c.rs, +2)."), "{w}: {s}");
+        assert!(s.contains("stash@{0}"), "{w}: {s}");
+        assert!(s.contains("finish the merge."), "{w}: the sentence is whole: {s}");
+        assert!(s.contains("Enter resolve now") && s.contains("a abort the merge") && s.contains("Esc decide later"), "{w}: {s}");
+        assert!(s.contains("Deciding later keeps the merge open: press m"), "{w}: {s}");
+        let (x, y) = find(&b, "Resolve now?").unwrap();
+        assert_eq!(b[(x, y)].fg, t.app.theme.ui.warning, "{w}");
+    }
+}

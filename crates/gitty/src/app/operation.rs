@@ -51,6 +51,42 @@ impl App {
         });
     }
 
+    /// A merge, pull or rebase (`doing`, "Merging a into main") was left open on conflicts: ask
+    /// whether to resolve them now. Another overlay stays: the banner shows the state, and a toast
+    /// points at `m`. Returns that toast, if any.
+    pub(super) fn offer_resolve(&mut self, doing: String, files: Vec<String>, state: OpState, stash: Option<String>) -> Option<Toast> {
+        if self.overlay.is_some() {
+            return say("Conflicts: press m");
+        }
+        let n = files.len();
+        let shown = files.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
+        let more = if n > 3 { format!(", +{}", n - 3) } else { String::new() };
+        let mut body = format!("{doing} hit conflicts in {n} file{} ({shown}{more}).", if n == 1 { "" } else { "s" });
+        if stash.is_some() {
+            body.push_str(" Your uncommitted changes are in the stash (stash@{0}): pop them after you finish the merge.");
+        }
+        self.overlay = Some(Overlay::Resolve { body, state, stash });
+        None
+    }
+
+    /// Keys in the "resolve now?" prompt: Enter goes to the conflicts, `a` aborts (putting the
+    /// stashed changes back), Esc decides later.
+    pub(super) fn resolve_key(&mut self, ov: Overlay, k: KeyEvent) {
+        let Overlay::Resolve { state, stash, .. } = &ov else { return };
+        match k.code {
+            KeyCode::Enter => self.resolve_now(),
+            KeyCode::Char('a') => {
+                let (op, id) = (state.op, state.id.clone());
+                self.write(match stash {
+                    Some(pushed) => WriteOp::AbortAndUnstash { op, id, pushed: pushed.clone() },
+                    None => WriteOp::AbortOp { op, id },
+                });
+            }
+            KeyCode::Esc | KeyCode::Char('q') => self.toast = say(&format!("The {} stays open: press m to continue or abort it", state.op.name())),
+            _ => self.overlay = Some(ov),
+        }
+    }
+
     /// Keys in the dialog: `c` continue, `a` abort, Esc close.
     pub(super) fn operation_key(&mut self, k: KeyEvent) {
         let Some(state) = self.op.clone() else { return };

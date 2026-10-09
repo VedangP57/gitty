@@ -231,13 +231,11 @@ impl App {
             }
             Outcome::NeedsAuth { .. } if prompt_cancelled => toast(format!("{} cancelled at the prompt", op.verb()), String::new(), false),
             Outcome::NeedsAuth { detail } => toast(format!("{} failed: the remote refused the credentials", op.verb()), detail, true),
-            Outcome::Failed { detail } if detail.contains("CONFLICT") => {
-                let what = if op == NetOp::PullRebase {
-                    "Rebase stopped on conflicts: resolve them in Changes, then `git rebase --continue` (or `git rebase --abort`)"
-                } else {
-                    "Merge stopped on conflicts: resolve them in Changes and commit (or `git merge --abort`)"
-                };
-                toast(what.into(), detail, true)
+            // found open on disk after the job: a question, not a failure
+            Outcome::Conflicts { files, state, .. } => {
+                let upstream = self.refs.as_ref().and_then(|r| r.upstream.as_ref()).map_or_else(|| "the upstream".to_string(), |(u, _)| u.clone());
+                let doing = if op == NetOp::PullRebase { format!("Rebasing onto {upstream}") } else { format!("Pulling {upstream}") };
+                self.offer_resolve(doing, files, state, None)
             }
             Outcome::Failed { detail } => {
                 let first = detail.lines().find(|l| !l.trim().is_empty()).unwrap_or("").to_string();

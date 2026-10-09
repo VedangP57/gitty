@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use gitty_core::Handle;
 use gitty_core::git_cli::{GitCli, Kind};
 use gitty_core::net::{ForcePush, Job, Mode, NetCmd, Outcome, force_push_plan, push_target, remote_of};
+use gitty_core::op_state::RepoOp;
+use gitty_core::status::EntryKind;
 
 use crate::msg::{Msg, NetOp};
 
@@ -49,12 +51,27 @@ fn step(cli: &GitCli, op: NetOp, cmd: NetCmd, label: String, cancellable: bool, 
     let cancel = cancellable.then(|| job.cancel_handle());
     sink(Msg::NetStarted { op, label, remote, cancel });
     let mut last: Option<Instant> = None;
-    job.wait(&mut |fraction| {
+    let outcome = job.wait(&mut |fraction| {
         if last.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY || fraction >= 1.0) {
             last = Some(Instant::now());
             sink(Msg::NetProgress { op, fraction });
         }
-    })
+    });
+    if local { left_open(cli, outcome) } else { outcome }
+}
+
+/// A failed merge or rebase that is still in progress on conflicts is not a failure but a
+/// question. Decided by the state on disk, never by git's words.
+fn left_open(cli: &GitCli, outcome: Outcome) -> Outcome {
+    let Outcome::Failed { detail } = outcome else { return outcome };
+    let Ok(status) = cli.status() else { return Outcome::Failed { detail } };
+    match cli.op_state(&status) {
+        Some(state) if matches!(state.op, RepoOp::Merge | RepoOp::Rebase) && state.conflicts > 0 => {
+            let files = status.entries.iter().filter(|e| e.kind == EntryKind::Unmerged).map(|e| e.path.clone()).collect();
+            Outcome::Conflicts { detail, files, state }
+        }
+        _ => Outcome::Failed { detail },
+    }
 }
 
 pub fn run(h: &Handle, op: NetOp, mode: Mode, background: bool, force: Option<ForcePush>, sink: &mut dyn FnMut(Msg)) {

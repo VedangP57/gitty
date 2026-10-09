@@ -153,6 +153,9 @@ pub struct Changes {
     /// Output of the latest write (hooks).
     pub log: Vec<String>,
     status_gen: u64,
+    /// "Resolve now" was chosen: the first conflicted file is selected once a status run from
+    /// this generation on (and the state read with it) has come back.
+    resolve_gen: Option<u64>,
     status_in_flight: bool,
     status_again: bool,
     last_status: Option<Instant>,
@@ -292,6 +295,33 @@ impl App {
         self.request_change_diff();
     }
 
+    /// "Resolve now": the Changes tab with its first conflicted file selected (its conflict view
+    /// on screen), once a fresh status has said which files conflict.
+    pub(super) fn resolve_now(&mut self) {
+        self.set_tab(Tab::Changes);
+        self.changes.filter = Filter::All;
+        // the status asked for next, whether one is in flight now or not
+        self.changes.resolve_gen = Some(self.changes.status_gen + 1);
+        self.request_status();
+    }
+
+    fn select_first_conflict(&mut self) {
+        if self.op.is_none() {
+            self.toast = Some(Toast { what: "No longer in progress".into(), detail: String::new(), error: false });
+            return;
+        }
+        let first = self.changes.visible().first().is_some_and(|&i| self.changes.entries()[i].is_conflicted());
+        if !first {
+            self.toast = Some(Toast { what: "No conflicted files left: press m to continue".into(), detail: String::new(), error: false });
+            return;
+        }
+        // the file list keeps the focus: the conflict view on screen answers o/t/b/n/p/u from
+        // there too, and Space and j/k still stage and move between the files
+        self.focus = super::Focus::Files;
+        self.changes.scroll = 0;
+        self.select_change(0);
+    }
+
     pub fn write(&mut self, op: WriteOp) {
         self.changes.busy += 1;
         self.changes.log.clear();
@@ -344,6 +374,15 @@ impl App {
                     if self.op.is_none() && matches!(self.overlay, Some(Overlay::InProgress)) {
                         self.overlay = None;
                     }
+                    if self.changes.resolve_gen.is_some_and(|g| generation >= g) && generation == self.changes.status_gen {
+                        self.changes.resolve_gen = None;
+                        self.select_first_conflict();
+                    }
+                }
+            }
+            Msg::Conflicted { doing, files, state, stash } => {
+                if let Some(t) = self.offer_resolve(doing, files, state, stash) {
+                    self.toast = Some(t);
                 }
             }
             m @ (Msg::ConflictFile { .. } | Msg::ConflictCounts { .. }) => return self.handle_conflict_msg(m),

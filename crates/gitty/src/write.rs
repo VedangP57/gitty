@@ -3,12 +3,12 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, anyhow, bail};
 use gitty_core::Handle;
 use gitty_core::commit_files::BlobId;
 use gitty_core::git_cli::GitCli;
 use gitty_core::merge::{MergeOutcome, MidMerge};
-use gitty_core::op_state::{Aborted, Continued, RepoOp};
+use gitty_core::op_state::{Aborted, Continued, OpState, RepoOp};
 use gitty_core::stage::{Plan, plan};
 
 use crate::msg::WriteOp;
@@ -248,18 +248,43 @@ fn put_back(cli: &GitCli, head: &Option<String>, branch: &Option<String>, pushed
     (cli.head_id() == *head && cli.current_branch() == *branch).then(|| pop_back(cli, pushed))
 }
 
-/// The notice for a merge of `name` into `into`.
+/// The notice for a merge of `name` into `into` that went through.
 fn merge_note(name: &str, into: &str, outcome: &MergeOutcome) -> String {
     match outcome {
         MergeOutcome::UpToDate => "Already up to date".into(),
         MergeOutcome::FastForward | MergeOutcome::Merged => format!("Merged {name} into {into}"),
-        MergeOutcome::Conflicts(files) => {
-            let shown = files.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(", ");
-            let more = files.len().saturating_sub(3);
-            let more = if more > 0 { format!(" and {more} more") } else { String::new() };
-            let n = files.len();
-            format!("Merge of {name} has conflicts in {n} file{}: {shown}{more}. Nothing was changed - resolve in a terminal: git merge {name}", if n == 1 { "" } else { "s" })
-        }
+        MergeOutcome::Conflicts { .. } => unreachable!("a merge with conflicts is a question: see MergeConflicts"),
+    }
+}
+
+/// A merge left open on conflicts: not a failure but a question for the user. [`crate::exec`]
+/// turns it into [`crate::msg::Msg::Conflicted`].
+#[derive(Debug)]
+pub struct MergeConflicts {
+    /// "Merging topic into main".
+    pub doing: String,
+    pub files: Vec<String>,
+    /// The merge as it is on disk now; its id is what an abort is pinned to.
+    pub state: OpState,
+    /// The stash gitty pushed before merging, which stays there.
+    pub stash: Option<String>,
+}
+
+impl std::fmt::Display for MergeConflicts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} stopped on conflicts in {} files", self.doing, self.files.len())
+    }
+}
+
+impl std::error::Error for MergeConflicts {}
+
+/// The question for a merge of `name` into `into` that was left open on `files`.
+fn merge_conflicts(cli: &GitCli, name: &str, into: &str, files: Vec<String>, stash: Option<String>) -> anyhow::Error {
+    let doing = format!("Merging {name} into {into}");
+    match cli.status().ok().and_then(|st| cli.op_state(&st)) {
+        Some(state) => MergeConflicts { doing, files, state, stash }.into(),
+        // the merge is not to be read back (it ended, or git cannot be asked): say it as it is
+        None => anyhow!("{doing} hit conflicts in {} files, but its state could not be read: press m", files.len()),
     }
 }
 
@@ -439,13 +464,16 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
         }
         WriteOp::Merge { name, remote } => {
             let into = cli.current_branch().unwrap_or_default();
-            return Ok(Some(merge_note(name, &into, &cli.merge_branch_logged(name, *remote, log)?)));
+            return match cli.merge_branch_logged(name, *remote, true, log)? {
+                MergeOutcome::Conflicts { files, .. } => Err(merge_conflicts(&cli, name, &into, files, None)),
+                done => Ok(Some(merge_note(name, &into, &done))),
+            };
         }
         WriteOp::StashAndMerge { name, remote, message } => {
             let (head, branch) = (cli.head_id(), cli.current_branch());
             let stashed = cli.stash_push(message)?;
             let pushed = cli.stash_ref();
-            let merged = match cli.merge_branch_logged(name, *remote, log) {
+            let merged = match cli.merge_branch_logged(name, *remote, true, log) {
                 Ok(m) => m,
                 Err(e) if stashed => {
                     // a merge that left the repository or the tree altered: nothing goes on top of it
@@ -459,7 +487,12 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
                 }
                 Err(e) => return Err(e),
             };
-            let note = merge_note(name, branch.as_deref().unwrap_or_default(), &merged);
+            let into = branch.as_deref().unwrap_or_default();
+            // the merge stays open and the stash stays in the stash: popping it onto a conflicted tree would mix the two
+            if let MergeOutcome::Conflicts { files, .. } = merged {
+                return Err(merge_conflicts(&cli, name, into, files, if stashed { pushed } else { None }));
+            }
+            let note = merge_note(name, into, &merged);
             if !stashed {
                 return Ok(Some(note));
             }
@@ -473,6 +506,14 @@ pub fn run(h: &Handle, op: &WriteOp, log: &mut dyn FnMut(&str)) -> anyhow::Resul
             return Ok(Some(match cli.abort_op(*op, id)? {
                 Aborted::Done => format!("Aborted the {n}"),
                 Aborted::Gone => format!("The {n} is no longer in progress"),
+            }));
+        }
+        WriteOp::AbortAndUnstash { op, id, pushed } => {
+            let n = op.name();
+            return Ok(Some(match cli.abort_op(*op, id)? {
+                // the tree is whatever it became elsewhere: the stash is not put on it
+                Aborted::Gone => format!("The {n} is no longer in progress; your changes are still in the stash"),
+                Aborted::Done => format!("Aborted the {n}; {}", pop_back(&cli, &Some(pushed.clone()))),
             }));
         }
         WriteOp::Seq(ops) => {

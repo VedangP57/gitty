@@ -92,8 +92,8 @@ fn a_branch_already_in_head_is_up_to_date() {
     assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
 }
 
-#[test]
-fn conflicts_are_aborted_and_listed_leaving_everything_as_it_was() {
+/// `main` and `topic` both changed a.txt and b.txt; topic also added t.txt. main is checked out.
+fn conflicting() -> Fixture {
     let f = base();
     f.git(&["switch", "-q", "-c", "topic"]);
     f.write("a.txt", "topic a\n");
@@ -104,8 +104,40 @@ fn conflicts_are_aborted_and_listed_leaving_everything_as_it_was() {
     f.write("a.txt", "main a\n");
     f.write("b.txt", "main b\n");
     f.commit("main work", 1_700_000_200);
+    f
+}
+
+#[test]
+fn conflicts_leave_the_merge_open_with_markers_and_list_the_files() {
+    let f = conflicting();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let topic = f.git(&["rev-parse", "topic"]);
+    assert_eq!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::Conflicts { files: vec!["a.txt".into(), "b.txt".into()], left_open: true });
+    assert_eq!(std::fs::read_to_string(f.path().join(".git/MERGE_HEAD")).unwrap().trim(), topic);
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert!(std::fs::read_to_string(f.path().join("a.txt")).unwrap().contains("<<<<<<<"));
+    assert_eq!(f.git(&["status", "--porcelain"]), "UU a.txt\nUU b.txt\nA  t.txt");
+}
+
+#[test]
+fn a_merge_left_open_can_be_aborted_to_the_state_before_it() {
+    let f = conflicting();
     let (head, index) = (f.git(&["rev-parse", "HEAD"]), f.git(&["ls-files", "--stage"]));
-    assert_eq!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::Conflicts(vec!["a.txt".into(), "b.txt".into()]));
+    cli(&f).merge_branch("topic", false).unwrap();
+    f.git(&["merge", "--abort"]);
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
+    assert_eq!(f.git(&["ls-files", "--stage"]), index);
+    assert_eq!(f.git(&["status", "--porcelain"]), "");
+    assert!(!f.path().join("t.txt").exists());
+    no_merge_in_progress(&f);
+}
+
+#[test]
+fn conflicts_are_aborted_and_listed_when_asked_leaving_everything_as_it_was() {
+    let f = conflicting();
+    let (head, index) = (f.git(&["rev-parse", "HEAD"]), f.git(&["ls-files", "--stage"]));
+    let out = cli(&f).merge_branch_logged("topic", false, false, &mut |_| {}).unwrap();
+    assert_eq!(out, MergeOutcome::Conflicts { files: vec!["a.txt".into(), "b.txt".into()], left_open: false });
     assert_eq!(f.git(&["rev-parse", "HEAD"]), head);
     assert_eq!(f.git(&["ls-files", "--stage"]), index, "the index has no conflict stages");
     assert_eq!(f.git(&["status", "--porcelain"]), "");
@@ -119,8 +151,10 @@ fn conflicts_with_unrelated_local_changes_keep_those_changes() {
     let f = diverged(Some("a.txt"));
     f.write("b.txt", "dirty\n");
     f.write("new.txt", "untracked\n");
-    assert!(matches!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::Conflicts(_)));
+    assert!(matches!(cli(&f).merge_branch("topic", false).unwrap(), MergeOutcome::Conflicts { left_open: true, .. }));
     assert_eq!(std::fs::read_to_string(f.path().join("b.txt")).unwrap(), "dirty\n");
+    assert_eq!(f.git(&["status", "--porcelain"]), "UU a.txt\n M b.txt\n?? new.txt");
+    f.git(&["merge", "--abort"]);
     assert_eq!(f.git(&["status", "--porcelain"]), "M b.txt\n?? new.txt");
     no_merge_in_progress(&f);
 }

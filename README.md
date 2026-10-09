@@ -131,6 +131,19 @@ Because no editor opens, a cherry-pick, revert or reworded commit keeps its mess
 Abort restores the branch as it was before the operation; what the operation did is discarded.
 `m` with nothing in progress says so.
 
+A merge (`Ctrl-G` in the branch picker, "merge anyway" and "stash and merge" included) or a pull
+(merge or rebase) that hits conflicts is not aborted and not reported as a failure: it is left in
+progress, the bar shows it, and gitty asks "Resolve now?". `Enter` opens the Changes tab on the
+first conflicted file, `a` aborts the merge or rebase (the branch, index and files go back to
+how they were), and `Esc` decides later: the operation stays open and `m` opens the dialog above.
+With "stash and merge" your uncommitted changes stay in the stash (`stash@{0}`) while the merge is
+open, because applying them onto conflicted files would mix the two: pop them after you finish the
+merge. Aborting from the question aborts the merge and then puts the stashed changes back. If the
+operation ended meanwhile (finished or aborted in another terminal) gitty says "No longer in
+progress" and aborts nothing; an abort only ever acts on the operation the question was about.
+When another dialog is open at that moment the question is not shown: a note says "Conflicts:
+press m".
+
 ### Resolving conflicts
 
 Conflicted files form the top of the Changes list, with their number of conflict blocks
