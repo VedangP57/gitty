@@ -141,17 +141,25 @@ a diff3 base is shown dim. What the sides are called depends on the operation, b
 "ours" and "theirs" swap roles when commits are replayed: in a merge they are *Current (your
 branch)* and *Incoming (the merged branch)*; in a rebase *Base branch (what you rebase onto)* and
 *Your commit (its subject)*; in a cherry-pick *Current branch* and *Picked commit*; in a revert
-*Current branch* and *Reverted change*. `o` keeps the first side, `t` takes the second, `b` keeps
+*Current branch* and *Without change (the reverted commit)*: git merges a revert with the commit
+as the base, so its second side is the code as it was without that commit, and `t` undoes it. `o` keeps the first side, `t` takes the second, `b` keeps
 both (first, then second) and `u` takes the last resolution of the file back (while the file is
 as it left it); `e` opens the file in `$EDITOR` at the block. A resolution rewrites the file
 atomically and only if it is still the text on screen (otherwise: "The file changed on disk;
-reloaded"); symlinks, secret-looking files and files over 2 MiB are never rewritten from here.
+reloaded"). Per-block resolution never touches symlinks, secret-looking files or files over
+2 MiB (open them with `e`); the whole-file choices below do replace such a file, after asking. A
+block where the sides cannot be told apart (a line of `=======` inside it, say) is counted but
+refused with "Ambiguous markers in this block: press e to edit it"; markers longer than seven
+characters (`conflict-marker-size` in `.gitattributes`) are understood.
 Nothing is staged for you: after the last block gitty says "No conflicts left in a.txt; press
 Space to stage it". Staging a file that still has markers works, with a notice.
 
 Conflicts with no markers (binary files, a file one side deleted, both sides adding it) show
 what happened in words; `o` and `t` then ask before taking that side's whole file (or deleting
 the path when that side deleted it), stage the result and keep a copy of the file in the Trash.
+For a file too large or not text to show line by line, that also drops the other side's
+non-conflicting changes in it, which the question says. A submodule conflict takes the chosen
+side's commit.
 `b` needs markers. While a conflicted file is selected `p` and `u` mean previous conflict and
 undo, not pull and undo-commit.
 
@@ -375,5 +383,5 @@ Dracula (MIT), Everforest (MIT), GitHub (MIT), Gruvbox (MIT/X11), Kanagawa (MIT)
 Nord (MIT), Atom One Dark and One Light (MIT), Rosé Pine (MIT), Solarized (MIT) and Tokyo Night
 (MIT and Apache-2.0); the copyright holders and licence text are in
 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). The conflict-marker parsing and resolving
-logic is adapted from the editor [druk](https://github.com/letstri/druk) (MIT, Copyright (c)
+logic is adapted from the editor [druk](https://github.com/letstri/druk) (MIT, Copyright (c) 2026
 Valerii Strilets).

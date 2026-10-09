@@ -2585,3 +2585,34 @@ fn a_binary_conflict_explains_itself_and_names_what_the_keys_do() {
     assert!(find(&b, "o keep Current").is_some());
     assert!(find(&b, "both").is_none(), "no markers, no keep-both");
 }
+
+#[test]
+fn the_key_hint_shows_on_the_rule_and_in_the_bar_at_80_100_and_140_columns() {
+    for w in [80u16, 100, 140] {
+        let f = merging();
+        let mut t = conflict_view(&f, (w, 24));
+        let b = t.render(w, 24);
+        let hints = find_all(&b, "o keep Current");
+        assert_eq!(hints.len(), 2, "{w}: on the closing rule and in the bar");
+        assert!(find(&b, "t take Incoming · b both").is_some(), "{w}: the rule has all three");
+        assert!(find(&b, "u undo").is_some(), "{w}: undo is always listed");
+        // the shadowing of p, u and e is said where there is room for it
+        assert_eq!(find(&b, "p/u/e act on conflicts here").is_some(), w >= 120, "{w}");
+        assert!(find(&b, "◂ Current (main)").is_some() && find(&b, "▸ Incoming (topic)").is_some(), "{w}");
+    }
+}
+
+#[test]
+fn an_ambiguous_block_and_unknown_markers_are_flagged_on_screen() {
+    let f = merging();
+    f.write("a.txt", "<<<<<<< HEAD\nTitle\n=======\nmain\n=======\ntopic\n>>>>>>> topic\n");
+    let mut t = conflict_view(&f, (120, 24));
+    let b = t.render(120, 24);
+    assert!(find(&b, "⚠ ambiguous markers: e to edit").is_some());
+    assert!(find(&b, "a.txt (1)").is_some(), "still counted");
+    f.write("a.txt", "<<<<<<<< x\nmain\n========\ntopic\n>>>>>>>> y\n");
+    t.app.handle_msg(Msg::Changed(gitty_core::watch::Changed::WORKTREE));
+    let b = t.render(120, 24);
+    assert!(find(&b, "Conflict markers not understood: open in the editor (e)").is_some());
+    assert!(find(&b, "markers not understood").is_some());
+}

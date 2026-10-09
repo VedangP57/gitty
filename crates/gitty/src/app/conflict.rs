@@ -68,6 +68,16 @@ impl ConflictView {
         }
     }
 
+    /// Marker lines were found that no block could be made of.
+    pub fn unknown(&self) -> bool {
+        matches!(self.body, ConflictBody::Text { unknown: true, .. })
+    }
+
+    /// What the file list counts: the blocks, or 1 for markers that were not understood.
+    pub fn marks(&self) -> usize {
+        self.conflicts().len().max(usize::from(self.unknown()))
+    }
+
     pub fn lines(&self) -> usize {
         self.text().map_or(0, |t| t.len() as usize)
     }
@@ -151,6 +161,9 @@ pub fn describe(e: &StatusEntry, sides: &Sides) -> String {
     }
 }
 
+/// For a file with marker lines that no block could be made of.
+pub const NOT_UNDERSTOOD: &str = "Conflict markers not understood: open in the editor (e)";
+
 fn say(what: impl Into<String>) -> Option<Toast> {
     Some(Toast { what: what.into(), detail: String::new(), error: false })
 }
@@ -167,17 +180,23 @@ impl App {
         self.changes.conflict.as_ref().filter(|v| &v.entry.path == path)
     }
 
-    /// Asks for the block counts of conflicted files that have none yet, and forgets the counts of
-    /// files that are no longer conflicted.
+    /// Asks for the block counts of the conflicted files (the worker skips the unchanged ones by
+    /// their stamps), and forgets what is kept of files that are no longer conflicted: their
+    /// counts and the resolutions that could be undone.
     pub(super) fn request_conflict_counts(&mut self) {
         let unmerged: HashSet<String> = self.changes.entries().iter().filter(|e| e.is_conflicted()).map(|e| e.path.clone()).collect();
         self.changes.conflict_counts.retain(|p, _| unmerged.contains(p));
-        let mut want: Vec<String> = unmerged.into_iter().filter(|p| !self.changes.conflict_counts.contains_key(p) && !self.changes.counts_asked.contains(p)).collect();
+        self.changes.counts_asked.retain(|p| unmerged.contains(p));
+        self.changes.undo.retain(|u| unmerged.contains(&u.path));
+        let mut want: Vec<(String, Option<crate::msg::FileStamp>)> = unmerged.into_iter().filter(|p| !self.changes.counts_asked.contains(p)).map(|p| {
+            let stamp = self.changes.conflict_counts.get(&p).map(|(_, s)| *s);
+            (p, stamp)
+        }).collect();
         if want.is_empty() {
             return;
         }
         want.sort();
-        self.changes.counts_asked.extend(want.iter().cloned());
+        self.changes.counts_asked.extend(want.iter().map(|(p, _)| p.clone()));
         self.outbox.push(Request::ConflictCounts { paths: want });
     }
 
@@ -202,9 +221,9 @@ impl App {
                 }
                 // only files still in conflict: a late reply for one that was resolved is dropped
                 let unmerged: HashSet<String> = self.changes.entries().iter().filter(|e| e.is_conflicted()).map(|e| e.path.clone()).collect();
-                for (p, n) in counts {
+                for (p, n, stamp) in counts {
                     if unmerged.contains(&p) {
-                        self.changes.conflict_counts.insert(p, n);
+                        self.changes.conflict_counts.insert(p, (n, stamp));
                     }
                 }
             }
@@ -216,9 +235,10 @@ impl App {
     fn install_conflict(&mut self, entry: StatusEntry, sides: Sides, body: ConflictBody) {
         let old = self.changes.conflict.take().filter(|v| v.entry.path == entry.path);
         let mut view = ConflictView { entry, sides, body, cur: 0, vscroll: 0, hscroll: 0, widest: 0, visible: 0 };
-        if let ConflictBody::Text { text, key, conflicts } = &view.body {
+        if let ConflictBody::Text { text, key, .. } = &view.body {
             view.widest = widest(text, self.config.tab_size);
-            self.changes.conflict_counts.insert(view.entry.path.clone(), conflicts.len());
+            // the stamp is not known here: the next count request reads the file once more
+            self.changes.conflict_counts.insert(view.entry.path.clone(), (Some(view.marks()), (0, 0)));
             let (key, text) = (key.clone(), text.clone());
             if !self.hl_cache.contains(&key) && self.hl_pending.insert(key.clone()) {
                 self.outbox.push(Request::Highlight { generation: self.file_gen, key, text, files_view: false });
@@ -269,7 +289,7 @@ impl App {
         v.reveal();
     }
 
-    /// `[` and `]` in the conflict view step through the blocks as they do through hunks.
+    /// `h` and `l` in the conflict view: scrolls the text sideways.
     pub(super) fn conflict_scroll_sideways(&mut self, by: i32) {
         if let Some(v) = self.changes.conflict.as_mut() {
             v.hscroll = (i32::from(v.hscroll) + by).clamp(0, i32::from(v.max_hscroll())) as u16;
@@ -286,16 +306,20 @@ impl App {
         // only a file both sides have can hold markers; the others (and files the view cannot
         // read) are settled whole
         let marked = matches!((entry.x, entry.y), ('U', 'U') | ('A', 'A'));
-        let ConflictBody::Text { text, key, conflicts } = &v.body else { return self.conflict_whole_file(&entry, &sides, choice) };
+        let ConflictBody::Text { text, key, conflicts, unknown } = &v.body else { return self.conflict_whole_file(&entry, &sides, choice) };
         if !marked {
             return self.conflict_whole_file(&entry, &sides, choice);
         }
         // a file with no markers left is the user's own result
         if conflicts.is_empty() {
-            self.toast = say("No conflict markers left: press Space to stage the file");
+            self.toast = say(if *unknown { NOT_UNDERSTOOD } else { "No conflict markers left: press Space to stage the file" });
             return;
         }
         let Some(block) = conflicts.get(v.cur) else { return };
+        if block.ambiguous {
+            self.toast = say("Ambiguous markers in this block: press e to edit it");
+            return;
+        }
         let Ok(src) = std::str::from_utf8(text.bytes()) else { return };
         let Some(new) = resolve(src, block, choice) else {
             self.toast = say("The file changed; reloading");
@@ -304,7 +328,7 @@ impl App {
         };
         let left = conflicts.len() - 1;
         let undo = Undo { path: entry.path.clone(), before: text.clone(), after: BlobId::hash_of(new.as_bytes()), left: conflicts.len() };
-        let op = WriteOp::ResolveConflict { path: entry.path.clone(), bytes: new.into_bytes(), expect: key.blob, left };
+        let op = WriteOp::ResolveConflict { path: entry.path.clone(), bytes: new.into_bytes(), expect: key.blob, left, undo: false };
         self.changes.undo.push(undo);
         if self.changes.undo.len() > UNDO_DEPTH {
             self.changes.undo.remove(0);
@@ -315,13 +339,18 @@ impl App {
     /// `u`: puts the file back as it was before the last resolution made here, if it is still as
     /// the resolution left it (the writer checks).
     pub fn conflict_undo(&mut self) {
-        let Some(path) = self.conflict_view().map(|v| v.entry.path.clone()) else { return };
+        let Some(path) = self.conflict_view().map(|v| v.entry.path.clone()) else {
+            self.toast = say("The conflict is still loading");
+            return;
+        };
         let Some(i) = self.changes.undo.iter().rposition(|u| u.path == path) else {
             self.toast = say("Nothing to undo in this file");
             return;
         };
-        let u = self.changes.undo.remove(i);
-        self.write(WriteOp::ResolveConflict { path, bytes: u.before.bytes().to_vec(), expect: u.after, left: u.left });
+        // the entry stays until the writer says it was undone: a refusal leaves it for another try
+        let u = &self.changes.undo[i];
+        let op = WriteOp::ResolveConflict { path, bytes: u.before.bytes().to_vec(), expect: u.after, left: u.left, undo: true };
+        self.write(op);
     }
 
     /// `e`: the file in `$EDITOR`, at the block the cursor is in.
@@ -348,20 +377,24 @@ impl App {
         let has = if theirs { theirs_has } else { ours_has };
         let side = if theirs { &sides.theirs } else { &sides.ours }.label();
         let (title, body) = if has {
-            (format!("Keep the {side} version of {}?", e.path), "The file becomes that side's version and is staged. A copy of the file as it is now goes to the Trash.".to_string())
+            // a text file that could be merged line by line loses the other side's clean hunks too
+            let more = if matches!((e.x, e.y), ('U', 'U') | ('A', 'A')) { " Non-conflicting changes from the other side in this file are discarded too." } else { "" };
+            (format!("Keep the {side} version of {}?", e.path), format!("The file becomes that side's version and is staged.{more} A copy of the file as it is now goes to the Trash."))
         } else {
             (format!("Delete {}?", e.path), format!("{side} has no such file, so it is removed and the removal is staged. A copy of the file as it is now goes to the Trash."))
         };
         self.overlay = Some(Overlay::Confirm { title, body, op: WriteOp::TakeSide { path: e.path.clone(), theirs, delete: !has } });
     }
 
-    /// Space on a file that still holds conflict markers: staging is allowed, but says so.
-    pub(super) fn warn_staged_markers(&mut self, paths: &[String]) {
-        let marked: Vec<&String> = paths.iter().filter(|p| self.changes.conflict_counts.get(*p).is_some_and(|n| *n > 0)).collect();
-        match marked.as_slice() {
-            [] => {}
-            [one] => self.toast = say(format!("{one} still has conflict markers")),
-            more => self.toast = say(format!("{} staged files still have conflict markers", more.len())),
+    /// A write of the conflict view came back: keeps the undo history true. A resolution that did
+    /// not happen cannot be undone; an undo that did happen is used up (one that did not stays).
+    pub(super) fn conflict_write_settled(&mut self, op: &WriteOp, ok: bool) {
+        let WriteOp::ResolveConflict { path, bytes, expect, undo, .. } = op else { return };
+        if *undo && ok {
+            self.changes.undo.retain(|u| !(u.path == *path && u.after == *expect));
+        } else if !*undo && !ok {
+            let after = BlobId::hash_of(bytes);
+            self.changes.undo.retain(|u| !(u.path == *path && u.after == after && BlobId::hash_of(u.before.bytes()) == *expect));
         }
     }
 
@@ -372,11 +405,6 @@ impl App {
             return false;
         }
         let what = detail.lines().next().unwrap_or("").to_string();
-        // a resolution that did not happen cannot be undone
-        if let WriteOp::ResolveConflict { path, bytes, .. } = op {
-            let after = BlobId::hash_of(bytes);
-            self.changes.undo.retain(|u| !(u.path == *path && u.after == after));
-        }
         self.toast = Some(Toast { what, detail: detail.to_string(), error: !detail.contains("changed on disk") });
         true
     }

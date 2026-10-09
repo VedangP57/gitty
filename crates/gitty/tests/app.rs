@@ -4941,8 +4941,8 @@ fn selecting_a_conflicted_file_loads_its_blocks_and_lists_conflicts_first() {
     assert_eq!(v.conflicts().len(), 1);
     assert_eq!((v.label(0, true), v.label(0, false)), ("Current (main)".to_string(), "Incoming (topic)".to_string()));
     // every conflicted file's count was read, not only the selected one
-    assert_eq!(t.app.changes.conflict_counts.get("a.txt"), Some(&1));
-    assert_eq!(t.app.changes.conflict_counts.get("b.txt"), Some(&1));
+    assert_eq!(t.app.changes.conflict_count("a.txt"), Some(1));
+    assert_eq!(t.app.changes.conflict_count("b.txt"), Some(1));
     // moving to a plain file brings the diff back
     t.app.select_change(2);
     t.pump();
@@ -4963,7 +4963,7 @@ fn o_t_and_b_settle_the_block_and_the_last_one_says_to_stage() {
         // nothing is staged for the user
         assert!(unmerged(&f).contains("a.txt"));
         assert!(file(&f, "b.txt").contains("<<<<<<<"));
-        assert_eq!(t.app.changes.conflict_counts.get("a.txt"), Some(&0));
+        assert_eq!(t.app.changes.conflict_count("a.txt"), Some(0));
         // the file stays selected and says it is done; Space stages it
         assert!(t.app.conflict_view().unwrap().conflicts().is_empty());
         t.ch(' ');
@@ -5070,6 +5070,13 @@ fn a_file_too_big_to_show_says_to_use_the_editor() {
         gitty::msg::ConflictBody::Other(why) => assert!(why.contains("too large") && why.contains("editor"), "{why}"),
         _ => panic!("a 2.4 MiB file was parsed"),
     }
+    // taking the whole file throws the other side's clean hunks away: it says so
+    t.ch('o');
+    match &t.app.overlay {
+        Some(gitty::app::Overlay::Confirm { body, .. }) => assert!(body.contains("Non-conflicting changes from the other side in this file are discarded too"), "{body}"),
+        _ => panic!("no question"),
+    }
+    t.key(KeyCode::Esc);
     // b has no meaning without blocks
     t.ch('b');
     assert!(t.app.toast.as_ref().unwrap().what.contains("conflict markers"));
@@ -5187,8 +5194,9 @@ fn staging_a_file_that_still_has_markers_says_so_but_does_it() {
     stops(&f, &["merge", "topic"]);
     let mut t = conflict_tab(&f);
     t.ch(' ');
-    assert_eq!(t.app.toast.as_ref().unwrap().what, "a.txt still has conflict markers");
     t.pump();
+    // the writer looked at the file as it was when it staged it
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "a.txt still has conflict markers");
     assert!(!unmerged(&f).contains("a.txt"), "staged all the same");
 }
 
@@ -5208,4 +5216,223 @@ fn the_conflict_keys_only_exist_on_a_conflicted_file() {
     assert!(t.app.toast.is_none() && t.app.overlay.is_none());
     t.ch('p');
     assert!(t.app.take_requests().iter().any(|r| matches!(r, gitty::msg::Request::Net { .. })), "p pulls again");
+}
+
+// ---- the conflict view, second pass ----
+
+#[test]
+fn an_ambiguous_block_is_counted_but_o_t_and_b_refuse_it() {
+    let f = conflicting_fixture();
+    stops(&f, &["merge", "topic"]);
+    // a line of `=======` in the first side: the split cannot be told
+    let text = "<<<<<<< HEAD\nTitle\n=======\nmain a\n=======\ntopic a\n>>>>>>> topic\n";
+    f.write("a.txt", text);
+    let mut t = conflict_tab(&f);
+    assert_eq!(t.app.changes.conflict_count("a.txt"), Some(1), "still counted");
+    for k in ['o', 't', 'b'] {
+        t.ch(k);
+        t.pump();
+        assert_eq!(t.app.toast.as_ref().unwrap().what, "Ambiguous markers in this block: press e to edit it", "{k}");
+        assert_eq!(file(&f, "a.txt"), text, "{k}: nothing was written");
+    }
+    assert!(t.app.take_requests().iter().all(|r| !matches!(r, gitty::msg::Request::Write(_))));
+}
+
+#[test]
+fn a_conflict_marker_size_attribute_is_followed() {
+    let f = Fixture::new();
+    f.git(&["config", "merge.conflictStyle", "merge"]);
+    f.write(".gitattributes", "a.txt conflict-marker-size=9\n");
+    f.write("a.txt", "base\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("a.txt", "topic\n");
+    f.commit("topic", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("a.txt", "main\n");
+    f.commit("main", 1_700_000_200);
+    stops(&f, &["merge", "topic"]);
+    assert!(file(&f, "a.txt").starts_with("<<<<<<<<< HEAD"));
+    let mut t = conflict_tab(&f);
+    assert_eq!(t.app.changes.conflict_count("a.txt"), Some(1));
+    t.ch('t');
+    t.pump();
+    assert_eq!(file(&f, "a.txt"), "topic\n");
+}
+
+#[test]
+fn markers_that_are_not_understood_say_so_and_still_warn_when_staged() {
+    let f = conflicting_fixture();
+    stops(&f, &["merge", "topic"]);
+    // the wrong length for the repository's attributes: git's own markers, not ours to parse
+    f.write("a.txt", "<<<<<<<< x\nmain a\n========\ntopic a\n>>>>>>>> y\n");
+    let mut t = conflict_tab(&f);
+    assert_eq!(t.app.changes.conflict_count("a.txt"), Some(1), "counted as one");
+    assert!(t.app.conflict_view().unwrap().unknown());
+    t.ch('o');
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "Conflict markers not understood: open in the editor (e)");
+    t.ch(' ');
+    t.pump();
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "a.txt still has conflict markers");
+}
+
+#[test]
+fn a_cached_count_of_zero_does_not_hide_markers_that_came_back() {
+    let f = conflicting_fixture();
+    stops(&f, &["merge", "topic"]);
+    let mut t = conflict_tab(&f);
+    t.ch('o');
+    t.pump();
+    assert_eq!(t.app.changes.conflict_count("a.txt"), Some(0));
+    // an editor puts markers back; no status has been read since
+    f.write("a.txt", "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> t\n");
+    t.ch(' ');
+    t.pump();
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "a.txt still has conflict markers");
+}
+
+#[test]
+fn counts_follow_the_file_and_unchanged_or_non_text_files_are_not_read_again() {
+    use gitty::msg::Request;
+    let f = Fixture::new();
+    f.write("img.bin", b"base\0".as_slice());
+    f.write("a.txt", "base\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    f.write("img.bin", b"topic\0".as_slice());
+    f.write("a.txt", "topic\n");
+    f.commit("topic", 1_700_000_100);
+    f.git(&["switch", "-q", "main"]);
+    f.write("img.bin", b"main\0".as_slice());
+    f.write("a.txt", "main\n");
+    f.commit("main", 1_700_000_200);
+    stops(&f, &["merge", "topic"]);
+    let mut t = H::new(&f);
+    let ask = |t: &mut H, paths: Vec<(String, Option<gitty::msg::FileStamp>)>| -> Vec<(String, Option<usize>, gitty::msg::FileStamp)> {
+        let msgs = t.exec_all(vec![Request::ConflictCounts { paths }]);
+        match msgs.into_iter().next() {
+            Some(Msg::ConflictCounts { counts, .. }) => counts,
+            _ => panic!("no counts"),
+        }
+    };
+    let first = ask(&mut t, vec![("a.txt".into(), None), ("img.bin".into(), None)]);
+    assert_eq!((first[0].0.as_str(), first[0].1), ("a.txt", Some(1)));
+    assert_eq!((first[1].0.as_str(), first[1].1), ("img.bin", None), "a binary file has no count, but is remembered");
+    // nothing changed: nothing is read, nothing is answered
+    let known = first.iter().map(|(p, _, s)| (p.clone(), Some(*s))).collect::<Vec<_>>();
+    assert!(ask(&mut t, known.clone()).is_empty());
+    // a file that changed is read again
+    f.write("a.txt", "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> t\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> t\n");
+    let again = ask(&mut t, known);
+    assert_eq!((again.len(), again[0].0.as_str(), again[0].1), (1, "a.txt", Some(2)));
+}
+
+#[test]
+fn a_refused_undo_keeps_the_chain_and_a_later_one_still_works() {
+    let f = two_blocks();
+    let original = file(&f, "m.txt");
+    let mut t = conflict_tab(&f);
+    t.ch('o');
+    t.pump();
+    let once = file(&f, "m.txt");
+    t.ch('o');
+    t.pump();
+    let twice = file(&f, "m.txt");
+    assert!(original != once && once != twice);
+    // an edit elsewhere: the undo is refused
+    f.write("m.txt", format!("{twice}// edit\n"));
+    t.ch('u');
+    t.pump();
+    assert!(t.app.toast.as_ref().unwrap().what.contains("changed on disk"));
+    // the edit is taken back: both steps are still there to undo, newest first
+    f.write("m.txt", &twice);
+    t.pump();
+    t.ch('u');
+    t.pump();
+    assert_eq!(file(&f, "m.txt"), once);
+    t.ch('u');
+    t.pump();
+    assert_eq!(file(&f, "m.txt"), original);
+    t.ch('u');
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "Nothing to undo in this file");
+}
+
+#[test]
+fn undo_history_ends_with_the_operation() {
+    let f = two_blocks();
+    let mut t = conflict_tab(&f);
+    t.ch('o');
+    t.pump();
+    // aborted elsewhere, then the same merge again: the old resolution is not ours to undo
+    f.git(&["merge", "--abort"]);
+    state_changed(&mut t);
+    stops(&f, &["merge", "topic"]);
+    state_changed(&mut t);
+    t.ch('u');
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "Nothing to undo in this file");
+}
+
+#[test]
+fn u_before_the_conflict_has_loaded_says_so() {
+    let f = conflicting_fixture();
+    let mut t = H::new(&f);
+    t.app.conflict_undo();
+    assert_eq!(t.app.toast.as_ref().unwrap().what, "The conflict is still loading");
+}
+
+#[test]
+fn a_submodule_conflict_is_settled_by_the_chosen_commit() {
+    // the work tree of a submodule holds ours; taking theirs must record theirs
+    let f = Fixture::new();
+    let outside = tempfile::tempdir().unwrap();
+    let sp = outside.path().join("sub");
+    std::fs::create_dir(&sp).unwrap();
+    let run = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").current_dir(dir).args(["-c", "user.name=T", "-c", "user.email=t@e.c", "-c", "protocol.file.allow=always"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    run(&sp, &["init", "-q", "-b", "main"]);
+    std::fs::write(sp.join("f"), "1").unwrap();
+    run(&sp, &["add", "f"]);
+    run(&sp, &["commit", "-qm", "s1"]);
+    f.write("keep.txt", "x\n");
+    f.commit("base", 1_700_000_000);
+    run(&f.path(), &["submodule", "add", "-q", sp.to_str().unwrap(), "s"]);
+    f.commit("add submodule", 1_700_000_100);
+    f.git(&["switch", "-q", "-c", "topic"]);
+    let s = f.path().join("s");
+    run(&s, &["switch", "-qc", "x1"]);
+    std::fs::write(s.join("f"), "2").unwrap();
+    run(&s, &["commit", "-qam", "x1"]);
+    let theirs = run(&s, &["rev-parse", "HEAD"]);
+    f.commit("topic", 1_700_000_200);
+    f.git(&["switch", "-q", "main"]);
+    run(&s, &["switch", "-q", "main"]);
+    run(&s, &["switch", "-qc", "x2"]);
+    std::fs::write(s.join("f"), "3").unwrap();
+    run(&s, &["commit", "-qam", "x2"]);
+    f.commit("main", 1_700_000_300);
+    stops(&f, &["-c", "protocol.file.allow=always", "merge", "topic"]);
+    let mut t = conflict_tab(&f);
+    t.ch('t');
+    t.key(KeyCode::Enter);
+    t.pump();
+    assert_eq!(unmerged(&f), "");
+    assert!(f.git(&["ls-files", "-s", "s"]).contains(&theirs));
+}
+
+#[test]
+fn a_revert_names_the_second_side_by_what_it_is() {
+    let f = conflicting_fixture();
+    f.write("a.txt", "main again\n");
+    f.commit("main again", 1_700_000_500);
+    f.git(&["switch", "-q", "topic"]);
+    f.git(&["switch", "-q", "main"]);
+    stops(&f, &["revert", "--no-edit", "HEAD~1"]);
+    let t = conflict_tab(&f);
+    let v = t.app.conflict_view().unwrap();
+    assert_eq!(v.sides.theirs.title, "Without change");
+    assert!(v.label(0, false).starts_with("Without change ("));
+    assert_eq!(v.sides.ours.title, "Current branch");
 }

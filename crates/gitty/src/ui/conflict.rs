@@ -47,6 +47,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let n = view.conflicts().len();
     let extra = match &view.body {
         ConflictBody::Text { .. } if n > 0 => format!("  conflict {}/{n}", view.cur + 1),
+        ConflictBody::Text { .. } if view.unknown() => "  markers not understood".to_string(),
         ConflictBody::Text { .. } => "  no conflict markers left".to_string(),
         ConflictBody::Other(_) => "  conflicted".to_string(),
     };
@@ -55,7 +56,8 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     match view.body {
         ConflictBody::Text { .. } if n > 0 => draw_blocks(app, buf, body, &mut view, hl.as_deref(), &hint),
         ConflictBody::Text { .. } if matches!((view.entry.x, view.entry.y), ('U', 'U') | ('A', 'A')) => {
-            draw_message(app, buf, body, &view, Some("No conflict markers are left in this file. Press Space to stage it."));
+            let done = if view.unknown() { crate::app::conflict::NOT_UNDERSTOOD } else { "No conflict markers are left in this file. Press Space to stage it." };
+            draw_message(app, buf, body, &view, Some(done));
         }
         _ => draw_message(app, buf, body, &view, None),
     }
@@ -78,7 +80,7 @@ fn draw_message(app: &App, buf: &mut Buffer, body: Rect, view: &ConflictView, do
     line(buf, &[(&describe(&view.entry, &view.sides), base.fg(ui.warning).add_modifier(Modifier::BOLD))]);
     if let Some(done) = done {
         line(buf, &[("", base)]);
-        return line(buf, &[(done, base.fg(ui.accent))]);
+        return line(buf, &[(done, base.fg(if view.unknown() { ui.warning } else { ui.accent }))]);
     }
     if let (ConflictBody::Other(why), ('U', 'U') | ('A', 'A')) = (&view.body, (view.entry.x, view.entry.y)) {
         line(buf, &[(why, muted)]);
@@ -144,7 +146,12 @@ fn draw_blocks(app: &mut App, buf: &mut Buffer, body: Rect, view: &mut ConflictV
                 _ => ("Base".to_string(), "│ "),
             };
             let bold = st.add_modifier(Modifier::BOLD);
-            spans(buf, body.x + 2, y, body.right(), &[(mark, bold.fg(ui.accent)), (&label, bold)]);
+            // the sides of a block like this cannot be told apart: it is left to the editor
+            let warn = match role {
+                Role::OursHead(b) if view.conflicts()[b].ambiguous => "  ⚠ ambiguous markers: e to edit",
+                _ => "",
+            };
+            spans(buf, body.x + 2, y, body.right(), &[(mark, bold.fg(ui.accent)), (&label, bold), (warn, bold.fg(ui.warning))]);
             continue;
         }
         if let Role::End(_) = role {

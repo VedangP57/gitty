@@ -283,13 +283,14 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
         },
         Request::ConflictFile { generation, entry } => {
             use gitty_core::conflicts::Loaded;
-            let sides = gitty_core::git_cli::GitCli::new(h.owner()).conflict_sides();
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            let sides = cli.conflict_sides();
             let result = match h.owner().workdir() {
-                Some(root) => gitty_core::conflicts::read(root, std::path::Path::new(&entry.path))
+                Some(root) => gitty_core::conflicts::read(root, std::path::Path::new(&entry.path), cli.conflict_style(&entry.path))
                     .map(|loaded| match loaded {
-                        Loaded::Text { bytes, conflicts } => {
+                        Loaded::Text { bytes, conflicts, unknown } => {
                             let key = HlKey { blob: gitty_core::commit_files::BlobId::hash_of(&bytes), path: entry.path.clone() };
-                            ConflictBody::Text { text: Arc::new(gitty_core::diff::text::Text::new(bytes)), key, conflicts: Arc::new(conflicts) }
+                            ConflictBody::Text { text: Arc::new(gitty_core::diff::text::Text::new(bytes)), key, conflicts: Arc::new(conflicts), unknown }
                         }
                         Loaded::Other(why) => ConflictBody::Other(why),
                     })
@@ -299,21 +300,32 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             sink(Msg::ConflictFile { generation, entry, sides, result });
         }
         Request::ConflictCounts { paths } => {
+            use std::os::unix::fs::MetadataExt;
             let mut counts = Vec::new();
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
             if let Some(root) = h.owner().workdir() {
                 // a tree of hundreds of conflicted big files must not hold a reader for long
                 let mut budget = CONFLICT_COUNT_BUDGET;
-                for p in &paths {
+                for (p, known) in &paths {
+                    let Ok(meta) = std::fs::symlink_metadata(root.join(p)) else { continue };
+                    let stamp = (meta.len(), i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()));
+                    if *known == Some(stamp) {
+                        continue;
+                    }
                     if budget == 0 {
                         break;
                     }
-                    if let Ok(gitty_core::conflicts::Loaded::Text { bytes, conflicts }) = gitty_core::conflicts::read(root, std::path::Path::new(p)) {
-                        budget = budget.saturating_sub(bytes.len());
-                        counts.push((p.clone(), conflicts.len()));
-                    }
+                    // every read is charged, a file that is not text included
+                    budget = budget.saturating_sub(meta.len().min(gitty_core::files::MAX_VIEW_BYTES) as usize);
+                    let n = match gitty_core::conflicts::read(root, std::path::Path::new(p), cli.conflict_style(p)) {
+                        // markers that were not understood still count: staging them is not harmless
+                        Ok(gitty_core::conflicts::Loaded::Text { conflicts, unknown, .. }) => Some(conflicts.len().max(usize::from(unknown))),
+                        _ => None,
+                    };
+                    counts.push((p.clone(), n, stamp));
                 }
             }
-            sink(Msg::ConflictCounts { asked: paths, counts });
+            sink(Msg::ConflictCounts { asked: paths.into_iter().map(|(p, _)| p).collect(), counts });
         }
         Request::ReadDir { generation, dir } => {
             if !Gens::is(&gens.files_dirs, generation) {

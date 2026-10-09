@@ -112,11 +112,15 @@ pub enum FileView {
     Masked,
 }
 
+/// A file's size and modification time (ns): what tells a changed file from an unchanged one.
+pub type FileStamp = (u64, i128);
+
 /// What the conflict view has of one conflicted file.
 pub enum ConflictBody {
     /// UTF-8 text with the blocks parsed out of it (none: the markers are gone from the file).
     /// `key.blob` is the hash of the text: a resolution is written only over a file that still has it.
-    Text { text: Arc<Text>, key: HlKey, conflicts: Arc<Vec<gitty_core::conflicts::Conflict>> },
+    /// `unknown`: no block parsed, but marker lines are there that were not understood.
+    Text { text: Arc<Text>, key: HlKey, conflicts: Arc<Vec<gitty_core::conflicts::Conflict>>, unknown: bool },
     /// Not shown line by line, and why.
     Other(String),
 }
@@ -175,8 +179,9 @@ pub enum WriteOp {
     /// Give it up: the repository goes back to before it started.
     AbortOp { op: RepoOp, id: String },
     /// Replace a conflicted file with `bytes` (one block resolved, or that undone) if it still
-    /// holds the text that hashes to `expect`. `left` blocks remain in `bytes`.
-    ResolveConflict { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId, left: usize },
+    /// holds the text that hashes to `expect`. `left` blocks remain in `bytes`;
+    /// `undo`: it puts an earlier text back.
+    ResolveConflict { path: String, bytes: Vec<u8>, expect: gitty_core::commit_files::BlobId, left: usize, undo: bool },
     /// Settle a conflict without markers for the whole file: take a side and stage it, or with
     /// `delete` (that side has no such file) remove the path.
     TakeSide { path: String, theirs: bool, delete: bool },
@@ -258,7 +263,9 @@ pub enum Request {
     /// Changes tab: a conflicted file's text, its blocks and the sides' names.
     ConflictFile { generation: u64, entry: StatusEntry },
     /// How many conflict blocks each of these conflicted files holds (the file list shows it).
-    ConflictCounts { paths: Vec<String> },
+    /// `paths` come with what the caller last learned of them: a file whose stamp is unchanged
+    /// is not read again.
+    ConflictCounts { paths: Vec<(String, Option<FileStamp>)> },
     /// Files tab: one directory of the working tree (`dir` relative to its root, empty for the root).
     ReadDir { generation: u64, dir: std::path::PathBuf },
     /// Files tab: one file for the viewer; the file generation is `Gens::file`. A secret file is
@@ -348,8 +355,9 @@ pub enum Msg {
     ChangeDiff { generation: u64, entry: StatusEntry, key: DiffKey, diff: Arc<FileDiff>, texts: Texts, staged: Option<Vec<bool>>, divergent: bool },
     ChangeDiffError { generation: u64, path: String, detail: String },
     ConflictFile { generation: u64, entry: StatusEntry, sides: gitty_core::conflicts::Sides, result: Result<ConflictBody, String> },
-    /// Blocks per file; a file that could not be read has no entry.
-    ConflictCounts { asked: Vec<String>, counts: Vec<(String, usize)> },
+    /// Blocks per file (None: not a text file with blocks to count), each with the stamp it was read at;
+    /// files that were unchanged, or could not be read, have no entry.
+    ConflictCounts { asked: Vec<String>, counts: Vec<(String, Option<usize>, FileStamp)> },
     Dir { generation: u64, dir: std::path::PathBuf, result: Result<Vec<gitty_core::files::DirEntry>, String> },
     File { generation: u64, path: std::path::PathBuf, result: Result<FileView, String> },
     /// A line of hook or git output from the running write.

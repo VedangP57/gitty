@@ -177,9 +177,10 @@ fn conflict_hints(app: &App) -> Vec<(String, String)> {
     if blocks > 0 {
         list.push((vec![A::ConflictBoth], "both".into()));
         list.push((vec![A::ConflictPrev, A::ConflictNext], "prev/next".into()));
-        list.push((vec![A::ConflictUndo], "undo".into()));
     }
-    list.extend([(vec![A::ConflictEdit], "edit".into()), (vec![A::Stage], "stage".into()), (vec![A::Help], "help".into())]);
+    list.extend([(vec![A::ConflictUndo], "undo".into()), (vec![A::ConflictEdit], "edit".into()), (vec![A::Stage], "stage".into()), (vec![A::Help], "help".into())]);
+    // p, u and e are other things on other files: say so where the keys are listed
+    list.push((vec![A::ConflictPrev, A::ConflictUndo, A::ConflictEdit], "act on conflicts here".into()));
     list.into_iter()
         .filter_map(|(acts, what)| {
             let keys: Vec<String> = acts.iter().filter_map(|a| app.keymap.keys_of(*a).first().map(hint_label)).collect();

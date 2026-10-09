@@ -10,11 +10,13 @@ All notable changes to gitty are listed here. The format follows
 
 - Resolving conflicts in gitty. Conflicted files head the Changes list with their number of
   blocks; selecting one draws its blocks as two tinted sides under header lines that name them by
-  the operation (merge: Current / Incoming; rebase: Base branch / Your commit; cherry-pick and
-  revert accordingly, since git swaps ours and theirs there). `o` keeps the first side, `t` takes
+  the operation (merge: Current / Incoming; rebase: Base branch / Your commit; cherry-pick:
+  Current branch / Picked commit; revert: Current branch / Without change, since git swaps ours and
+  theirs there and a revert's second side is the code without the commit). `o` keeps the first side, `t` takes
   the second, `b` keeps both, `n` and `p` move between blocks, `u` takes the last resolution back
   and `e` opens the editor at the block. A resolution is written atomically and only over the text
-  that was shown. Conflicts without markers (binary, deleted by one side) are explained and settled
+  that was shown; a block with a line that looks like a marker is flagged and left to the editor,
+  and `conflict-marker-size` is honoured. Conflicts without markers (binary, deleted by one side) are explained and settled
   whole after asking. Nothing is staged for you. `p` and `u` mean previous conflict and undo while
   a conflicted file is selected. The marker parser is adapted from druk (MIT).
 - A merge, rebase, cherry-pick or revert that stopped (started in gitty or in another terminal) is

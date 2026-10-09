@@ -143,7 +143,7 @@ pub struct Changes {
     /// The selected conflicted file's view (replaces the diff while it is selected).
     pub conflict: Option<super::conflict::ConflictView>,
     /// Conflict blocks per conflicted file, for the file list; filled as files are read.
-    pub conflict_counts: HashMap<String, usize>,
+    pub conflict_counts: HashMap<String, (Option<usize>, crate::msg::FileStamp)>,
     pub(super) counts_asked: HashSet<String>,
     /// Resolutions made in the conflict view, newest last, for `u`.
     pub(super) undo: Vec<super::conflict::Undo>,
@@ -178,6 +178,10 @@ impl Changes {
         let mut v: Vec<usize> = self.entries().iter().enumerate().filter(|(_, e)| self.filter.keeps(e)).map(|(i, _)| i).collect();
         v.sort_by_key(|&i| !self.entries()[i].is_conflicted());
         v
+    }
+    /// How many conflict blocks the file held when last read (None: not known, or not text).
+    pub fn conflict_count(&self, path: &str) -> Option<usize> {
+        self.conflict_counts.get(path).and_then(|(n, _)| *n)
     }
     pub fn selected(&self) -> Option<&StatusEntry> {
         self.visible().get(self.sel).map(|&i| &self.entries()[i])
@@ -365,6 +369,7 @@ impl App {
             Msg::WriteDone { op: WriteOp::RefreshIndex, .. } => {}
             Msg::WriteDone { op, result } => {
                 self.changes.busy = self.changes.busy.saturating_sub(1);
+                self.conflict_write_settled(&op, result.is_ok());
                 match result {
                     _ if self.commit_done(&op, &result) => {}
                     // a discard whose copies did not go to the Trash says where they are
@@ -476,7 +481,6 @@ impl App {
     pub fn toggle_file(&mut self, visible_pos: usize) {
         let Some(e) = self.changes.visible().get(visible_pos).map(|&i| self.changes.entries()[i].clone()) else { return };
         let paths = Self::whole_file_paths(&e);
-        self.warn_staged_markers(&paths);
         if e.check() == gitty_core::status::Check::Staged {
             self.write(WriteOp::Unstage(paths));
         } else {
@@ -486,8 +490,6 @@ impl App {
 
     /// `a` in the file list / header checkbox: everything staged, or nothing.
     pub fn toggle_all_files(&mut self) {
-        let marked: Vec<String> = self.changes.entries().iter().filter(|e| e.is_conflicted()).map(|e| e.path.clone()).collect();
-        self.warn_staged_markers(&marked);
         let all = !self.changes.entries().is_empty() && self.changes.entries().iter().all(|e| e.check() == gitty_core::status::Check::Staged);
         self.write(if all { WriteOp::UnstageAll } else { WriteOp::StageAll });
     }

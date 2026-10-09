@@ -15,10 +15,22 @@ use crate::files::{MAX_VIEW_BYTES, is_secret, no_symlinks, relative};
 use crate::git_cli::{GitCli, Kind};
 use crate::op_state::RepoOp;
 
-const OPEN: &str = "<<<<<<<";
-const BASE: &str = "|||||||";
-const SEP: &str = "=======";
-const CLOSE: &str = ">>>>>>>";
+/// How git writes the markers of a file: `conflict-marker-size` (`.gitattributes`) and whether it
+/// adds the merge base (`merge.conflictStyle` diff3 or zdiff3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Style {
+    pub size: usize,
+    pub diff3: bool,
+}
+
+/// Git's default length of a marker.
+pub const MARKER_SIZE: usize = 7;
+
+impl Default for Style {
+    fn default() -> Style {
+        Style { size: MARKER_SIZE, diff3: false }
+    }
+}
 
 /// One conflict block. Lines are 0-based and count like [`crate::diff::text::Text`] does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +45,12 @@ pub struct Conflict {
     /// The text after `<<<<<<<` and `>>>>>>>` (git writes `HEAD` and a branch or commit name).
     pub ours_label: String,
     pub theirs_label: String,
+    /// The length of the markers the block was parsed with.
+    pub marker_size: usize,
+    /// A line inside the block looks like a marker too (a second `=======` or `|||||||`, a bare
+    /// `|||||||` outside diff3 style): where the sides split cannot be told, so the block is
+    /// counted but never resolved from here.
+    pub ambiguous: bool,
 }
 
 impl Conflict {
@@ -55,14 +73,21 @@ pub enum Choice {
     Both,
 }
 
-/// `<<<<<<<` and its kin: exactly seven characters, then the end of the line or a space and a label.
-fn marker<'a>(line: &'a str, m: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(m)?;
-    match rest.as_bytes().first() {
+/// `<<<<<<<` and its kin: exactly `n` of `ch`, then the end of the line or a space and a label.
+fn marker(line: &str, ch: u8, n: usize) -> Option<&str> {
+    let b = line.as_bytes();
+    if b.len() < n || !b[..n].iter().all(|&c| c == ch) {
+        return None;
+    }
+    match b.get(n) {
         None => Some(""),
-        Some(b' ') => Some(&rest[1..]),
+        Some(b' ') => Some(&line[n + 1..]),
         _ => None,
     }
+}
+
+fn is_sep(line: &str, n: usize) -> bool {
+    line.len() == n && line.bytes().all(|c| c == b'=')
 }
 
 /// A line without its terminator (`\n` or `\r\n`).
@@ -76,14 +101,18 @@ struct Open {
     label: String,
     base: Option<usize>,
     sep: Option<usize>,
+    ambiguous: bool,
 }
 
 /// The conflict blocks of `text`, in order. Strict: a block needs its `=======` and its closing
 /// `>>>>>>>`; a second `<<<<<<<` starts over; `|||||||` and `=======` count once per block and
-/// outside a block they are text (a Markdown heading underline, say).
-pub fn parse(text: &str) -> Vec<Conflict> {
+/// outside a block they are text (a Markdown heading underline, say). Inside a block a second
+/// `=======`, a second `|||||||` or a bare `|||||||` outside diff3 style may be file content, so
+/// the block is flagged [`Conflict::ambiguous`] (git always writes a label after the base marker).
+pub fn parse(text: &str, style: Style) -> Vec<Conflict> {
     let mut out = Vec::new();
-    if !text.contains(OPEN) {
+    let n = style.size;
+    if !text.contains(&"<".repeat(n)) {
         return out;
     }
     let mut open: Option<Open> = None;
@@ -93,16 +122,23 @@ pub fn parse(text: &str) -> Vec<Conflict> {
         if !matches!(line.as_bytes().first(), Some(b'<' | b'|' | b'=' | b'>')) {
             continue;
         }
-        if let Some(label) = marker(line, OPEN) {
-            open = Some(Open { start: i, label: label.to_string(), base: None, sep: None });
+        if let Some(label) = marker(line, b'<', n) {
+            open = Some(Open { start: i, label: label.to_string(), base: None, sep: None, ambiguous: false });
         } else if let Some(o) = open.as_mut() {
-            if marker(line, BASE).is_some() {
-                if o.base.is_none() && o.sep.is_none() {
-                    o.base = Some(i);
+            if let Some(label) = marker(line, b'|', n) {
+                // after the separator a base marker is the second side's text
+                if o.sep.is_none() {
+                    if o.base.is_some() || (!style.diff3 && label.is_empty()) {
+                        o.ambiguous = true;
+                    }
+                    o.base.get_or_insert(i);
                 }
-            } else if line == SEP {
+            } else if is_sep(line, n) {
+                if o.sep.is_some() {
+                    o.ambiguous = true;
+                }
                 o.sep.get_or_insert(i);
-            } else if let (Some(label), Some(sep)) = (marker(line, CLOSE), o.sep) {
+            } else if let (Some(label), Some(sep)) = (marker(line, b'>', n), o.sep) {
                 let o = open.take().expect("matched above");
                 out.push(Conflict {
                     start_line: o.start,
@@ -112,11 +148,20 @@ pub fn parse(text: &str) -> Vec<Conflict> {
                     theirs: sep + 1..i,
                     ours_label: o.label,
                     theirs_label: label.to_string(),
+                    marker_size: n,
+                    ambiguous: o.ambiguous,
                 });
             }
         }
     }
     out
+}
+
+/// A line that starts with seven `<` or `>`: a conflict marker of some kind. Used when [`parse`]
+/// found nothing, to tell "markers git wrote that are not understood" from "markers all gone"
+/// (`=======` alone is no sign: Markdown underlines are made of it).
+pub fn has_stray_markers(text: &str) -> bool {
+    (text.contains("<<<<<<<") || text.contains(">>>>>>>")) && text.lines().any(|l| matches!(l.as_bytes(), [c @ (b'<' | b'>'), rest @ ..] if rest.len() >= 6 && rest[..6].iter().all(|b| b == c)))
 }
 
 /// Byte offset of the start of each line, and of the end of the text.
@@ -131,12 +176,16 @@ fn line_starts(text: &str) -> Vec<usize> {
 }
 
 /// `text` with the block resolved to `choice`. None when the text is not what the block was
-/// parsed from (its marker lines are not where the block says).
+/// parsed from (its marker lines are not where the block says), and for an ambiguous block.
 pub fn resolve(text: &str, c: &Conflict, choice: Choice) -> Option<String> {
+    if c.ambiguous {
+        return None;
+    }
+    let n = c.marker_size;
     let starts = line_starts(text);
     let lines = starts.len() - 1;
     let line = |i: usize| (i < lines).then(|| &text[starts[i]..starts[i + 1]]);
-    if !(line(c.start_line).is_some_and(|l| marker(content(l), OPEN).is_some()) && line(c.end_line).is_some_and(|l| marker(content(l), CLOSE).is_some()) && line(c.sep_line()).is_some_and(|l| content(l) == SEP)) {
+    if !(line(c.start_line).is_some_and(|l| marker(content(l), b'<', n).is_some()) && line(c.end_line).is_some_and(|l| marker(content(l), b'>', n).is_some()) && line(c.sep_line()).is_some_and(|l| is_sep(content(l), n))) {
         return None;
     }
     let side = |r: &Range<usize>| &text[starts[r.start]..starts[r.end]];
@@ -162,20 +211,22 @@ pub fn resolve(text: &str, c: &Conflict, choice: Choice) -> Option<String> {
 /// What a conflicted file in the work tree holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Loaded {
-    /// UTF-8 text, with its conflict blocks (none when the markers are gone from it).
-    Text { bytes: Vec<u8>, conflicts: Vec<Conflict> },
+    /// UTF-8 text, with its conflict blocks. None parsed and `unknown`: it has marker lines
+    /// that were not understood; none and not `unknown`: the markers are gone from it.
+    Text { bytes: Vec<u8>, conflicts: Vec<Conflict>, unknown: bool },
     /// Not shown or resolved here, and why (binary, too large, a symlink, a secret…).
     Other(String),
 }
 
 /// Reads `rel` of the work tree at `root`, with the limits of the Files viewer, and parses it.
-pub fn read(root: &Path, rel: &Path) -> anyhow::Result<Loaded> {
+pub fn read(root: &Path, rel: &Path, style: Style) -> anyhow::Result<Loaded> {
     use crate::files::{FileContent as C, read_file};
     Ok(match read_file(root, rel, false)? {
         C::Text(bytes) => match std::str::from_utf8(&bytes) {
             Ok(text) => {
-                let conflicts = parse(text);
-                Loaded::Text { bytes, conflicts }
+                let conflicts = parse(text, style);
+                let unknown = conflicts.is_empty() && has_stray_markers(text);
+                Loaded::Text { bytes, conflicts, unknown }
             }
             Err(_) => Loaded::Other("The file is not UTF-8 text: open it in your editor".into()),
         },
@@ -188,10 +239,30 @@ pub fn read(root: &Path, rel: &Path) -> anyhow::Result<Loaded> {
     })
 }
 
+/// Removes the temporary files of [`write_resolved`] that a crashed process left next to `name`.
+/// Best effort: a name that is not ours, or a process still alive, is left alone.
+fn remove_stale_temps(dir: &Path, name: &str) {
+    let prefix = format!(".{name}.gitty-");
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let file = e.file_name().to_string_lossy().into_owned();
+        let Some(pid) = file.strip_prefix(&prefix).and_then(|r| r.split('-').next()).and_then(|p| p.parse::<i32>().ok()) else { continue };
+        // SAFETY: signal 0 only checks that the process exists
+        let alive = pid == std::process::id() as i32 || unsafe { libc::kill(pid, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !alive {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// Writes `bytes` over `rel` of the work tree at `root`, if the file still holds exactly what
 /// hashes to `expect` (what the caller built `bytes` from). The write is a temporary file in the
 /// same directory, renamed over the original with its permissions. Refused: a symlink, a path
 /// through one or outside the tree, a secret file, a file over [`MAX_VIEW_BYTES`], a file changed since.
+///
+/// The check and the rename are not one atomic step: an editor that saves between them loses its
+/// save to the rename. The window is the time to write one temporary file; the callers hold the
+/// write lock, which keeps gitty's own writes out of it, nothing keeps other programs out.
 pub fn write_resolved(root: &Path, rel: &Path, expect: BlobId, bytes: &[u8]) -> anyhow::Result<()> {
     use std::io::{Read, Write};
     use std::os::unix::fs::OpenOptionsExt;
@@ -220,6 +291,7 @@ pub fn write_resolved(root: &Path, rel: &Path, expect: BlobId, bytes: &[u8]) -> 
     }
     let dir = abs.parent().context("no parent directory")?;
     let name = abs.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    remove_stale_temps(dir, &name);
     let mut tmp = None;
     for k in 0..100 {
         let p = dir.join(format!(".{name}.gitty-{}-{k}", std::process::id()));
@@ -239,6 +311,8 @@ pub fn write_resolved(root: &Path, rel: &Path, expect: BlobId, bytes: &[u8]) -> 
         let _ = std::fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("writing {shown}"));
     }
+    // make the rename itself durable; the file is already complete, so a failure here is not one
+    let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
     Ok(())
 }
 
@@ -261,8 +335,9 @@ impl SideName {
 /// in a merge, ours is the checked-out branch and theirs the branch merged in. A rebase or a
 /// cherry-pick replays commits on top of another base, so ours is the branch being built (the
 /// base the commits land on) and theirs is the commit being replayed (the user's own work, in a
-/// rebase); a revert's theirs is the change being undone. Marker blocks and `checkout --ours`
-/// both follow git's words, so the labels below name the roles git gives each side.
+/// rebase). A revert merges with the reverted commit as the base: its theirs is the commit's
+/// parent, the code as it was *without* the change, so taking theirs undoes it. Marker blocks and
+/// `checkout --ours` both follow git's words, so the labels below name the roles git gives each side.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sides {
     pub ours: SideName,
@@ -296,7 +371,7 @@ impl GitCli {
                 Sides { ours: side("Base branch", onto), theirs: side("Your commit", replayed) }
             }
             RepoOp::CherryPick => Sides { ours: side("Current branch", current), theirs: side("Picked commit", subject(&state.id)) },
-            RepoOp::Revert => Sides { ours: side("Current branch", current), theirs: side("Reverted change", subject(&state.id)) },
+            RepoOp::Revert => Sides { ours: side("Current branch", current), theirs: side("Without change", subject(&state.id)) },
         }
     }
 
@@ -308,37 +383,97 @@ impl GitCli {
         text.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
     }
 
+    /// How git wrote the markers of `path`: `conflict-marker-size` from `.gitattributes` (an
+    /// unset, unspecified or invalid value is the default 7; the rest clamped to git's 3..=64)
+    /// and whether `merge.conflictStyle` adds the base.
+    pub fn conflict_style(&self, path: &str) -> Style {
+        let size = self.quiet(Kind::Read, &["check-attr", "-z", "conflict-marker-size", "--", path], None).ok().and_then(|o| {
+            // `<path> NUL <attribute> NUL <value> NUL`
+            let value = o.split(|&b| b == 0).nth(2)?;
+            std::str::from_utf8(value).ok()?.parse::<usize>().ok()
+        });
+        let diff3 = self.quiet(Kind::Read, &["config", "--get", "merge.conflictStyle"], None).is_ok_and(|o| matches!(String::from_utf8_lossy(&o).trim().to_ascii_lowercase().as_str(), "diff3" | "zdiff3"));
+        Style { size: size.map_or(MARKER_SIZE, |n| n.clamp(3, 64)), diff3 }
+    }
+
+    /// The index entries `path` is unmerged in (stage 1 base, 2 ours, 3 theirs); empty when it is not.
+    pub fn unmerged_entries(&self, path: &str) -> anyhow::Result<Vec<Stage>> {
+        let out = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", path], None)?;
+        Ok(out.split(|&b| b == 0).filter_map(parse_stage).collect())
+    }
+
     /// The index stages (1 base, 2 ours, 3 theirs) `path` is unmerged in; empty when it is not.
     pub fn unmerged_stages(&self, path: &str) -> anyhow::Result<Vec<u8>> {
-        let out = self.quiet(Kind::Read, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", path], None)?;
-        // `<mode> <object> <stage>\t<path>`
-        let stages = out.split(|&b| b == 0).filter_map(|r| r.splitn(2, |&b| b == b'\t').next()).filter_map(|h| h.last().filter(|b| b.is_ascii_digit()).map(|b| b - b'0'));
-        Ok(stages.collect())
+        Ok(self.unmerged_entries(path)?.into_iter().map(|e| e.stage).collect())
+    }
+
+    /// Every path the index holds unmerged, each once.
+    pub fn unmerged_paths(&self) -> anyhow::Result<Vec<String>> {
+        let out = self.quiet(Kind::Read, &["ls-files", "-u", "-z"], None)?;
+        let mut paths: Vec<String> = out.split(|&b| b == 0).filter_map(|r| r.splitn(2, |&b| b == b'\t').nth(1)).map(|p| String::from_utf8_lossy(p).into_owned()).collect();
+        paths.dedup();
+        Ok(paths)
     }
 
     /// Settles a conflict that has no markers to resolve (a binary file, a file one side
     /// deleted) for the whole file: takes `--ours` or `--theirs` and stages the result, or with
     /// `delete` (the side has no such file) removes the path. `delete` is what the caller asked
-    /// the user about: if the index no longer says so, nothing is done.
-    pub fn take_side(&self, path: &str, theirs: bool, delete: bool) -> anyhow::Result<()> {
-        let stages = self.unmerged_stages(path)?;
-        if stages.is_empty() {
+    /// the user about: if the index no longer says so, nothing is done. `backup` runs once that
+    /// is checked and before anything changes (a copy of the file for the Trash).
+    ///
+    /// A submodule (a gitlink) is not checked out: `checkout --theirs` would leave the work tree
+    /// alone and the `add` after it would stage the work tree's commit, ours. The chosen side's
+    /// commit goes into the index directly, and a deletion leaves the work tree's directory.
+    pub fn take_side(&self, path: &str, theirs: bool, delete: bool, backup: &mut dyn FnMut() -> anyhow::Result<()>) -> anyhow::Result<()> {
+        let entries = self.unmerged_entries(path)?;
+        if entries.is_empty() {
             anyhow::bail!("{path} is not conflicted any more");
         }
-        if stages.contains(&if theirs { 3 } else { 2 }) == delete {
+        let chosen = entries.iter().find(|e| e.stage == if theirs { 3 } else { 2 });
+        if chosen.is_some() == delete {
             anyhow::bail!("{path} changed in the index since it was shown; look again");
         }
-        if delete {
-            return self.quiet(Kind::Write, &["--literal-pathspecs", "rm", "-q", "--", path], None).map(|_| ());
+        let gitlink = entries.iter().any(|e| e.mode == 0o160000);
+        backup()?;
+        match (chosen, gitlink) {
+            (None, true) => self.quiet(Kind::Write, &["--literal-pathspecs", "rm", "--cached", "-q", "--", path], None).map(|_| ()),
+            (None, false) => self.quiet(Kind::Write, &["--literal-pathspecs", "rm", "-q", "--", path], None).map(|_| ()),
+            (Some(c), true) => self.quiet(Kind::Write, &["update-index", "--add", "--cacheinfo", &format!("{:o},{},{path}", c.mode, c.sha)], None).map(|_| ()),
+            (Some(_), false) => {
+                self.quiet(Kind::Write, &["--literal-pathspecs", "checkout", if theirs { "--theirs" } else { "--ours" }, "--", path], None)?;
+                self.quiet(Kind::Write, &["--literal-pathspecs", "add", "--", path], None).map(|_| ())
+            }
         }
-        self.quiet(Kind::Write, &["--literal-pathspecs", "checkout", if theirs { "--theirs" } else { "--ours" }, "--", path], None)?;
-        self.quiet(Kind::Write, &["--literal-pathspecs", "add", "--", path], None).map(|_| ())
     }
+}
+
+/// One unmerged index entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stage {
+    pub stage: u8,
+    pub mode: u32,
+    pub sha: String,
+}
+
+/// `<mode> <object> <stage>\t<path>`
+fn parse_stage(rec: &[u8]) -> Option<Stage> {
+    let head = std::str::from_utf8(rec.splitn(2, |&b| b == b'\t').next()?).ok()?;
+    let mut f = head.split(' ');
+    let (mode, sha, stage) = (f.next()?, f.next()?, f.next()?);
+    Some(Stage { stage: stage.parse().ok()?, mode: u32::from_str_radix(mode, 8).ok()?, sha: sha.to_string() })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse(text: &str) -> Vec<Conflict> {
+        super::parse(text, Style::default())
+    }
+
+    fn parse_diff3(text: &str) -> Vec<Conflict> {
+        super::parse(text, Style { diff3: true, ..Style::default() })
+    }
 
     fn one(text: &str) -> Conflict {
         let mut v = parse(text);
@@ -367,7 +502,8 @@ mod tests {
     #[test]
     fn diff3_keeps_the_base_out_of_every_choice() {
         let t = "<<<<<<< HEAD\nours\n||||||| merged common ancestors\nbase\n=======\ntheirs\n>>>>>>> topic\n";
-        let c = one(t);
+        let c = parse_diff3(t).remove(0);
+        assert!(!c.ambiguous);
         assert_eq!((c.ours.clone(), c.base.clone(), c.theirs.clone()), (1..2, Some(3..4), 5..6));
         assert_eq!(c.base_line(), Some(2));
         assert_eq!(resolve(t, &c, Choice::Both).unwrap(), "ours\ntheirs\n");
@@ -407,16 +543,75 @@ mod tests {
     }
 
     #[test]
-    fn only_the_first_separator_and_base_count() {
+    fn only_the_first_separator_and_base_split_a_block_and_a_second_one_flags_it() {
         let t = "<<<<<<< A\no\n=======\nt1\n=======\nt2\n>>>>>>> B\n";
         let c = one(t);
-        assert_eq!((c.ours.clone(), c.theirs.clone()), (1..2, 3..6));
-        // a base marker after the separator is text
+        assert_eq!((c.ours.clone(), c.theirs.clone(), c.ambiguous), (1..2, 3..6, true));
+        // a base marker after the separator is the second side's text
         let t = "<<<<<<< A\no\n=======\nt1\n||||||| x\nt2\n>>>>>>> B\n";
         let c = one(t);
-        assert_eq!((c.base.clone(), c.theirs.clone()), (None, 3..6));
+        assert_eq!((c.base.clone(), c.theirs.clone(), c.ambiguous), (None, 3..6, false));
         let t = "<<<<<<< A\no\n||||||| x\nb\n||||||| y\nc\n=======\nt\n>>>>>>> B\n";
-        assert_eq!(one(t).base, Some(3..6));
+        let c = parse_diff3(t).remove(0);
+        assert_eq!((c.base.clone(), c.ambiguous), (Some(3..6), true));
+        // outside diff3 style git never writes a base: a bare base marker is the file's own line,
+        // a labelled one is a base from `--conflict=diff3`
+        let t = "<<<<<<< A\no\n|||||||\nb\n=======\nt\n>>>>>>> B\n";
+        assert!(one(t).ambiguous && !parse_diff3(t)[0].ambiguous);
+        let t = "<<<<<<< A\no\n||||||| anc\nb\n=======\nt\n>>>>>>> B\n";
+        assert!(!one(t).ambiguous);
+    }
+
+    #[test]
+    fn an_ambiguous_block_is_counted_but_no_choice_resolves_it() {
+        // a setext underline under a seven-letter title is a line of the first side
+        let t = "<<<<<<< HEAD\nHeading\n=======\nours\n=======\ntheirs\n>>>>>>> t\nafter\n";
+        let c = one(t);
+        assert!(c.ambiguous);
+        for choice in [Choice::Ours, Choice::Theirs, Choice::Both] {
+            assert_eq!(resolve(t, &c, choice), None);
+        }
+    }
+
+    #[test]
+    fn no_choice_of_a_clean_block_drops_a_line() {
+        let ours = ["a", "=== not seven", "<<<<<< six", "||||||"];
+        let theirs = ["b", ">>>>>> six", "== two"];
+        let t = format!("pre\n<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> t\npost\n", ours.join("\n"), theirs.join("\n"));
+        let c = one(&t);
+        assert!(!c.ambiguous);
+        let all = |r: String| r.lines().map(str::to_string).collect::<Vec<_>>();
+        let o = all(resolve(&t, &c, Choice::Ours).unwrap());
+        let th = all(resolve(&t, &c, Choice::Theirs).unwrap());
+        let both = all(resolve(&t, &c, Choice::Both).unwrap());
+        assert_eq!(o.len(), 2 + ours.len());
+        assert_eq!(th.len(), 2 + theirs.len());
+        assert_eq!(both.len(), 2 + ours.len() + theirs.len());
+    }
+
+    #[test]
+    fn marker_size_makes_markers_exactly_that_long() {
+        let nine = |t: &str| super::parse(t, Style { size: 9, diff3: false });
+        let t = "<<<<<<<<< HEAD\nours\n=========\ntheirs\n>>>>>>>>> topic\n";
+        let c = nine(t).remove(0);
+        assert_eq!((c.ours.clone(), c.theirs.clone(), c.marker_size), (1..2, 3..4, 9));
+        assert_eq!(resolve(t, &c, Choice::Both).unwrap(), "ours\ntheirs\n");
+        // sevens are text at size 9, and nines are not markers at size 7
+        assert!(nine("<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> t\n").is_empty());
+        assert!(parse(t).is_empty());
+        // a size-9 block with a shorter line of `=` inside it is not ambiguous
+        let t = "<<<<<<<<< HEAD\nTitle\n=======\n=========\nt\n>>>>>>>>> topic\n";
+        let c = nine(t).remove(0);
+        assert_eq!((c.ours.clone(), c.theirs.clone(), c.ambiguous), (1..3, 4..5, false));
+    }
+
+    #[test]
+    fn stray_markers_are_told_from_markdown_underlines() {
+        assert!(has_stray_markers("a\n<<<<<<<< HEAD\nb\n"));
+        assert!(has_stray_markers(">>>>>>> x\n"));
+        assert!(!has_stray_markers("Title\n=======\n"));
+        assert!(!has_stray_markers("a <<<<<<< b\n"));
+        assert!(!has_stray_markers("<<<<<< six\n"));
     }
 
     #[test]
@@ -427,10 +622,11 @@ mod tests {
         let c = one(&t);
         assert_eq!((c.start_line, c.end_line), (7, 11));
         assert_eq!(resolve(&t, &c, Choice::Ours).unwrap(), format!("{readme}x\nAfter\n=======\n"));
-        // a heading underline inside a block is the separator, once; the real one is content
+        // inside a block an underline is the separator, once, and the block is flagged: the sides
+        // cannot be told apart, so it is counted and left to the editor
         let t = "<<<<<<< HEAD\nTitle\n=======\nOther\n=======\n>>>>>>> t\n";
         let c = one(t);
-        assert_eq!((c.ours.clone(), c.theirs.clone()), (1..2, 3..5));
+        assert_eq!((c.ours.clone(), c.theirs.clone(), c.ambiguous), (1..2, 3..5, true));
     }
 
     #[test]
@@ -514,7 +710,14 @@ mod tests {
         let stale = BlobId::hash_of(b"something else");
         assert!(write_resolved(root, rel, stale, b"x").unwrap_err().to_string().contains("changed on disk"));
         assert_eq!(std::fs::read_to_string(&p).unwrap(), BASIC);
+        // what a crashed write left behind is cleaned up; a live process's temporary file is not
+        let stale = root.join(".f.txt.gitty-2147483646-0");
+        let live = root.join(format!(".f.txt.gitty-{}-77", std::process::id()));
+        std::fs::write(&stale, "x").unwrap();
+        std::fs::write(&live, "x").unwrap();
         write_resolved(root, rel, BlobId::hash_of(BASIC.as_bytes()), b"done\n").unwrap();
+        assert!(!stale.exists() && live.exists());
+        std::fs::remove_file(&live).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "done\n");
         assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o755);
         let leftovers: Vec<_> = std::fs::read_dir(root).unwrap().flatten().map(|e| e.file_name()).collect();
