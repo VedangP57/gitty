@@ -120,6 +120,7 @@ impl App {
             Action::Theme => self.open_theme_picker(),
             Action::Branches => self.open_switcher(),
             Action::Stashes => self.open_stashes(),
+            Action::Operation => self.open_operation(),
             Action::StashPush => self.open_stash_name(),
             Action::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             Action::ErrorDetails => {
@@ -331,6 +332,7 @@ impl App {
             Overlay::NameInput { kind, input } => self.name_key(kind, input, k),
             Overlay::DirtySwitch { name, remote, merge } => self.dirty_key(name, remote, merge, k),
             Overlay::Stashes { sel } => self.stashes_key(sel, k),
+            Overlay::InProgress => self.operation_key(k),
             Overlay::Quit { .. } => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter => self.quit_now(),
                 KeyCode::Char('n') | KeyCode::Esc => {}

@@ -14,6 +14,7 @@ use gitty_core::diff::text::Text;
 use gitty_core::diff::{DiffOptions, FileDiff};
 use gitty_highlight::Highlights;
 use gitty_core::history::{CommitDetail, CommitRow, History};
+use gitty_core::op_state::{OpState, RepoOp};
 use gitty_core::refs::RefsSnapshot;
 use gitty_core::stage::Texts;
 use gitty_core::status::{Status, StatusEntry};
@@ -158,6 +159,12 @@ pub enum WriteOp {
     Merge { name: String, remote: bool },
     /// Stash the changes, then merge; the stash is put back if nothing was merged.
     StashAndMerge { name: String, remote: bool, message: String },
+    /// Finish the stopped merge, rebase, cherry-pick or revert (everything resolved and staged).
+    /// `id` is the [`OpState::id`] the dialog showed; `accepted` the staged files with conflict
+    /// markers the user chose to commit anyway.
+    ContinueOp { op: RepoOp, id: String, accepted: Vec<String> },
+    /// Give it up: the repository goes back to before it started.
+    AbortOp { op: RepoOp, id: String },
     /// Runs in order and stops at the first failure (a line discard that unstages first).
     Seq(Vec<WriteOp>),
 }
@@ -184,12 +191,14 @@ impl WriteOp {
             WriteOp::StashAndSwitch { .. } => "stashing and switching branch",
             WriteOp::Merge { .. } => "merging",
             WriteOp::StashAndMerge { .. } => "stashing and merging",
+            WriteOp::ContinueOp { .. } => "continuing",
+            WriteOp::AbortOp { .. } => "aborting",
             WriteOp::Seq(ops) => ops.last().map_or("writing", WriteOp::label),
         }
     }
     /// Commits, undo and branch changes move HEAD or refs; refs and history refresh after them.
     pub fn moves_head(&self) -> bool {
-        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::Merge { .. } | WriteOp::StashAndMerge { .. })
+        matches!(self, WriteOp::Commit { .. } | WriteOp::UndoCommit { .. } | WriteOp::SwitchBranch { .. } | WriteOp::CreateBranch { .. } | WriteOp::RenameBranch { .. } | WriteOp::DeleteBranch { .. } | WriteOp::StashAndSwitch { .. } | WriteOp::Merge { .. } | WriteOp::StashAndMerge { .. } | WriteOp::ContinueOp { .. } | WriteOp::AbortOp { .. })
     }
 
     /// The stash list changes after these.
@@ -308,6 +317,11 @@ pub enum Msg {
     /// not cached.
     Highlighted { key: HlKey, spans: Option<Arc<Highlights>>, cancelled: bool },
     Status { generation: u64, result: Result<Status, String> },
+    /// A continue stopped: these staged files still contain conflict markers. Ask before going on.
+    StagedMarkers { op: RepoOp, id: String, files: Vec<String> },
+    /// The merge, rebase, cherry-pick or revert in progress (None: none), read just after the
+    /// status of the same `generation`, whose conflicts it counts.
+    OpState { generation: u64, state: Option<OpState> },
     /// `staged`: per changed line of `diff`; None when lines cannot be staged individually
     /// (binary and other whole-file classes, whitespace hidden, conflicts, or an index holding
     /// content of its own: `divergent`).
@@ -370,6 +384,8 @@ impl std::fmt::Debug for Msg {
                 Ok(s) => write!(f, "Status {{ generation: {generation}, n: {} }}", s.entries.len()),
                 Err(e) => write!(f, "Status {{ generation: {generation}, error: {e} }}"),
             },
+            Msg::StagedMarkers { op, files, .. } => write!(f, "StagedMarkers {{ {op:?}: {files:?} }}"),
+            Msg::OpState { generation, state } => write!(f, "OpState {{ generation: {generation}, {:?} }}", state.as_ref().map(|s| (s.op, s.conflicts))),
             Msg::ChangeDiff { generation, entry, staged, divergent, .. } => {
                 write!(f, "ChangeDiff {{ generation: {generation}, {}: staged {:?}, divergent: {divergent} }}", entry.path, staged.as_ref().map(|s| s.iter().filter(|b| **b).count()))
             }

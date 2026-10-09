@@ -9,6 +9,7 @@ use crate::askpass::AskKind;
 use crate::app::{App, Overlay};
 use crate::dates::{DateMode, format_date};
 use crate::keymap::Ctx;
+use gitty_core::op_state::RepoOp;
 use gitty_core::status::EntryKind;
 
 /// Help sections, in display order, and the keys that are not rebindable.
@@ -63,6 +64,8 @@ fn confirm_verb(op: &crate::msg::WriteOp) -> &'static str {
     use crate::msg::WriteOp as W;
     match op {
         W::Merge { .. } => " merge · ",
+        W::AbortOp { .. } => " abort · ",
+        W::ContinueOp { .. } => " continue anyway · ",
         W::DeleteBranch { .. } => " delete · ",
         W::StashDrop { .. } => " drop · ",
         W::RemoveIndexLock { .. } => " remove · ",
@@ -143,12 +146,58 @@ pub fn draw(app: &App, buf: &mut Buffer, area: Rect) {
             }
         }
         Overlay::Confirm { title, body, op } => {
-            let w = (crate::text::display_width(title).max(crate::text::display_width(body)) as u16 + 6).clamp(40, area.width.saturating_sub(4).max(40));
-            let inner = boxed(app, buf, area, w, 6, "Confirm");
+            let w = (crate::text::display_width(title).max(crate::text::display_width(body)) as u16 + 6).clamp(40, area.width.saturating_sub(4).max(40)).min(area.width);
+            // a long explanation wraps (to the box as drawn, which a small terminal shrinks) rather than losing its end
+            let lines = wrap_text(body, w.saturating_sub(4) as usize);
+            let n = lines.len() as u16;
+            let inner = boxed(app, buf, area, w, n + 5, "Confirm");
+            if inner.height == 0 {
+                return;
+            }
+            // the keys always have their row; the text gives way to them
+            let keys_y = (inner.y + 2 + n).min(inner.bottom() - 1);
             text(buf, inner.x, inner.y, inner.right(), title, st.fg(ui.warning).add_modifier(Modifier::BOLD));
-            text(buf, inner.x, inner.y + 1, inner.right(), body, st.fg(ui.muted));
-            if inner.height > 3 {
-                spans(buf, inner.x, inner.y + 3, inner.right(), &[("Enter", st.fg(ui.accent)), (confirm_verb(op), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+            for (k, l) in lines.iter().enumerate() {
+                let y = inner.y + 1 + k as u16;
+                if y < keys_y {
+                    text(buf, inner.x, y, inner.right(), l, st.fg(ui.muted));
+                }
+            }
+            spans(buf, inner.x, keys_y, inner.right(), &[("Enter", st.fg(ui.accent)), (confirm_verb(op), st), ("Esc", st.fg(ui.accent)), (" cancel", st)]);
+        }
+        Overlay::InProgress => {
+            let Some(state) = &app.op else { return };
+            let n = state.op.name();
+            let title = format!("{} in progress", n[..1].to_uppercase() + &n[1..]);
+            let into = app.refs.as_ref().and_then(|r| r.head_branch());
+            let doing = match (state.op, state.detail.as_str()) {
+                (RepoOp::Merge, "") => "Merging".to_string(),
+                (RepoOp::Merge, d) => format!("Merging {d}{}", into.map_or(String::new(), |b| format!(" into {b}"))),
+                (RepoOp::Rebase, d) => format!("Rebasing{}{}", if d.is_empty() { String::new() } else { format!(" {d}") }, state.step.map_or(String::new(), |(i, m)| format!(" · step {i}/{m}"))),
+                (RepoOp::CherryPick, _) => "Cherry-picking".to_string(),
+                (RepoOp::Revert, _) => "Reverting".to_string(),
+            };
+            let blocked = crate::app::operation::continue_blocked(state);
+            let inner = boxed(app, buf, area, 72, 8, &title);
+            if inner.height == 0 {
+                return;
+            }
+            // the keys always have their row; the text above gives way to them
+            let keys_y = (inner.y + 4).min(inner.bottom() - 1);
+            let status = if state.conflicts == 0 { "No conflicts left".to_string() } else { format!("{} conflict{}", state.conflicts, if state.conflicts == 1 { "" } else { "s" }) };
+            for (dy, line, style) in [(0, Some(doing), st.fg(ui.warning).add_modifier(Modifier::BOLD)), (1, Some(status), st.fg(ui.muted)), (2, blocked.clone(), st.fg(ui.muted))] {
+                if let Some(l) = line.filter(|_| inner.y + dy < keys_y) {
+                    text(buf, inner.x, inner.y + dy, inner.right(), &l, style);
+                }
+            }
+            let (cn, cl, label) = if blocked.is_some() { (st.fg(ui.muted), st.fg(ui.muted), " continue (not yet) · ") } else { (st.fg(ui.accent), st, " continue · ") };
+            let full = [("c", cn), (label, cl), ("a", st.fg(ui.accent)), (" abort · ", st), ("Esc", st.fg(ui.accent)), (" close", st)];
+            let room = inner.width as usize;
+            // a narrow box shortens the words, never drops a key
+            if full.iter().map(|(t, _)| t.chars().count()).sum::<usize>() <= room {
+                spans(buf, inner.x, keys_y, inner.right(), &full);
+            } else {
+                spans(buf, inner.x, keys_y, inner.right(), &[("c", cn), (" cont · ", cl), ("a", st.fg(ui.accent)), (" abort · ", st), ("Esc", st.fg(ui.accent))]);
             }
         }
         Overlay::Prompt { ask, input } => {

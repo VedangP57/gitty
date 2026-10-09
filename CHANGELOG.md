@@ -8,6 +8,11 @@ All notable changes to gitty are listed here. The format follows
 
 ### Added
 
+- A merge, rebase, cherry-pick or revert that stopped (started in gitty or in another terminal) is
+  shown in the top bar with its conflict count (`MERGING topic · 2 conflicts`, `REBASING feat ·
+  step 2/5 · 1 conflict`). `m` opens a dialog to continue it once nothing conflicts, with no
+  editor and the prepared message, or to abort it after asking. If the next step of a rebase
+  conflicts too, it says so instead of failing.
 - Twelve more built-in themes: `nord`, `one-dark`, `one-light`, `gruvbox-light`, `catppuccin-frappe`,
   `catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`, `everforest-dark`,
   `ayu-mirage` and `nightfox`. Each is credited, with its licence, in `THIRD-PARTY-LICENSES.md`.
