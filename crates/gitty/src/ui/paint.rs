@@ -2,7 +2,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 
 use crate::text::{Glyph, display_width, layout};
 
@@ -63,6 +63,28 @@ pub fn glyphs(buf: &mut Buffer, x: u16, y: u16, max_x: u16, skip: u32, gs: &[Gly
         end = sx1 as u16;
     }
     end
+}
+
+/// Marks hidden text on a scrolled line drawn by [`glyphs`] into `[x, max_x)` with `skip` columns
+/// scrolled off: `‹` in the first cell when text is cut off on the left, `›` in the last when it
+/// continues past the right edge. `gs` must reach at least one glyph past the edge, as
+/// `layout_until` leaves it. Only the marker's foreground changes, so the row keeps its background.
+pub fn edge_marks(buf: &mut Buffer, x: u16, y: u16, max_x: u16, skip: u32, gs: &[Glyph], fg: Color) {
+    let Some(max_x) = limit(buf, y, max_x).filter(|&m| m > x) else { return };
+    if skip > 0 && gs.first().is_some_and(|g| g.col < skip) {
+        buf[(x, y)].set_symbol("‹").set_fg(fg);
+    }
+    let last = u32::from(max_x - 1);
+    if gs.last().is_some_and(|g| g.col + u32::from(g.width) > skip + u32::from(max_x - x)) {
+        // a wide glyph that straddles the marker cell loses its head, so it is not half drawn
+        for g in gs.iter().rev().take(3) {
+            let sx = u32::from(x) + g.col.saturating_sub(skip);
+            if g.col >= skip && sx < last && sx + u32::from(g.width) > last {
+                buf[(sx as u16, y)].set_symbol(" ");
+            }
+        }
+        buf[(last as u16, y)].set_symbol("›").set_fg(fg);
+    }
 }
 
 /// Writes UI text (sanitised: control characters become caret notation).

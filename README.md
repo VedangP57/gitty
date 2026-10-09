@@ -278,7 +278,9 @@ history scope, tree view) is kept under `~/.local/state/gitty/`.
 
 Built in: `github-dark`, `github-light`, `rose-pine`, `rose-pine-dawn`, `catppuccin-mocha`,
 `catppuccin-latte`, `tokyo-night`, `dracula`, `gruvbox-dark`, `solarized-dark`,
-`solarized-light`. `T` opens a picker with a live preview.
+`solarized-light`, `nord`, `one-dark`, `one-light`, `gruvbox-light`, `catppuccin-frappe`,
+`catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`, `everforest-dark`,
+`ayu-mirage` and `nightfox`. `T` opens a picker with a live preview.
 
 Your own themes go in `~/.config/gitty/themes/<name>.toml`. A theme names a `[palette]` (`bg`,
 `fg`, `muted`, `accent`, `border`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, and
@@ -337,5 +339,8 @@ ISC, Zlib, Unicode, CC0 and MPL-2.0 licenses, listed with their texts in
 gitty is built on [gitoxide](https://github.com/GitoxideLabs/gitoxide),
 [Ratatui](https://github.com/ratatui/ratatui), [tree-sitter](https://github.com/tree-sitter/tree-sitter)
 and [syntect](https://github.com/trishume/syntect) with [bat](https://github.com/sharkdp/bat)'s
-syntax definitions. The built-in themes reproduce the palettes of Catppuccin, Dracula, GitHub,
-Gruvbox, Rosé Pine, Solarized and Tokyo Night.
+syntax definitions. The built-in themes reproduce the palettes of Ayu (MIT), Catppuccin (MIT),
+Dracula (MIT), Everforest (MIT), GitHub (MIT), Gruvbox (MIT/X11), Kanagawa (MIT), Nightfox (MIT),
+Nord (MIT), Atom One Dark and One Light (MIT), Rosé Pine (MIT), Solarized (MIT) and Tokyo Night
+(MIT and Apache-2.0); the copyright holders and licence text are in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).

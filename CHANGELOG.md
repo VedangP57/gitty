@@ -13,6 +13,9 @@ All notable changes to gitty are listed here. The format follows
   step 2/5 · 1 conflict`). `m` opens a dialog to continue it once nothing conflicts, with no
   editor and the prepared message, or to abort it after asking. If the next step of a rebase
   conflicts too, it says so instead of failing.
+- Twelve more built-in themes: `nord`, `one-dark`, `one-light`, `gruvbox-light`, `catppuccin-frappe`,
+  `catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`, `everforest-dark`,
+  `ayu-mirage` and `nightfox`. Each is credited, with its licence, in `THIRD-PARTY-LICENSES.md`.
 - A Files tab (`3`): the working tree as a lazily loaded tree (ignored files dimmed, symlinks and
   submodules as leaves) with a read-only, syntax-coloured viewer. `Enter`/`l` open a directory,
   `h` closes it, `e` or a double-click opens the file in `$EDITOR`. Files named like secrets
@@ -60,6 +63,7 @@ All notable changes to gitty are listed here. The format follows
 
 ### Fixed
 
+- Sideways scrolling (`h`/`l`, the sideways wheel, Shift+wheel) in the diff and the Files viewer only happens when a line is wider than the pane, and stops at the end of the widest line. `‹` and `›` mark lines with text hidden on the left or right.
 - In compare mode the footer labels `b` "other branch" (it picks another branch to compare with) instead of "branch".
 - The footer no longer shows the hints of the pane underneath while a picker, prompt or confirmation is open.
 - Deleting an unmerged branch asks the force question under non-English git locales too, and judges "merged" against the branch's upstream (HEAD without one), as git does.

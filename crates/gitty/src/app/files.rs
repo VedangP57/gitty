@@ -13,6 +13,7 @@ use gitty_core::files::{DirEntry, EntryKind, is_secret};
 use super::{App, Focus, Tab, Toast};
 use crate::external::External;
 use crate::msg::{FileView, Gens, HlKey, Msg, Request};
+use crate::text::{max_hscroll, widest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
@@ -74,8 +75,10 @@ pub struct FilesState {
     pub reveal: bool,
     pub vscroll: usize,
     pub hscroll: u16,
-    /// Display width of the longest line of the loaded text: sideways scrolling stops there.
-    pub max_width: usize,
+    /// Display width of the longest line of the loaded text (capped), set once when it loads.
+    pub widest: u32,
+    /// Columns of text the viewer showed last frame: what sideways scrolling is measured against.
+    pub visible: u16,
 }
 
 impl Default for FilesState {
@@ -95,16 +98,21 @@ impl Default for FilesState {
             reveal: false,
             vscroll: 0,
             hscroll: 0,
-            max_width: 0,
+            widest: 0,
+            visible: 0,
         }
     }
 }
 
 impl FilesState {
-    /// Scrolls the viewer sideways by `by` columns, between the left edge and the longest line.
+    /// The farthest the viewer can scroll sideways: to the end of the widest line.
+    pub fn max_hscroll(&self) -> u16 {
+        max_hscroll(self.widest, u32::from(self.visible)) as u16
+    }
+
+    /// Scrolls the viewer sideways by `by` columns, between the left edge and the widest line.
     pub fn scroll_sideways(&mut self, by: i32) {
-        let max = self.max_width.saturating_sub(1).min(10_000) as i32;
-        self.hscroll = (i32::from(self.hscroll) + by).clamp(0, max) as u16;
+        self.hscroll = (i32::from(self.hscroll) + by).clamp(0, i32::from(self.max_hscroll())) as u16;
     }
 
     /// The root has not been listed yet.
@@ -269,12 +277,19 @@ impl App {
                     self.files_tab.viewing = match result {
                         Ok(view) => {
                             if let FileView::Text { text, key } = &view {
-                                self.files_tab.max_width = widest(text, self.config.tab_size);
+                                self.files_tab.widest = widest(text, self.config.tab_size);
                                 self.request_file_highlight(key.clone(), text.clone());
+                            } else {
+                                self.files_tab.widest = 0;
+                                self.files_tab.hscroll = 0;
                             }
                             Viewing::Ready(view)
                         }
-                        Err(e) => Viewing::Failed(e),
+                        Err(e) => {
+                            self.files_tab.widest = 0;
+                            self.files_tab.hscroll = 0;
+                            Viewing::Failed(e)
+                        }
                     };
                 }
             }
@@ -299,6 +314,7 @@ impl App {
         self.files_tab.reveal = false;
         self.files_tab.vscroll = 0;
         self.files_tab.hscroll = 0;
+        self.files_tab.widest = 0;
         self.files_tab.viewing = Viewing::Nothing;
         self.files_tab.shown = want;
         // the bump also cancels the highlight of the file left behind
@@ -392,6 +408,7 @@ impl App {
             self.files_tab.viewing = Viewing::Nothing;
             self.files_tab.vscroll = 0;
             self.files_tab.hscroll = 0;
+            self.files_tab.widest = 0;
             self.files_tab.view_gen = Gens::bump(&self.gens.files_view);
             self.hl_pending.clear();
         }
@@ -452,16 +469,4 @@ impl App {
             self.files_edit();
         }
     }
-}
-
-/// Display columns of the longest line (tabs expanded at their widest).
-fn widest(text: &gitty_core::diff::text::Text, tab: u8) -> usize {
-    (0..text.len())
-        .map(|i| {
-            let l = text.line(i);
-            let tabs = l.iter().filter(|&&b| b == b'\t').count();
-            crate::text::display_width(&String::from_utf8_lossy(l)) + tabs * usize::from(tab.saturating_sub(1))
-        })
-        .max()
-        .unwrap_or(0)
 }

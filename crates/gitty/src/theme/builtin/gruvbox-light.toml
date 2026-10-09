@@ -1,0 +1,39 @@
+# Gruvbox light (morhetz), medium contrast, faded accents.
+name = "gruvbox-light"
+kind = "light"
+
+[palette]
+bg = "#fbf1c7"
+panel = "#f2e5bc"
+fg = "#3c3836"
+muted = "#7c6f64"
+accent = "#076678"
+border = "#d5c4a1"
+red = "#9d0006"
+green = "#79740e"
+yellow = "#b57614"
+blue = "#076678"
+magenta = "#8f3f71"
+cyan = "#427b58"
+orange = "#af3a03"
+
+[syntax]
+keyword = "#9d0006"
+string = "#79740e"
+comment = { fg = "#928374", italic = true }
+function = { fg = "#79740e", bold = true }
+type = "#b57614"
+constant = "#8f3f71"
+number = "#8f3f71"
+operator = "#af3a03"
+variable = "fg"
+property = "#076678"
+punctuation = "fg"
+attribute = "#427b58"
+tag = "#427b58"
+label = "#9d0006"
+module = "#427b58"
+constructor = "#b57614"
+macro = "#427b58"
+escape = "#af3a03"
+embedded = "fg"
