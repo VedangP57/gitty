@@ -5599,3 +5599,77 @@ fn files_show_ignored_false_starts_with_them_hidden() {
     t.ch('i');
     assert!(rows(&t).contains(&"target".to_string()));
 }
+
+#[test]
+fn a_renamed_file_marks_the_folders_on_both_ends() {
+    use gitty_core::status::EntryKind::Renamed;
+    let mut e = se("new/x", 'R', '.', Renamed);
+    e.orig_path = Some("old/x".into());
+    let m = gitty::app::files::marks_of(&[e]);
+    let letters = |p: &str| m.get(p).map(|m| m.letter);
+    assert_eq!(letters("new/x"), Some('R'));
+    assert_eq!(letters("new"), Some('M'));
+    assert_eq!(letters("old"), Some('D'), "the file left that folder");
+    assert_eq!(letters("old/x"), None, "the old name has no row to mark");
+}
+
+#[test]
+fn an_own_mark_never_replaces_a_stronger_one_on_the_same_path() {
+    use gitty_core::status::EntryKind::Ordinary;
+    // a file that became a folder: "a" itself is changed, and so is something below it
+    let own = se("a", 'T', '.', Ordinary);
+    let below = se("a/x", '.', 'D', Ordinary);
+    for es in [vec![own.clone(), below.clone()], vec![below, own]] {
+        let m = gitty::app::files::marks_of(&es);
+        assert_eq!(m.get("a").map(|m| m.letter), Some('D'));
+    }
+}
+
+#[test]
+fn a_file_deleted_on_disk_keeps_the_selection_at_its_index() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, "src");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "lib.rs");
+    std::fs::remove_file(f.path().join("src/lib.rs")).unwrap();
+    t.app.refresh_files();
+    drain_files(&mut t);
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "main.rs", "the next sibling, not the folder");
+}
+
+#[test]
+fn hiding_the_row_under_the_selection_moves_it_to_the_folder_above() {
+    let f = files_fixture();
+    f.write(".gitignore", "target/\nsrc/cache/\n");
+    f.write("src/cache/a.txt", "a\n");
+    let mut t = files_tab(&f);
+    select(&mut t, "src");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "cache");
+    t.key(KeyCode::Enter);
+    t.pump();
+    select(&mut t, "a.txt");
+    t.ch('i');
+    assert_eq!(t.app.files_tab.selected().unwrap().name, "src");
+}
+
+#[test]
+fn i_in_the_viewer_toggles_and_a_revealed_secret_stays_revealed() {
+    let f = files_fixture();
+    let mut t = files_tab(&f);
+    select(&mut t, ".env");
+    t.pump();
+    t.ch('v');
+    t.pump();
+    assert!(t.app.files_tab.reveal);
+    t.app.focus = Focus::Diff;
+    t.ch('i');
+    t.pump();
+    assert!(!t.app.files_tab.show_ignored);
+    assert!(!rows(&t).contains(&"target".to_string()));
+    assert!(t.app.files_tab.reveal, "the selection did not change, so the reveal stands");
+    assert!(viewing_text(&t).is_some_and(|s| s.contains(FAKE_SECRET)));
+}

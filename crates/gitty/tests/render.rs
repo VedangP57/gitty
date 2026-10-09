@@ -2671,3 +2671,12 @@ fn marks_draw_in_the_changes_colours_and_folded_folders_carry_a_dot() {
         assert!(!s.contains("target"), "{w}: {s}");
     }
 }
+
+#[test]
+fn the_files_footer_at_80_columns_keeps_help_and_quit() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (80, 24));
+    let b = t.render(80, 24);
+    let last = text(&b).lines().last().unwrap_or("").to_string();
+    assert!(last.contains("? help") && last.contains("q quit"), "{last}");
+}

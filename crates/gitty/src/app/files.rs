@@ -80,23 +80,39 @@ impl Mark {
 /// tree. Built once per status in O(changes): once a directory holds a mark at least as strong,
 /// so do all of its parents, which ends the walk up.
 pub fn marks_of(entries: &[StatusEntry]) -> HashMap<String, Mark> {
-    let mut marks = HashMap::with_capacity(entries.len());
+    let mut marks: HashMap<String, Mark> = HashMap::with_capacity(entries.len());
     for e in entries {
         let m = Mark::of(e);
-        marks.insert(e.path.clone(), m);
-        let mut end = e.path.len();
-        while let Some(i) = e.path[..end].rfind('/') {
-            end = i;
-            match marks.get_mut(&e.path[..i]) {
-                Some(d) if d.rank >= m.rank => break,
-                Some(d) => *d = Mark::dir(m.rank),
-                None => {
-                    marks.insert(e.path[..i].to_string(), Mark::dir(m.rank));
-                }
+        // never weaker than what the same path already holds (a file that became a folder)
+        match marks.get_mut(&e.path) {
+            Some(o) if o.rank > m.rank => {}
+            Some(o) => *o = m,
+            None => {
+                marks.insert(e.path.clone(), m);
             }
+        }
+        mark_above(&mut marks, &e.path, m.rank);
+        // a rename took the file out of its old folders, as a deletion would
+        if let Some(from) = &e.orig_path {
+            mark_above(&mut marks, from, 3);
         }
     }
     marks
+}
+
+/// Gives every folder above `path` a mark of at least `rank`.
+fn mark_above(marks: &mut HashMap<String, Mark>, path: &str, rank: u8) {
+    let mut end = path.len();
+    while let Some(i) = path[..end].rfind('/') {
+        end = i;
+        match marks.get_mut(&path[..i]) {
+            Some(d) if d.rank >= rank => break,
+            Some(d) => *d = Mark::dir(rank),
+            None => {
+                marks.insert(path[..i].to_string(), Mark::dir(rank));
+            }
+        }
+    }
 }
 
 /// What the viewer has for the selected file.
@@ -200,10 +216,7 @@ impl FilesState {
         push_dir(&mut rows, self, Path::new(""), 0);
         self.rows = rows;
         self.dirty = false;
-        // a row that is gone (an ignored directory just hidden) hands the selection to the
-        // nearest directory above it that is still listed
-        let found = keep.and_then(|p| p.ancestors().find_map(|a| self.row_at(a)));
-        self.sel = found.unwrap_or(self.sel).min(self.rows.len().saturating_sub(1));
+        self.sel = keep.and_then(|p| self.row_at(&p)).unwrap_or(self.sel).min(self.rows.len().saturating_sub(1));
     }
 
     /// Drops what is remembered of the directories below `dir` that `entries` no longer has.
@@ -460,7 +473,13 @@ impl App {
     /// so expanded directories stay expanded and nothing is read again.
     pub fn toggle_ignored(&mut self) {
         self.files_tab.show_ignored = !self.files_tab.show_ignored;
+        let keep = self.files_tab.selected().map(|r| r.path.clone());
         self.files_tab.rebuild();
+        // a selected row that was just hidden hands the selection to the nearest directory above
+        // it that is still listed (a file deleted on disk keeps the plain same-index rule)
+        if let Some(i) = keep.filter(|p| self.files_tab.row_at(p).is_none()).and_then(|p| p.ancestors().find_map(|a| self.files_tab.row_at(a))) {
+            self.files_tab.sel = i;
+        }
         self.ensure_files_visible_sel();
         self.sync_viewer();
         let what = if self.files_tab.show_ignored { "ignored files shown" } else { "ignored files hidden" };

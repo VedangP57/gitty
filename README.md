@@ -103,7 +103,7 @@ for added or untracked, `D`, `R`, `U` for conflicted), and a directory with anyt
 it shows a `●` even when it is folded, so you can see which folders hold changes without opening
 them. The dot takes the colour of the strongest change inside: conflicted, then deleted, then
 modified (added and renamed count as modified), then untracked. A file deleted from the work tree
-is not listed, but its folders are marked. `i` hides the ignored files and directories (they are
+or renamed away is not listed under its old name, but its old folders are marked as deleted. `i` hides the ignored files and directories (they are
 dimmed otherwise); expanded folders stay expanded. The `files_show_ignored` option sets whether
 they start out shown.
 

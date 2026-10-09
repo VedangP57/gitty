@@ -297,6 +297,14 @@ mod tests {
     }
 
     #[test]
+    fn a_non_bool_files_show_ignored_warns_and_keeps_the_default() {
+        let (c, w) = load_str("files_show_ignored = \"no\"\n");
+        assert!(c.files_show_ignored);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("files_show_ignored"), "{w:?}");
+    }
+
+    #[test]
     fn unknown_key_warns() {
         let (c, w) = load_str("colour = \"red\"\ntheme = \"dracula\"\n");
         assert_eq!(c.theme, "dracula");
