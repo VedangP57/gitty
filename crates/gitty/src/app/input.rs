@@ -165,7 +165,8 @@ impl App {
             }
             Action::StageHunk => self.toggle_hunk(),
             // history-only: compare mode shows its own lists
-            Action::Search | Action::NextMatch | Action::PrevMatch | Action::Range | Action::Scope if comparing => {}
+            Action::Search | Action::NextMatch | Action::PrevMatch | Action::Range | Action::Scope | Action::Graph if comparing => {}
+            Action::Graph => self.toggle_graph(),
             Action::Search => self.open_search(),
             Action::NextMatch => self.search_step(true),
             Action::PrevMatch => self.search_step(false),
@@ -598,7 +599,8 @@ impl App {
         }
         if let Some(r) = inside(self.hits.history_rows, x, y) {
             self.focus = Focus::History;
-            let i = self.hits.history_first + ((y - r.y) / self.hits.history_row_h.max(1)) as usize;
+            // below the last row: nothing to select
+            let i = self.hits.history_lines.get((y - r.y) as usize).copied().unwrap_or(usize::MAX);
             if self.compare.is_some() {
                 self.compare_select(i);
             } else if i < self.history_len {

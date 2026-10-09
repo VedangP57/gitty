@@ -90,6 +90,8 @@ impl App {
         let generation = Gens::bump(&self.gens.search);
         let bar = self.search.bar.take();
         self.search = super::search::Search { generation, bar, ..Default::default() };
+        // the graph comes back, and its connector lines make rows taller
+        self.ensure_list_visible();
     }
 
     fn run_search(&mut self, input: String) {

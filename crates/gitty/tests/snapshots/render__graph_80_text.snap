@@ -1,0 +1,28 @@
+---
+source: crates/gitty/tests/render.rs
+expression: s
+---
+ gitty repo  ⎇ main                                    [1] Changes  [2] History
+ History · 10
+   ●       Release 1.0                                          main  TU Sep 10
+   ●───.   Merge branches 'docs', 'ci' and 'lint'                     TU Sep 22
+   │╲ ╲ ╲
+   │ │ │ ● Update lint                                           lint  TU Sep 9
+   │ │─│╱
+   │╱│ │
+   │ │ ●   Update ci                                               ci  TU Sep 8
+   │ │╱
+   │╱│
+   │ ●     Update docs                                           docs  TU Sep 7
+   │╱
+   ●       Merge branch 'feature'                                     TU Sep 12
+   │╲
+   │ ●     Parse nested lists                                 feature  TU Sep 5
+   │ ●     Add the parser                                              TU Sep 4
+   ● │     Fix the build                                               TU Sep 6
+   │╱
+   ●       Initial commit                                              TU Sep 3
+
+
+
+ j/k move  enter files  / search  V range  b compare  tab pane  r scope

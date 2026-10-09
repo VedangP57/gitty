@@ -51,6 +51,10 @@ impl History {
         let end = r.end.min(self.len());
         (r.start.min(end)..end).map(|i| self.id(i)).collect()
     }
+    /// An empty history on the same commit-graph, to fill privately and [`History::append`].
+    pub fn empty_like(&self) -> History {
+        History { entries: Vec::new(), overflow: Vec::new(), graph: self.graph.clone() }
+    }
     /// Appends `id`, in whatever order the caller found it (the graph view's topological walk).
     pub fn push(&mut self, id: CommitId) {
         let oid = to_oid(id);

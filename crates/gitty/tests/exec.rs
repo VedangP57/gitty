@@ -46,7 +46,7 @@ fn errors(v: &[Msg]) -> Vec<String> {
 fn refs_and_walk_streams_whole_history() {
     let f = Fixture::new();
     let ids = five(&f);
-    let msgs = run(&f, Request::Walk { session: 0, tips: tips(&f) });
+    let msgs = run(&f, Request::Walk { session: 0, tips: tips(&f), topo: false });
     assert!(errors(&msgs).is_empty(), "{:?}", errors(&msgs));
     let Msg::HistoryStarted { session: 0, history } = &msgs[0] else { panic!("{:?}", msgs[0]) };
     let Some(Msg::HistoryProgress { session: 0, len: 5, done: true }) = msgs.last() else { panic!("{:?}", msgs.last()) };
@@ -76,19 +76,39 @@ fn many_commits(f: &Fixture, n: usize) {
 fn walk_stops_when_session_bumped() {
     let f = Fixture::new();
     many_commits(&f, 10_000);
-    let gens = Gens::default();
     let h = Repo::open(f.path()).unwrap().handle();
-    let mut last = None;
     let tips = tips(&f);
-    exec(&h, Request::Walk { session: 0, tips }, &mut |m| {
-        if let Msg::HistoryProgress { len, done, .. } = m {
-            gens.session.store(1, SeqCst);
-            last = Some((len, done));
-        }
-    }, &gens);
-    let (len, done) = last.unwrap();
-    assert!(done);
-    assert!(len < 10_000, "walked {len}");
+    // by date, and git's topological walk under the graph
+    for topo in [false, true] {
+        let gens = Gens::default();
+        let mut last = None;
+        exec(&h, Request::Walk { session: 0, tips: tips.clone(), topo }, &mut |m| {
+            if let Msg::HistoryProgress { len, done, .. } = m {
+                gens.session.store(1, SeqCst);
+                last = Some((len, done));
+            }
+        }, &gens);
+        let (len, done) = last.unwrap();
+        assert!(done);
+        assert!(len < 10_000, "walked {len} (topo: {topo})");
+    }
+}
+
+#[test]
+fn a_topological_walk_streams_whole_history_and_a_stale_graph_page_is_not_drawn() {
+    let f = Fixture::new();
+    let ids = five(&f);
+    let msgs = run(&f, Request::Walk { session: 0, tips: tips(&f), topo: true });
+    assert!(errors(&msgs).is_empty(), "{:?}", errors(&msgs));
+    let Msg::HistoryStarted { session: 0, history } = &msgs[0] else { panic!("{:?}", msgs[0]) };
+    let Some(Msg::HistoryProgress { session: 0, len: 5, done: true }) = msgs.last() else { panic!("{:?}", msgs.last()) };
+    assert_eq!(history.read().unwrap().ids(0..5), ids.iter().rev().map(|i| id(i)).collect::<Vec<_>>());
+    let msgs = run(&f, Request::Graph { session: 0, tips: tips(&f), rows: 3 });
+    let [Msg::Graph { session: 0, art }] = msgs.as_slice() else { panic!("{msgs:?}") };
+    assert_eq!((art.len(), art.complete()), (3, false));
+    let gens = Gens::default();
+    gens.session.store(1, SeqCst);
+    assert!(run_with(&f.path(), &gens, Request::Graph { session: 0, tips: tips(&f), rows: 3 }).is_empty());
 }
 
 #[test]
@@ -157,7 +177,7 @@ fn a_range_count_for_an_old_selection_answers_nothing() {
     gens.commit.store(9, SeqCst);
     let (oldest, newest) = (id(&ids[1]), id(&ids[3]));
     // rows 1..4 of the walk are ids[3], ids[2], ids[1]: the whole range, nothing extra
-    let history = run(&f, Request::Walk { session: 0, tips: tips(&f) }).into_iter().find_map(|m| match m {
+    let history = run(&f, Request::Walk { session: 0, tips: tips(&f), topo: false }).into_iter().find_map(|m| match m {
         Msg::HistoryStarted { history, .. } => Some(history),
         _ => None,
     }).unwrap();
@@ -233,7 +253,7 @@ fn unborn_repo_refs_and_walk() {
     let Msg::Refs { refs, .. } = &msgs[0] else { panic!("{msgs:?}") };
     let tips = refs.tips(HistoryScope::HeadAndUpstream);
     assert!(tips.is_empty());
-    let msgs = run(&f, Request::Walk { session: 0, tips });
+    let msgs = run(&f, Request::Walk { session: 0, tips, topo: false });
     assert!(matches!(msgs.last(), Some(Msg::HistoryProgress { len: 0, done: true, .. })), "{msgs:?}");
 }
 
@@ -285,7 +305,7 @@ fn workers_spawn_and_answer() {
     w.submit(Request::Refs);
     let m = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     let Msg::Refs { refs, .. } = m else { panic!("{m:?}") };
-    w.submit(Request::Walk { session: 0, tips: refs.tips(HistoryScope::HeadAndUpstream) });
+    w.submit(Request::Walk { session: 0, tips: refs.tips(HistoryScope::HeadAndUpstream), topo: false });
     let mut done = false;
     while let Ok(m) = rx.recv_timeout(Duration::from_secs(10)) {
         if let Msg::HistoryProgress { len: 5, done: true, .. } = m {
@@ -324,7 +344,7 @@ fn walk_never_starves_readers() {
     let tips = tips(&f);
     let worst = Arc::new(std::sync::Mutex::new(Duration::ZERO));
     let mut reader = None;
-    exec(&h, Request::Walk { session: 0, tips }, &mut |m| {
+    exec(&h, Request::Walk { session: 0, tips, topo: false }, &mut |m| {
         if let Msg::HistoryStarted { history, .. } = m {
             let worst = worst.clone();
             reader = Some(std::thread::spawn(move || {
@@ -585,7 +605,7 @@ fn search_work_has_its_own_pool_so_readers_never_wait_behind_it() {
     use gitty::workers::{Pool, route};
     let f = Fixture::new();
     f.commit("one", 1_700_000_000);
-    let history = run(&f, Request::Walk { session: 0, tips: tips(&f) }).into_iter().find_map(|m| match m {
+    let history = run(&f, Request::Walk { session: 0, tips: tips(&f), topo: false }).into_iter().find_map(|m| match m {
         Msg::HistoryStarted { history, .. } => Some(history),
         _ => None,
     });

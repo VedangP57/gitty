@@ -4,8 +4,8 @@ expression: s
 ---
  gitty repo  ⎇ main                                                                            [1] Changes  [2] History
  History · 2                                    │ two
-   two                              main  TU 1h │ TU Test User · 00b1eac · +1 −1 · 1h
-   one                                    TU 1d │───────────────────────────────────────────────────────────────────────
+   ● two                            main  TU 1h │ TU Test User · 00b1eac · +1 −1 · 1h
+   ● one                                  TU 1d │───────────────────────────────────────────────────────────────────────
                                                 │ 1 changed file
                                                 │ M a.txt                                                         +1 −1
                                                 │

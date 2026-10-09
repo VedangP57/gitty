@@ -13,6 +13,7 @@ use gitty_core::commit_files::{BlobId, FileChange, LineStats};
 use gitty_core::diff::text::Text;
 use gitty_core::diff::{DiffOptions, FileDiff};
 use gitty_highlight::Highlights;
+use gitty_core::graph::GraphArt;
 use gitty_core::history::{CommitDetail, CommitRow, History};
 use gitty_core::op_state::{OpState, RepoOp};
 use gitty_core::refs::RefsSnapshot;
@@ -251,7 +252,10 @@ impl WriteOp {
 
 pub enum Request {
     Refs,
-    Walk { session: u64, tips: Vec<CommitId> },
+    /// `topo`: git's topological order (the graph view) instead of commit-time order.
+    Walk { session: u64, tips: Vec<CommitId>, topo: bool },
+    /// The commit graph of the walk's first `rows` rows (same `tips`, topological order).
+    Graph { session: u64, tips: Vec<CommitId>, rows: usize },
     /// `upstream: None` is a branch never pushed: ahead is what pushing it would publish.
     AheadBehind { local: CommitId, upstream: Option<CommitId> },
     Rows { session: u64, ids: Vec<(usize, CommitId)> },
@@ -345,6 +349,7 @@ pub enum Msg {
     HistoryStarted { session: u64, history: SharedHistory },
     HistoryProgress { session: u64, len: usize, done: bool },
     Rows { session: u64, rows: Vec<(usize, CommitRow)> },
+    Graph { session: u64, art: Arc<GraphArt> },
     /// History indices in `range` that match, ascending.
     SearchHits { generation: u64, range: Range<usize>, hits: Vec<usize> },
     SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
@@ -421,6 +426,7 @@ impl std::fmt::Debug for Msg {
             Msg::HistoryStarted { session, .. } => write!(f, "HistoryStarted {{ session: {session} }}"),
             Msg::HistoryProgress { session, len, done } => write!(f, "HistoryProgress {{ session: {session}, len: {len}, done: {done} }}"),
             Msg::Rows { session, rows } => write!(f, "Rows {{ session: {session}, n: {} }}", rows.len()),
+            Msg::Graph { session, art } => write!(f, "Graph {{ session: {session}, n: {}, complete: {} }}", art.len(), art.complete()),
             Msg::SearchHits { generation, range, hits } => write!(f, "SearchHits {{ generation: {generation}, {range:?}: {} }}", hits.len()),
             Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
             Msg::CommitRows { rows } => write!(f, "CommitRows {{ n: {} }}", rows.len()),
