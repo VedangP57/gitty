@@ -40,7 +40,7 @@ fn main() {
     }
     for rows in [256, 4096, 65536] {
         let t = Instant::now();
-        exec(&h, Request::Graph { session: 0, tips: tips.clone(), rows }, &mut |_| {}, &gens);
+        exec(&h, Request::Graph { session: 0, generation: 0, tips: tips.clone(), rows }, &mut |_| {}, &gens);
         println!("graph {rows:>6} rows {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
     }
     let hist = hist.unwrap();

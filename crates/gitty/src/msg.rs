@@ -50,6 +50,8 @@ pub struct Gens {
     pub commit: AtomicU64,
     pub file: AtomicU64,
     pub search: AtomicU64,
+    /// The graph page asked for last (see `Request::Graph`).
+    pub graph: AtomicU64,
     /// Files tab: the directory listings wanted now.
     pub files_dirs: AtomicU64,
     /// Files tab: the file in the viewer (and its highlight). Only the Files tab moves it.
@@ -255,7 +257,8 @@ pub enum Request {
     /// `topo`: git's topological order (the graph view) instead of commit-time order.
     Walk { session: u64, tips: Vec<CommitId>, topo: bool },
     /// The commit graph of the walk's first `rows` rows (same `tips`, topological order).
-    Graph { session: u64, tips: Vec<CommitId>, rows: usize },
+    /// `generation` is `Gens::graph`: a deeper page asked for cancels this one.
+    Graph { session: u64, generation: u64, tips: Vec<CommitId>, rows: usize },
     /// `upstream: None` is a branch never pushed: ahead is what pushing it would publish.
     AheadBehind { local: CommitId, upstream: Option<CommitId> },
     Rows { session: u64, ids: Vec<(usize, CommitId)> },
@@ -340,7 +343,7 @@ impl NetOp {
 impl Request {
     /// Prefetches go to the low-priority queue.
     pub fn is_background(&self) -> bool {
-        matches!(self, Request::Files { prefetch: true, .. } | Request::Search { .. } | Request::SearchPath { .. })
+        matches!(self, Request::Files { prefetch: true, .. } | Request::Search { .. } | Request::SearchPath { .. } | Request::Graph { .. })
     }
 }
 

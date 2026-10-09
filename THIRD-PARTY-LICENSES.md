@@ -8438,9 +8438,9 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## druk
+## Conflict markers
 
-Conflict-marker parsing logic, and the commit graph glyph map and lane colouring, adapted from druk (https://github.com/letstri/druk), MIT License, Copyright (c) 2026 Valerii Strilets:
+Conflict-marker parsing logic adapted from druk (https://github.com/letstri/druk), MIT License, Copyright (c) 2026 Valerii Strilets:
 
 ```text
 MIT License

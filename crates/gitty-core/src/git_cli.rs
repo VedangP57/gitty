@@ -149,13 +149,19 @@ impl GitCli {
 
     /// Runs a read and hands each stdout line (without its `\n`) to `line` as it arrives. When
     /// `line` returns false or `cancelled` says so (checked every 20 ms, also while git is quiet)
-    /// the process group is killed. Returns whether the output was read to its end.
-    pub fn read_lines(&self, mut cmd: Command, cancelled: &dyn Fn() -> bool, line: &mut dyn FnMut(&[u8]) -> bool) -> anyhow::Result<bool> {
+    /// the process group is killed. `input` goes to git's stdin. Returns whether the output was
+    /// read to its end.
+    pub fn read_lines(&self, mut cmd: Command, input: Vec<u8>, cancelled: &dyn Fn() -> bool, line: &mut dyn FnMut(&[u8]) -> bool) -> anyhow::Result<bool> {
         use std::sync::mpsc::{RecvTimeoutError, sync_channel};
         let args: Vec<String> = cmd.get_args().skip(2).map(|a| a.to_string_lossy().into_owned()).collect();
-        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd.spawn().with_context(|| format!("running git {args:?}"))?;
         let (out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+        // on its own thread: git may start writing before it has read all of a big input
+        let mut w = child.stdin.take().expect("piped");
+        std::thread::spawn(move || {
+            let _ = w.write_all(&input);
+        });
         let errs = std::thread::spawn(move || {
             let mut s = String::new();
             let _ = err.read_to_string(&mut s);

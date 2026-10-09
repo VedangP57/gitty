@@ -668,7 +668,12 @@ impl App {
                 if self.reselect.is_none() && self.selected_id.is_none() && len > 0 {
                     self.select_at(0);
                 }
+                // rows the graph now covers can grow connector lines
+                let checked = self.graph_valid;
                 self.check_graph();
+                if self.graph_valid > checked {
+                    self.ensure_list_visible();
+                }
                 self.request_visible_rows();
                 self.request_search_chunks();
             }
@@ -903,10 +908,14 @@ impl App {
         if need <= self.graph_asked {
             return;
         }
-        // doubling keeps git's work linear in the deepest row: each page draws from the top
+        // each page draws from the top. With a commit-graph file git streams, and doubling keeps
+        // the pages' total near twice the deepest; without one every page is a full walk, so
+        // doubling at least keeps their number logarithmic
         let rows = need.next_power_of_two().max(GRAPH_PAGE);
         self.graph_asked = rows;
-        self.outbox.push(Request::Graph { session: self.session, tips: self.walk_tips.clone(), rows });
+        // the smaller page still running is cancelled: this one draws its rows too
+        let generation = Gens::bump(&self.gens.graph);
+        self.outbox.push(Request::Graph { session: self.session, generation, tips: self.walk_tips.clone(), rows });
     }
 
     /// Screen lines of history row `i`: its text, or more where the graph draws connector lines
@@ -1141,6 +1150,33 @@ impl App {
             self.prefetching.insert(id);
             self.outbox.push(Request::Files { generation: 0, of: FilesOf::Commit(id), prefetch: true });
         }
+    }
+
+    /// History rows on screen from the first one shown (the graph's connector lines take room):
+    /// what a page moves by.
+    pub fn list_rows_shown(&self) -> usize {
+        let (lines, shown) = (self.list_capacity() * self.row_height(), self.graph_shown());
+        let mut used = 0;
+        // past the end of the list a row counts as one of text, so a short list pages as before
+        let n = (self.list_scroll..self.list_scroll + self.list_capacity())
+            .take_while(|&i| {
+                used += self.row_lines(i, shown);
+                used <= lines
+            })
+            .count();
+        n.max(1)
+    }
+
+    /// The furthest the list scrolls: its last row at the bottom of the pane.
+    pub fn max_list_scroll(&self) -> usize {
+        let Some(last) = self.history_len.checked_sub(1) else { return 0 };
+        let (lines, shown) = (self.list_capacity() * self.row_height(), self.graph_shown());
+        let (mut top, mut used) = (last, self.row_lines(last, shown));
+        while top > 0 && used + self.row_lines(top - 1, shown) <= lines {
+            top -= 1;
+            used += self.row_lines(top, shown);
+        }
+        top
     }
 
     pub fn ensure_list_visible(&mut self) {

@@ -5,7 +5,7 @@ expression: s
  gitty repo  ⎇ main                                                                                                [1] Changes  [2] History
  History · 10                                           │ Release 1.0
    ●       Release 1.0                  main  TU Sep 10 │ TU Test User · e5653cd · +1 −0 · Sep 10
-   ●───.   Merge branches 'docs', 'ci' and '… TU Sep 22 │───────────────────────────────────────────────────────────────────────────────────
+   ●────   Merge branches 'docs', 'ci' and '… TU Sep 22 │───────────────────────────────────────────────────────────────────────────────────
    │╲ ╲ ╲                                               │ 1 changed file
    │ │ │ ● Update lint                   lint  TU Sep 9 │ A Release_1.0.txt                                                           +1 −0
    │ │─│╱                                               │

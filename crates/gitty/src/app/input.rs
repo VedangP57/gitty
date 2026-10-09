@@ -395,7 +395,7 @@ impl App {
                 self.compare_select(t);
             }
             Focus::History => {
-                let t = target(self.selected, self.history_len, self.list_capacity(), m);
+                let t = target(self.selected, self.history_len, self.list_rows_shown(), m);
                 self.select(t);
             }
             Focus::Files => {
@@ -766,7 +766,7 @@ impl App {
             return;
         }
         if inside(self.hits.panes.history, x, y).is_some() {
-            let max = self.history_len.saturating_sub(self.list_capacity());
+            let max = self.max_list_scroll();
             self.list_scroll = scroll(self.list_scroll, max);
             self.request_visible_rows();
         } else if inside(self.hits.panes.files, x, y).is_some() {

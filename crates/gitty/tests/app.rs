@@ -6416,6 +6416,95 @@ fn many_merges(f: &Fixture, n: usize) {
 }
 
 #[test]
+fn a_deeper_graph_page_cancels_the_smaller_one_still_running() {
+    let f = Fixture::new();
+    many_merges(&f, 1200);
+    let mut t = H::new(&f);
+    // run everything but the graph page, which stays "in flight"
+    let page = |reqs: &[Request]| reqs.iter().find_map(|r| if let Request::Graph { generation, rows, .. } = r { Some((*generation, *rows)) } else { None });
+    let mut first = None;
+    for _ in 0..100 {
+        let reqs = t.app.take_requests();
+        first = first.or(page(&reqs));
+        let rest: Vec<Request> = reqs.into_iter().filter(|r| !matches!(r, Request::Graph { .. })).collect();
+        if rest.is_empty() {
+            break;
+        }
+        for m in t.exec_all(rest) {
+            t.app.handle_msg(m);
+        }
+    }
+    let first = first.expect("the first page is asked for");
+    assert_eq!(first.1, 256);
+    t.ch('G');
+    let deeper = page(&t.app.take_requests()).expect("G asks for a deeper page");
+    assert!(deeper.1 > 256);
+    assert!(!Gens::is(&t.gens.graph, first.0), "the first page's git is told to stop");
+    assert!(Gens::is(&t.gens.graph, deeper.0));
+}
+
+#[test]
+fn the_wheel_reaches_the_last_row_and_a_page_moves_by_what_is_shown() {
+    let f = Fixture::new();
+    many_merges(&f, 40);
+    let mut t = H::new(&f);
+    t.app.handle_resize(140, 12);
+    t.pump();
+    let shown = t.app.graph_shown();
+    let lines = t.app.list_capacity() * t.app.row_height();
+    assert!(t.app.list_rows_shown() < t.app.list_capacity(), "connector lines take room");
+    t.app.hits.panes = t.app.panes();
+    let r = t.app.hits.panes.history.unwrap();
+    let wheel = crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::ScrollDown, column: r.x + 2, row: r.y + 2, modifiers: KeyModifiers::NONE };
+    for _ in 0..100 {
+        t.app.handle_mouse(wheel);
+    }
+    let len = t.app.history_len;
+    assert_eq!(t.app.list_scroll, t.app.max_list_scroll());
+    let used: usize = (t.app.list_scroll..len).map(|i| t.app.row_lines(i, shown)).sum();
+    assert!(used <= lines, "the last row fits");
+    assert!(used + t.app.row_lines(t.app.list_scroll - 1, shown) > lines, "and the pane is full");
+    t.ch('g');
+    let page = t.app.list_rows_shown();
+    t.key(KeyCode::PageDown);
+    assert_eq!(t.app.selected, page);
+}
+
+#[test]
+fn a_range_counts_its_extra_commits_in_topological_order() {
+    let f = Fixture::new();
+    f.write("base.txt", "0\n");
+    f.commit("base", 1_700_000_000);
+    f.git(&["checkout", "-q", "-b", "side"]);
+    f.write("s.txt", "1\n");
+    f.commit("s1", 1_700_000_100);
+    f.write("s.txt", "2\n");
+    f.commit("s2", 1_700_000_300);
+    f.git(&["checkout", "-q", "main"]);
+    f.write("m.txt", "1\n");
+    f.commit("m1", 1_700_000_200);
+    f.git_env(&["merge", "-q", "--no-ff", "-m", "merge side", "side"], &[("GIT_AUTHOR_DATE", "1700000400 +0000".into()), ("GIT_COMMITTER_DATE", "1700000400 +0000".into())]);
+    let mut t = H::new(&f);
+    t.pump();
+    let summary = |t: &H, i: usize| t.app.rows.get(&i).map(|r| r.summary.clone()).unwrap_or_default();
+    let order: Vec<String> = (0..5).map(|i| summary(&t, i)).collect();
+    assert_eq!(order, ["merge side", "s2", "s1", "m1", "base"], "the side branch stays together");
+    // merge + s2: s1..merge also holds m1
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), Some(1));
+    t.key(KeyCode::Esc);
+    // s2 + s1: linear, nothing extra
+    t.app.select(1);
+    t.pump();
+    t.ch('V');
+    t.ch('j');
+    t.pump();
+    assert_eq!(t.app.range_extra(), None);
+}
+
+#[test]
 fn graph_pages_follow_the_scroll_and_join_up_with_the_first() {
     let f = Fixture::new();
     many_merges(&f, 1200);

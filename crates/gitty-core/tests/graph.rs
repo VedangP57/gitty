@@ -111,18 +111,54 @@ fn pages_continue_the_lanes_of_the_full_graph() {
 fn a_history_keeps_the_topological_order_with_and_without_a_commit_graph() {
     let f = branchy();
     let (cli, tips) = (cli(&f), all_tips(&f));
-    let walked = ids(&cli, &tips);
+    let graph_file = f.path().join(".git/objects/info/commit-graph");
+    let mut orders = Vec::new();
     for with_graph in [false, true] {
         if with_graph {
             f.git(&["commit-graph", "write", "--reachable"]);
         }
+        assert_eq!(graph_file.exists(), with_graph);
+        // git's own order, the walk's, the graph's and the history's must all be one
+        let git: Vec<CommitId> = f.git(&["rev-list", "--topo-order", "--all"]).lines().filter_map(CommitId::from_hex).collect();
+        let walked = ids(&cli, &tips);
+        assert_eq!(walked, git, "commit-graph: {with_graph}");
+        let art = GraphArt::load(&cli, &tips, 1000, &|| false).unwrap().unwrap();
+        assert_eq!((0..art.len()).map(|i| art.id(i)).collect::<Vec<_>>(), git, "commit-graph: {with_graph}");
         let h = Repo::open(f.path()).unwrap().handle();
         let mut history = h.empty_history();
         for &id in &walked {
             history.push(id);
         }
-        assert_eq!(history.ids(0..walked.len()), walked, "commit-graph: {with_graph}");
+        assert_eq!(history.ids(0..walked.len()), git, "commit-graph: {with_graph}");
+        orders.push(git);
     }
+    assert_eq!(orders[0], orders[1], "a commit-graph file does not change git's order");
+}
+
+#[test]
+fn tens_of_thousands_of_tips_go_through_stdin() {
+    // 30,000 ids are 1.2 MB of hex: past macOS's 1 MB argument limit
+    let f = Fixture::new();
+    let mut s = String::new();
+    for i in 1..=30_000 {
+        s.push_str(&format!("commit refs/heads/main\nmark :{i}\ncommitter A <a@a> {} +0000\ndata 1\nc\n", 1_700_000_000 + i));
+        if i > 1 {
+            s.push_str(&format!("from :{}\n", i - 1));
+        }
+        s.push('\n');
+    }
+    let mut c = std::process::Command::new("git");
+    c.current_dir(f.path()).args(["fast-import", "--quiet"]).env("GIT_CONFIG_GLOBAL", "/dev/null").stdin(std::process::Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), s.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+    let cli = cli(&f);
+    let tips: Vec<CommitId> = f.git(&["rev-list", "main"]).lines().filter_map(CommitId::from_hex).collect();
+    assert_eq!(tips.len(), 30_000);
+    let walked = ids(&cli, &tips);
+    assert_eq!(walked, tips, "every commit is a tip of its own, newest first");
+    let art = GraphArt::load(&cli, &tips, 10, &|| false).unwrap().unwrap();
+    assert_eq!((0..art.len()).map(|i| art.id(i)).collect::<Vec<_>>(), tips[..10]);
 }
 
 #[test]

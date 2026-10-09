@@ -119,8 +119,9 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             }
             sink(Msg::HistoryProgress { session, len, done: true });
         }
-        Request::Graph { session, tips, rows } => {
-            let stale = || !Gens::is(&gens.session, session);
+        Request::Graph { session, generation, tips, rows } => {
+            // a new walk, or a deeper page of this one, makes this page useless
+            let stale = || !Gens::is(&gens.session, session) || !Gens::is(&gens.graph, generation);
             if stale() {
                 return;
             }

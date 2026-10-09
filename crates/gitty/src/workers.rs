@@ -35,7 +35,8 @@ pub fn route(req: &Request) -> Pool {
     match req {
         Request::Walk { .. } => Pool::Walker,
         // git walks that can run for seconds; never ahead of Rows/Files/Detail
-        Request::Search { .. } | Request::SearchPath { .. } | Request::RangeCount { .. } => Pool::Search,
+        // (a graph page runs git from the top of history every time)
+        Request::Search { .. } | Request::SearchPath { .. } | Request::RangeCount { .. } | Request::Graph { .. } => Pool::Search,
         Request::Diff { .. } | Request::Intraline { .. } => Pool::Differs,
         Request::Highlight { .. } => Pool::Highlighters,
         Request::Write(_) => Pool::Writer,

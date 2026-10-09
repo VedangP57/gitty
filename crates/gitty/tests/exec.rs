@@ -103,12 +103,24 @@ fn a_topological_walk_streams_whole_history_and_a_stale_graph_page_is_not_drawn(
     let Msg::HistoryStarted { session: 0, history } = &msgs[0] else { panic!("{:?}", msgs[0]) };
     let Some(Msg::HistoryProgress { session: 0, len: 5, done: true }) = msgs.last() else { panic!("{:?}", msgs.last()) };
     assert_eq!(history.read().unwrap().ids(0..5), ids.iter().rev().map(|i| id(i)).collect::<Vec<_>>());
-    let msgs = run(&f, Request::Graph { session: 0, tips: tips(&f), rows: 3 });
+    let msgs = run(&f, Request::Graph { session: 0, generation: 0, tips: tips(&f), rows: 3 });
     let [Msg::Graph { session: 0, art }] = msgs.as_slice() else { panic!("{msgs:?}") };
     assert_eq!((art.len(), art.complete()), (3, false));
     let gens = Gens::default();
     gens.session.store(1, SeqCst);
-    assert!(run_with(&f.path(), &gens, Request::Graph { session: 0, tips: tips(&f), rows: 3 }).is_empty());
+    assert!(run_with(&f.path(), &gens, Request::Graph { session: 0, generation: 0, tips: tips(&f), rows: 3 }).is_empty());
+    // a deeper page asked for since: this one is cancelled
+    let gens = Gens::default();
+    gens.graph.store(1, SeqCst);
+    assert!(run_with(&f.path(), &gens, Request::Graph { session: 0, generation: 0, tips: tips(&f), rows: 3 }).is_empty());
+}
+
+#[test]
+fn graph_pages_run_in_the_background_on_the_search_pool() {
+    use gitty::workers::{Pool, route};
+    let req = Request::Graph { session: 0, generation: 0, tips: Vec::new(), rows: 256 };
+    assert_eq!(route(&req), Pool::Search, "never on the readers that Rows, Files and Detail wait on");
+    assert!(req.is_background());
 }
 
 #[test]

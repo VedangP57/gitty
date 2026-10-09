@@ -7,7 +7,12 @@
 //! With the graph on, History lists git's topological order: [`topo_walk`] streams the ids and
 //! [`GraphArt::load`] draws the first rows with the same revisions. git keeps a graph's lane
 //! state inside the process, so a deeper page runs git from the top again; the caller doubles
-//! the pages, which keeps the total work linear in the deepest row asked for.
+//! the pages. With a commit-graph file git streams in topological order, so a page costs about
+//! its rows and the doubled pages add up to about twice the deepest one. Without one git walks
+//! the whole history before its first line, so every page costs a full walk.
+//!
+//! Tips go to git on stdin (`--stdin`): a repository with tens of thousands of refs would
+//! overflow the argument list.
 
 use crate::git_cli::{GitCli, Kind};
 use crate::types::CommitId;
@@ -85,11 +90,8 @@ impl GraphArt {
         }
         // one commit more than kept: its line closes the last kept commit's connectors
         let n = format!("-n{}", rows.saturating_add(1));
-        let hex: Vec<String> = tips.iter().map(CommitId::to_hex).collect();
-        let mut args = vec!["--no-optional-locks", "log", "--graph", "--topo-order", "--no-color", "--no-show-signature", "--format=%x1f%H", &n];
-        args.extend(hex.iter().map(String::as_str));
-        args.push("--");
-        let read_all = cli.read_lines(cli.cmd(Kind::Read, &args), cancelled, &mut |l| art.push_line(l))?;
+        let args = ["--no-optional-locks", "log", "--graph", "--topo-order", "--no-color", "--no-show-signature", "--format=%x1f%H", &n, "--stdin"];
+        let read_all = cli.read_lines(cli.cmd(Kind::Read, &args), tips_input(tips), cancelled, &mut |l| art.push_line(l))?;
         if cancelled() {
             return Ok(None);
         }
@@ -137,14 +139,21 @@ pub fn topo_walk(cli: &GitCli, tips: &[CommitId], cancelled: &dyn Fn() -> bool, 
     if tips.is_empty() {
         return Ok(true);
     }
-    let hex: Vec<String> = tips.iter().map(CommitId::to_hex).collect();
-    let mut args = vec!["--no-optional-locks", "rev-list", "--topo-order"];
-    args.extend(hex.iter().map(String::as_str));
-    args.push("--");
-    cli.read_lines(cli.cmd(Kind::Read, &args), cancelled, &mut |l| match std::str::from_utf8(l).ok().and_then(|s| CommitId::from_hex(s.trim())) {
+    let args = ["--no-optional-locks", "rev-list", "--topo-order", "--stdin"];
+    cli.read_lines(cli.cmd(Kind::Read, &args), tips_input(tips), cancelled, &mut |l| match std::str::from_utf8(l).ok().and_then(|s| CommitId::from_hex(s.trim())) {
         Some(c) => id(c),
         None => true,
     })
+}
+
+/// `tips` one per line, for `--stdin`.
+fn tips_input(tips: &[CommitId]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(tips.len() * 41);
+    for t in tips {
+        v.extend_from_slice(t.to_hex().as_bytes());
+        v.push(b'\n');
+    }
+    v
 }
 
 /// One drawn cell of an art line: its column, glyph and lane.
@@ -166,7 +175,8 @@ pub fn cells(line: &str) -> impl Iterator<Item = Cell> + '_ {
             '|' => ('│', col / 2),
             '/' => ('╱', col.div_ceil(2)),
             '\\' => ('╲', col.div_ceil(2)),
-            '-' | '_' => ('─', col / 2),
+            // `.` is where an octopus merge's dashes turn down into its lanes
+            '-' | '_' | '.' => ('─', col / 2),
             c => (c, col / 2),
         };
         Cell { col, glyph, lane }
@@ -231,7 +241,7 @@ mod tests {
         assert_eq!(a.connectors(0).collect::<Vec<_>>(), ["|\\ \\"]);
         assert_eq!(a.connectors(2).collect::<Vec<_>>(), ["| |/"]);
         let dash: Vec<Cell> = cells("*-.").collect();
-        assert_eq!(dash.iter().map(|c| c.glyph).collect::<String>(), "●─.");
+        assert_eq!(dash.iter().map(|c| c.glyph).collect::<String>(), "●──");
     }
 
     #[test]
