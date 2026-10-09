@@ -12,8 +12,9 @@ All notable changes to gitty are listed here. The format follows
   in a theme colour, like `git log --graph` (git draws it, gitty recolours it). With the graph on,
   History lists commits in git's topological order. `L` shows or hides it, and
   `history_graph = false` starts with it hidden. It loads a page at a time as you scroll and steps
-  aside during a search, a range, compare mode and in narrow panes. The glyphs and lane colours
-  follow druk (MIT).
+  aside during a search, a range, compare mode and in narrow panes. On a very large repository
+  without a commit-graph file it can take a second or more to open (auto-tune writes one). The
+  glyphs and lane colours follow druk (MIT).
 - Resolving conflicts in gitty. Conflicted files head the Changes list with their number of
   blocks; selecting one draws its blocks as two tinted sides under header lines that name them by
   the operation (merge: Current / Incoming; rebase: Base branch / Your commit; cherry-pick:

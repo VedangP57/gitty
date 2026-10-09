@@ -98,7 +98,9 @@ lines where branches split and merge, each lane in a theme colour. git draws the
 loads it a page at a time as you scroll. With the graph on, the list is in git's topological order
 (a branch's commits stay together); `L` hides it and lists commits by date (`history_graph = false`
 starts that way). The graph steps aside during a search, a range (`V`) and compare mode, and in a
-History pane narrower than 48 columns.
+History pane narrower than 48 columns. On a very large repository without a commit-graph file the
+graph can take a second or more on first open; gitty writes one automatically when auto-tune is on,
+or turn the graph off with `L` or `history_graph = false`.
 
 ### Files
 
