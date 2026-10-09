@@ -570,7 +570,7 @@ fn the_commit_graph_at_80_and_140_columns() {
         t.app.focus = Focus::History;
         let b = t.render(w, 24);
         let s = text(&b);
-        assert!(s.contains("●─┬─┬─╮") && s.contains("●─┴─┴─┴─╮"), "the octopus opens its lanes on its own row: {s}");
+        assert!(s.contains("◎─┬─┬─╮"), "the octopus opens its lines on its own row: {s}");
         assert!(s.contains("Release 1.0") && s.contains("Parse nested lists"), "subjects stay readable: {s}");
         insta::assert_snapshot!(format!("graph_{w}_text"), s);
         insta::assert_snapshot!(format!("graph_{w}_style"), digest(&b));
@@ -585,7 +585,7 @@ fn a_43_column_history_pane_keeps_the_graph() {
     let b = t.render(180, 24);
     assert_eq!(t.app.hits.panes.history.map(|r| r.width), Some(43));
     let s = text(&b);
-    assert!(s.contains('●'), "{s}");
+    assert!(s.contains('○'), "{s}");
     // the subjects keep their room, cut with an ellipsis
     assert!(s.contains("Merge branches") && s.contains('…'), "{s}");
     let pane: String = s.lines().map(|l| l.chars().take(43).collect::<String>().trim_end().to_string() + "\n").collect();
@@ -606,20 +606,20 @@ fn the_graph_leaves_with_a_search_and_comes_back() {
     let f = graph_fixture();
     let mut t = H::new(&f, "github-dark", (80, 24));
     t.app.focus = Focus::History;
-    assert!(text(&t.render(80, 24)).contains('●'));
+    assert!(text(&t.render(80, 24)).contains('◎'));
     t.key(KeyCode::Char('/'));
     for c in "parse".chars() {
         t.key(KeyCode::Char(c));
     }
     t.key(KeyCode::Enter);
     let s = text(&t.render(80, 24));
-    assert!(!s.contains('●') && !s.contains('│'), "{s}");
+    assert!(!s.contains('○') && !s.contains('│'), "{s}");
     assert!(s.contains("Parse nested lists"));
     t.key(KeyCode::Esc);
-    assert!(text(&t.render(80, 24)).contains('●'));
+    assert!(text(&t.render(80, 24)).contains('◎'));
     // too narrow for it: the subjects keep the room
     let s = text(&t.render(33, 24));
-    assert!(!s.contains('●'), "{s}");
+    assert!(!s.contains('○'), "{s}");
 }
 
 #[test]
@@ -627,19 +627,17 @@ fn the_graph_column_keeps_its_width_while_scrolling_back() {
     let f = graph_fixture();
     let mut t = H::new(&f, "github-dark", (80, 7));
     t.app.focus = Focus::History;
-    t.render(80, 7);
+    let (top, _) = find(&t.render(80, 7), "Release 1.0").expect("the first row");
     t.key(KeyCode::Char('G'));
-    let (bottom, _) = find(&t.render(80, 7), "Initial commit").expect("the last row");
-    t.key(KeyCode::Char('g'));
     let b = t.render(80, 7);
-    let (top, _) = find(&b, "Release 1.0").expect("the first row");
+    // the octopus row is gone from the screen; the rows left are narrower, but the column
+    // keeps the width it had
+    assert!(!text(&b).contains("─┬─┬─╮"), "{}", text(&b));
+    let (bottom, _) = find(&b, "Initial commit").expect("the last row");
     assert_eq!(top, bottom, "the subjects stay where they were: {}", text(&b));
-    // a new walk starts narrow again
+    // a new walk starts again from nothing
     t.key(KeyCode::Char('r'));
-    t.render(80, 7);
-    t.key(KeyCode::Char('r'));
-    let (again, _) = find(&t.render(80, 7), "Release 1.0").unwrap();
-    assert!(again < top, "{again} {top}");
+    assert_eq!(t.app.graph_cols, 0);
 }
 
 #[test]

@@ -4,16 +4,16 @@ expression: pane
 ---
  gitty repo  ⎇ main
  History · 10
-   ●         Release 1.0                TU
-   ●─┬─┬─╮   Merge branches 'docs', 'c… TU
-   │ │ │ ●   Update lint          TU Sep 9
-   │ │ ● │   Update ci            TU Sep 8
-   │ ● │ │   Update docs          TU Sep 7
-   ●─┴─┴─┴─╮ Merge branch 'feature'     TU
-   │ ●─────╯ Parse nested lists   TU Sep 5
-   │ ●       Add the parser       TU Sep 4
-   ● │       Fix the build        TU Sep 6
-   ●─╯       Initial commit       TU Sep 3
+   ○       Release 1.0           TU Sep 10
+   ◎─┬─┬─╮ Merge branches 'docs… TU Sep 22
+   │ │ │ ○ Update lint            TU Sep 9
+   │ │ ○ │ Update ci              TU Sep 8
+   │ ○ │ │ Update docs            TU Sep 7
+   ◎─│─┴─╯ Merge branch 'featur… TU Sep 12
+   │ ○     Parse nested lists     TU Sep 5
+   │ ○     Add the parser         TU Sep 4
+   ○ │     Fix the build          TU Sep 6
+   ○─╯     Initial commit         TU Sep 3
 
 
 

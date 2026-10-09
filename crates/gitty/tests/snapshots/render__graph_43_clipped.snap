@@ -4,20 +4,20 @@ expression: "pane.iter().map(|l| l.trim_end().to_string() + \"\\n\").collect::<S
 ---
  gitty repo  ⎇ main
  History · 14
-   ●─┬─┬─┬─┬─┬─┬─› Merge branches 'b0'… TU
-   │ │ │ │ │ │ │ ● Branch 11            TU
-   │ │ │ │ │ │ │ ● Branch 10            TU
-   │ │ │ │ │ │ │ ● Branch 9             TU
-   │ │ │ │ │ │ │ ● Branch 8             TU
-   │ │ │ │ │ │ │ ● Branch 7             TU
-   │ │ │ │ │ │ ● › Branch 6             TU
-   │ │ │ │ │ ● │ › Branch 5             TU
-   │ │ │ │ ● │ │ › Branch 4             TU
-   │ │ │ ● │ │ │ › Branch 3             TU
-   │ │ ● │ │ │ │ › Branch 2             TU
-   │ ● │ │ │ │ │ › Branch 1             TU
-   ● │ │ │ │ │ │ › Branch 0             TU
-   ●─┴─┴─┴─┴─┴─┴─› Initial commit       TU
+   ◎─┬─┬─┬─┬─┬─┬─› Merge branches 'b0'… TU
+   │ │ │ │ │ │ │ ○ Branch 11            TU
+   │ │ │ │ │ │ │ ○ Branch 10            TU
+   │ │ │ │ │ │ │ ○ Branch 9             TU
+   │ │ │ │ │ │ │ ○ Branch 8             TU
+   │ │ │ │ │ │ │ ○ Branch 7             TU
+   │ │ │ │ │ │ ○ › Branch 6             TU
+   │ │ │ │ │ ○ │ › Branch 5             TU
+   │ │ │ │ ○ │ │ › Branch 4             TU
+   │ │ │ ○ │ │ │ › Branch 3             TU
+   │ │ ○ │ │ │ │ › Branch 2             TU
+   │ ○ │ │ │ │ │ › Branch 1             TU
+   ○ │ │ │ │ │ │ › Branch 0             TU
+   ○─┴─┴─┴─┴─┴─┴─› Initial commit       TU
 
 
 

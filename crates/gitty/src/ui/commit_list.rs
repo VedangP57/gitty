@@ -151,7 +151,7 @@ fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Opti
     if cut && w > 0 {
         let pad = " ".repeat(shown.saturating_sub(cells.len().min(shown)));
         // a commit whose lane is cut off keeps its dot, at the cut
-        let dot = cells.iter().skip(shown).flatten().find(|g| g.0 == '●');
+        let dot = cells.iter().skip(shown).flatten().find(|g| g.0 == gitty_core::graph::COMMIT_SYMBOL || g.0 == gitty_core::graph::MERGE_SYMBOL);
         match dot {
             Some(&(g, c)) => parts.push((format!("{pad}{g}"), Style::new().bg(bg).fg(palette[c as usize % palette.len()]))),
             None => parts.push((format!("{pad}›"), Style::new().bg(bg).fg(ui.muted))),

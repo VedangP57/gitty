@@ -1,56 +1,105 @@
-//! The History list's commit graph: one row per commit, its lanes laid out by gitty.
+//! The History list's commit graph: one row per commit, laid out the way lazygit lays out its
+//! commit graph.
 //!
-//! With the graph on, History lists git's topological order ([`topo_walk`]: `git rev-list
-//! --topo-order --parents`, so a commit always comes before its parents) and [`Lanes`] gives each
-//! commit a lane as the walk streams in. The rows are ready together with the list's ids.
+//! The layout ([`Lanes::row`]) and the cells it draws ([`Row`]) are a port of lazygit's
+//! `pkg/gui/presentation/graph` (graph.go and cell.go, box drawing symbols; MIT, Copyright (c)
+//! 2018 Jesse Duffield). Each row is a set of pipes: lines from a commit to one of its parents
+//! that start in the commit's row, continue through the rows between (moving left into room
+//! that frees up) and terminate in the parent's row. A commit takes the column of the leftmost
+//! pipe that ends in it (a new column on the right if none does), its first parent's pipe starts
+//! there, and each further parent's pipe starts in the leftmost column free for it.
 //!
-//! A lane is two terminal columns: its own cell, then a gap that only carries horizontal links.
-//! A lane keeps the colour it was opened with until it ends, so a branch keeps one colour all
-//! the way down. Commits that more than one lane waits for (branches meeting at their fork
-//! point) take the leftmost lane and the others join it with `╯`; a merge's other parents open
-//! lanes with `╮` (`╭` on the left), or link to a lane already waiting for them.
+//! What differs from lazygit: commits stream in from a topological walk ([`topo_walk`]) and the
+//! layout state carries over from one chunk to the next; rows are stored compactly ([`Rows`])
+//! and cut at [`MAX_LANES`] columns; there is no highlighting of the selected commit's lines
+//! (the list draws its own selection); and a pipe's colour is not its commit author's but a
+//! lane colour that stays with a branch: a commit's first-parent pipe keeps the colour of the
+//! pipe it took its column from, and a merge's other pipes each open a new one.
 
 use smallvec::SmallVec;
 
 use crate::git_cli::{GitCli, Kind};
 use crate::types::CommitId;
 
+/// Lane colours cycle through this many indices. The UI maps them to a palette of this many
+/// entries built from the theme's distinct hues (fewer distinct ones repeat in the cycle).
+pub const COLOURS: u8 = 7;
+/// Columns stored per row: no pane draws more, and a pathological history stays small.
+const MAX_LANES: usize = 48;
+
+// lazygit's `Cell`, packed: the edges its lines touch, its type and its two colours
 const UP: u16 = 1;
 const DOWN: u16 = 2;
 const LEFT: u16 = 4;
 const RIGHT: u16 = 8;
-const DIRS: u16 = UP | DOWN | LEFT | RIGHT;
-const COMMIT: u16 = 1 << 4;
-const COLOUR: u16 = 5;
-const COLOUR_MASK: u16 = 0b111 << COLOUR;
-/// The gap after a lane carries a horizontal link, in the colour at `GAP_COLOUR`.
-const GAP: u16 = 1 << 8;
-const GAP_COLOUR: u16 = 9;
-const GAP_COLOUR_MASK: u16 = 0b111 << GAP_COLOUR;
-/// On a row's last stored lane: the row has more lanes than are stored.
+const TYPE: u16 = 4;
+const TYPE_MASK: u16 = 0b11 << TYPE;
+const COMMIT: u16 = 1 << TYPE;
+const MERGE: u16 = 2 << TYPE;
+/// The colour of the cell's own glyph.
+const STYLE: u16 = 6;
+const STYLE_MASK: u16 = 0b111 << STYLE;
+/// The colour of the horizontal line after it (lazygit's `rightStyle`).
+const RIGHT_STYLE: u16 = 9;
+const RIGHT_STYLE_MASK: u16 = 0b111 << RIGHT_STYLE;
+/// On a row's last stored cell: the row has more columns than are stored.
 const MORE: u16 = 1 << 12;
-/// Lane colours cycle through this many indices. The UI maps them to a palette of this many
-/// entries built from the theme's distinct hues (fewer distinct ones repeat in the cycle).
-pub const COLOURS: u8 = 7;
-/// Lanes stored per row: no pane draws more, and a pathological history stays small.
-const MAX_LANES: usize = 48;
+/// `rightStyle` was set (lazygit's nil check).
+const HAS_RIGHT_STYLE: u16 = 1 << 13;
 
-#[derive(Debug, Clone, Copy)]
-struct Lane {
-    /// The commit this lane leads down to.
-    want: CommitId,
+pub const COMMIT_SYMBOL: char = '○';
+pub const MERGE_SYMBOL: char = '◎';
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PipeKind {
+    Terminates,
+    Starts,
+    Continues,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pipe {
+    /// None: the start of the graph, above its first commit.
+    from: Option<CommitId>,
+    /// None: the empty tree, below a root commit.
+    to: Option<CommitId>,
+    from_pos: usize,
+    to_pos: usize,
+    kind: PipeKind,
     colour: u8,
 }
 
-/// The layout state of a topological walk: which commit each lane waits for.
+impl Pipe {
+    fn left(&self) -> usize {
+        self.from_pos.min(self.to_pos)
+    }
+    fn right(&self) -> usize {
+        self.from_pos.max(self.to_pos)
+    }
+}
+
+/// The layout state of a topological walk: the previous row's pipes.
 #[derive(Debug, Default)]
 pub struct Lanes {
-    lanes: Vec<Option<Lane>>,
+    pipes: Vec<Pipe>,
+    started: bool,
     opened: u32,
 }
 
-fn colour(c: u8) -> u16 {
-    u16::from(c) << COLOUR
+/// A set of columns (lazygit's `set.New[int]`).
+#[derive(Default)]
+struct Spots(Vec<bool>);
+
+impl Spots {
+    fn add(&mut self, i: usize) {
+        if i >= self.0.len() {
+            self.0.resize(i + 1, false);
+        }
+        self.0[i] = true;
+    }
+    fn has(&self, i: usize) -> bool {
+        self.0.get(i).copied().unwrap_or(false)
+    }
 }
 
 impl Lanes {
@@ -60,123 +109,219 @@ impl Lanes {
         c
     }
 
-    /// The first lane free at the start of this row (lanes that end in it are not reused yet).
-    fn free(&self, busy: &[usize]) -> usize {
-        (0..).find(|&i| i >= self.lanes.len() || (self.lanes[i].is_none() && !busy.contains(&i))).expect("a free lane")
-    }
-
     /// Lays out the next commit of a topological walk and appends its row to `out`.
     pub fn row(&mut self, id: CommitId, parents: &[CommitId], out: &mut Rows) {
-        let waiting = |lanes: &[Option<Lane>]| -> SmallVec<[usize; 4]> { (0..lanes.len()).filter(|&i| lanes[i].is_some_and(|l| l.want == id)).collect() };
-        let mut matches = waiting(&self.lanes);
-        // nothing but free lanes left of the commit's lane (lanes that ended above): the commit
-        // moves over to the leftmost and its lane joins it there with `╯`, so a branch does not
-        // run on far to the right of an empty stretch. (Not a merge, which opens a lane into the
-        // free room instead, nor a root, which ends its lane anyway.)
-        if let (Some(&k), 1) = (matches.first(), parents.len()) {
-            let f = self.free(&[]);
-            if f < k && self.lanes[f..k].iter().all(Option::is_none) {
-                self.lanes[f] = Some(Lane { want: id, colour: self.lanes[k].expect("a waiting lane").colour });
-                matches = waiting(&self.lanes);
-            }
+        if !self.started {
+            self.started = true;
+            let colour = self.open();
+            self.pipes = vec![Pipe { from: None, to: Some(id), from_pos: 0, to_pos: 0, kind: PipeKind::Starts, colour }];
         }
-        let c = match matches.first() {
-            Some(&c) => c,
-            // a branch tip: a new lane
-            None => {
-                let c = self.free(&[]);
-                let colour = self.open();
-                if c == self.lanes.len() {
-                    self.lanes.push(None);
-                }
-                self.lanes[c] = Some(Lane { want: id, colour });
-                c
-            }
+        let prev = std::mem::take(&mut self.pipes);
+        self.pipes = self.next_pipes(&prev, id, parents);
+        render(&self.pipes, out);
+    }
+
+    /// lazygit's `getNextPipes`.
+    fn next_pipes(&mut self, prev: &[Pipe], id: CommitId, parents: &[CommitId]) -> Vec<Pipe> {
+        // a pipe that terminated in the previous row has no bearing on this one, nor does the
+        // pipe from a root commit to the empty tree
+        let current: Vec<Pipe> = prev.iter().filter(|p| p.kind != PipeKind::Terminates && p.to.is_some()).copied().collect();
+        let max_pos = current.iter().map(|p| p.to_pos + 1).max().unwrap_or(0);
+        let mut new: Vec<Pipe> = Vec::with_capacity(current.len() + parents.len());
+        // a commit no pipe leads to (a branch tip) goes on the far right; one that has a
+        // descendant goes under the first pipe leading to it
+        let first = current.iter().find(|p| p.to == Some(id));
+        let pos = first.map_or(max_pos, |p| p.to_pos);
+        let own = match first {
+            Some(p) => p.colour,
+            None => self.open(),
         };
-        let mut cells: SmallVec<[u16; 16]> = SmallVec::from_elem(0, self.lanes.len());
-        for (i, l) in self.lanes.iter().enumerate() {
-            if let Some(l) = l
-                && i != c
-                && !matches.contains(&i)
-            {
-                cells[i] = UP | DOWN | colour(l.colour);
+        // spots a current pipe ends on, and spots one starts on, ends on or passes through
+        let mut taken = Spots::default();
+        let mut traversed = Spots::default();
+        new.push(Pipe { from: Some(id), to: parents.first().copied(), from_pos: pos, to_pos: pos, kind: PipeKind::Starts, colour: own });
+        let mut traversed_by_continuing = Spots::default();
+        for p in &current {
+            if p.to != Some(id) {
+                traversed_by_continuing.add(p.to_pos);
             }
         }
-        let own = self.lanes[c].expect("the commit's lane").colour;
-        cells[c] = COMMIT | colour(own) | if matches.is_empty() { 0 } else { UP } | if parents.is_empty() { 0 } else { DOWN };
-        // (lane, its colour, the directions it adds at its end)
-        let mut links: SmallVec<[(usize, u8, u16); 4]> = SmallVec::new();
-        let mut ended: SmallVec<[usize; 4]> = SmallVec::new();
-        // the other lanes waiting for this commit end in it
-        for &j in matches.iter().skip(1) {
-            links.push((j, self.lanes[j].expect("a waiting lane").colour, UP));
-            ended.push(j);
-        }
-        let mut busy: SmallVec<[usize; 4]> = matches.clone();
-        match parents.first() {
-            Some(&first) => self.lanes[c] = Some(Lane { want: first, colour: own }),
-            None => ended.push(c),
-        }
-        for (n, &p) in parents.iter().enumerate().skip(1) {
-            // a parent listed twice links once
-            if parents[..n].contains(&p) {
-                continue;
+        let traverse = |taken: &mut Spots, traversed: &mut Spots, from: usize, to: usize| {
+            for i in from.min(to)..=from.max(to) {
+                traversed.add(i);
             }
-            match (0..self.lanes.len()).find(|&k| k != c && !ended.contains(&k) && self.lanes[k].is_some_and(|l| l.want == p)) {
-                Some(k) => links.push((k, self.lanes[k].expect("a lane").colour, 0)),
-                None => {
-                    let k = self.free(&busy);
-                    let colour = self.open();
-                    if k >= self.lanes.len() {
-                        self.lanes.resize(k + 1, None);
+            taken.add(to);
+        };
+        for p in &current {
+            if p.to == Some(id) {
+                // terminating here
+                new.push(Pipe { from_pos: p.to_pos, to_pos: pos, kind: PipeKind::Terminates, ..*p });
+                traverse(&mut taken, &mut traversed, p.to_pos, pos);
+            } else if p.to_pos < pos {
+                // continuing here
+                let available = (0..).find(|&i| !traversed.has(i)).expect("a free spot");
+                new.push(Pipe { from_pos: p.to_pos, to_pos: available, kind: PipeKind::Continues, ..*p });
+                traverse(&mut taken, &mut traversed, p.to_pos, available);
+            }
+        }
+        if parents.len() > 1 {
+            for &parent in &parents[1..] {
+                // a new pipe may not end on a taken spot, nor on one a continuing pipe traverses
+                let available = (0..).find(|&i| !taken.has(i) && !traversed_by_continuing.has(i)).expect("a free spot");
+                let colour = self.open();
+                new.push(Pipe { from: Some(id), to: Some(parent), from_pos: pos, to_pos: available, kind: PipeKind::Starts, colour });
+                taken.add(available);
+            }
+        }
+        for p in &current {
+            if p.to != Some(id) && p.to_pos > pos {
+                // continuing on, potentially moving left to fill in a blank spot
+                let mut last = p.to_pos;
+                let mut i = p.to_pos;
+                while i > pos {
+                    if taken.has(i) || traversed.has(i) {
+                        break;
                     }
-                    self.lanes[k] = Some(Lane { want: p, colour });
-                    busy.push(k);
-                    links.push((k, colour, DOWN));
+                    last = i;
+                    i -= 1;
                 }
+                new.push(Pipe { from_pos: p.to_pos, to_pos: last, kind: PipeKind::Continues, ..*p });
+                traverse(&mut taken, &mut traversed, p.to_pos, last);
             }
         }
-        for j in ended {
-            self.lanes[j] = None;
-        }
-        // farthest first: on a stretch two links share, the nearer one's colour wins
-        links.sort_by_key(|l| std::cmp::Reverse(l.0.abs_diff(c)));
-        for (j, lc, dirs) in links {
-            if j >= cells.len() {
-                cells.resize(j + 1, 0);
-            }
-            let (lo, hi) = (c.min(j), c.max(j));
-            cells[j] = (cells[j] & !COLOUR_MASK) | dirs | if j > c { LEFT } else { RIGHT } | colour(lc);
-            for x in lo..hi {
-                cells[x] = (cells[x] & !GAP_COLOUR_MASK) | GAP | (u16::from(lc) << GAP_COLOUR);
-                if x > lo {
-                    // an empty cell takes the link's colour; a lane crossing it keeps its own
-                    if cells[x] & DIRS == 0 {
-                        cells[x] |= colour(lc);
-                    }
-                    cells[x] |= LEFT | RIGHT;
-                }
-            }
-        }
-        while self.lanes.last().is_some_and(Option::is_none) {
-            self.lanes.pop();
-        }
-        while cells.last() == Some(&0) {
-            cells.pop();
-        }
-        if cells.len() > MAX_LANES {
-            cells.truncate(MAX_LANES);
-            cells[MAX_LANES - 1] |= MORE;
-            if c >= MAX_LANES {
-                // the commit's own lane is cut off: its dot takes the last stored lane
-                cells[MAX_LANES - 1] = COMMIT | MORE | colour(own);
-            }
-        }
-        out.push(&cells);
+        new.sort_by_key(|p| (p.to_pos, p.kind));
+        new
     }
 }
 
-/// The rows of a graph, stored flat: two bytes per lane.
+/// lazygit's `Cell` while a row is drawn.
+#[derive(Debug, Clone, Copy, Default)]
+struct Cell {
+    up: bool,
+    down: bool,
+    left: bool,
+    right: bool,
+    ty: u16,
+    style: Option<u8>,
+    right_style: Option<u8>,
+}
+
+impl Cell {
+    fn set_up(&mut self, c: u8) {
+        self.up = true;
+        self.style = Some(c);
+    }
+    fn set_down(&mut self, c: u8) {
+        self.down = true;
+        self.style = Some(c);
+    }
+    fn set_left(&mut self, c: u8) {
+        self.left = true;
+        if !self.up && !self.down {
+            // vertical trumps left
+            self.style = Some(c);
+        }
+    }
+    fn set_right(&mut self, c: u8, over: bool) {
+        self.right = true;
+        if self.right_style.is_none() || over {
+            self.right_style = Some(c);
+        }
+    }
+    fn pack(&self) -> u16 {
+        let mut v = self.ty;
+        for (on, bit) in [(self.up, UP), (self.down, DOWN), (self.left, LEFT), (self.right, RIGHT)] {
+            if on {
+                v |= bit;
+            }
+        }
+        let style = self.style.or(self.right_style).unwrap_or(0);
+        v |= u16::from(style) << STYLE;
+        if let Some(r) = self.right_style {
+            v |= HAS_RIGHT_STYLE | u16::from(r) << RIGHT_STYLE;
+        }
+        v
+    }
+}
+
+/// lazygit's `renderPipeSet` (no selected commit), appending the row's cells to `out`.
+fn render(pipes: &[Pipe], out: &mut Rows) {
+    let mut max_pos = 0;
+    let mut commit_pos = 0;
+    let mut starts = 0;
+    for p in pipes {
+        match p.kind {
+            PipeKind::Starts => {
+                starts += 1;
+                commit_pos = p.from_pos;
+            }
+            PipeKind::Terminates => commit_pos = p.to_pos,
+            PipeKind::Continues => {}
+        }
+        max_pos = max_pos.max(p.right());
+    }
+    // cells past the store are not drawn; the commit's own is kept below
+    let n = (max_pos + 1).min(MAX_LANES);
+    let mut cells: SmallVec<[Cell; 16]> = SmallVec::from_elem(Cell::default(), n);
+    let draw = |cells: &mut [Cell], p: &Pipe, over: bool| {
+        let (left, right) = (p.left(), p.right());
+        if left != right {
+            for cell in cells.iter_mut().take(right.min(n)).skip(left + 1) {
+                // lazygit's setHorizontal
+                cell.set_left(p.colour);
+                cell.set_right(p.colour, over);
+            }
+            if left < n {
+                cells[left].set_right(p.colour, over);
+            }
+            if right < n {
+                cells[right].set_left(p.colour);
+            }
+        }
+        if matches!(p.kind, PipeKind::Starts | PipeKind::Continues) && p.to_pos < n {
+            cells[p.to_pos].set_down(p.colour);
+        }
+        if matches!(p.kind, PipeKind::Terminates | PipeKind::Continues) && p.from_pos < n {
+            cells[p.from_pos].set_up(p.colour);
+        }
+    };
+    for p in pipes.iter().filter(|p| p.kind == PipeKind::Starts) {
+        draw(&mut cells, p, true);
+    }
+    for p in pipes.iter().filter(|p| p.kind != PipeKind::Starts) {
+        if p.kind == PipeKind::Terminates && p.from_pos == commit_pos && p.to_pos == commit_pos {
+            // the line from above into the commit keeps the commit's own colour; the start of
+            // the graph has no line
+            if p.from.is_some() && commit_pos < n {
+                cells[commit_pos].up = true;
+            }
+            continue;
+        }
+        draw(&mut cells, p, false);
+    }
+    // there is no line below a root commit
+    for p in pipes {
+        if p.kind == PipeKind::Starts && p.to.is_none() && p.to_pos < n {
+            cells[p.to_pos].down = false;
+        }
+    }
+    let ty = if starts > 1 { MERGE } else { COMMIT };
+    let mut packed: SmallVec<[u16; 16]> = cells.iter().map(Cell::pack).collect();
+    if commit_pos < n {
+        packed[commit_pos] = (packed[commit_pos] & !TYPE_MASK) | ty;
+    }
+    if max_pos + 1 > n {
+        packed[n - 1] |= MORE;
+        if commit_pos >= n {
+            // the commit's own column is cut off: its symbol takes the last stored one
+            let own = pipes.iter().find(|p| p.kind == PipeKind::Starts).map_or(0, |p| p.colour);
+            packed[n - 1] = ty | MORE | u16::from(own) << STYLE;
+        }
+    }
+    out.push(&packed);
+}
+
+/// The rows of a graph, stored flat: two bytes per column pair.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Rows {
     cells: Vec<u16>,
@@ -216,49 +361,59 @@ impl Rows {
 #[derive(Debug, Clone, Copy)]
 pub struct Row<'a>(&'a [u16]);
 
-fn glyph(cell: u16) -> Option<char> {
-    if cell & COMMIT != 0 {
-        return Some('●');
-    }
+/// lazygit's `getBoxDrawingChars`: a cell's glyph and the character after it.
+fn box_chars(cell: u16) -> (char, char) {
     let (u, d, l, r) = (cell & UP != 0, cell & DOWN != 0, cell & LEFT != 0, cell & RIGHT != 0);
-    Some(match (u, d, l, r) {
-        (false, false, false, false) => return None,
-        (true, true, true, true) => '┼',
-        (true, true, true, false) => '┤',
-        (true, true, false, true) => '├',
-        // a link that runs on past a lane opening or ending there
-        (false, true, true, true) => '┬',
-        (true, false, true, true) => '┴',
-        (false, true, true, false) => '╮',
-        (true, false, true, false) => '╯',
-        (false, true, false, true) => '╭',
-        (true, false, false, true) => '╰',
-        (_, _, false, false) => '│',
-        (false, false, _, _) => '─',
-    })
+    match (u, d, l, r) {
+        (true, true, true, true) => ('│', '─'),
+        (true, true, true, false) => ('│', ' '),
+        (true, true, false, true) => ('│', '─'),
+        (true, true, false, false) => ('│', ' '),
+        (true, false, true, true) => ('┴', '─'),
+        (true, false, true, false) => ('╯', ' '),
+        (true, false, false, true) => ('╰', '─'),
+        (true, false, false, false) => ('╵', ' '),
+        (false, true, true, true) => ('┬', '─'),
+        (false, true, true, false) => ('╮', ' '),
+        (false, true, false, true) => ('╭', '─'),
+        (false, true, false, false) => ('╷', ' '),
+        (false, false, true, true) => ('─', '─'),
+        (false, false, true, false) => ('─', ' '),
+        (false, false, false, true) => ('╶', '─'),
+        (false, false, false, false) => (' ', ' '),
+    }
 }
 
 impl Row<'_> {
-    /// Terminal columns the row's lanes take.
+    /// Terminal columns the row's cells take.
     pub fn columns(&self) -> usize {
         (self.0.len() * 2).saturating_sub(1)
     }
-    /// More lanes than are stored: the row is cut on the right.
+    /// More columns than are stored: the row is cut on the right.
     pub fn clipped(&self) -> bool {
         self.0.last().is_some_and(|c| c & MORE != 0)
     }
-    /// Each column's glyph and colour index (None: blank).
+    /// Each column's glyph and colour index (None: blank), two per cell, the last cell's
+    /// trailing blank left off.
     pub fn glyphs(&self) -> impl Iterator<Item = Option<(char, u8)>> + '_ {
         self.0.iter().enumerate().flat_map(|(i, &cell)| {
-            let own = glyph(cell).map(|g| (g, ((cell & COLOUR_MASK) >> COLOUR) as u8));
-            let gap = (cell & GAP != 0).then_some(('─', ((cell & GAP_COLOUR_MASK) >> GAP_COLOUR) as u8));
-            std::iter::once(own).chain((i + 1 < self.0.len()).then_some(gap))
+            let (mut first, second) = box_chars(cell);
+            match cell & TYPE_MASK {
+                COMMIT => first = COMMIT_SYMBOL,
+                MERGE => first = MERGE_SYMBOL,
+                _ => {}
+            }
+            let style = ((cell & STYLE_MASK) >> STYLE) as u8;
+            let right = if cell & HAS_RIGHT_STYLE != 0 { ((cell & RIGHT_STYLE_MASK) >> RIGHT_STYLE) as u8 } else { style };
+            let own = (first != ' ').then_some((first, style));
+            let after = (second != ' ').then_some((second, right));
+            std::iter::once(own).chain((i + 1 < self.0.len()).then_some(after))
         })
     }
-    /// The line under the row (a second line of text): every lane that goes on down.
+    /// The line under the row (a second line of text): every line that goes on down.
     pub fn filler(&self) -> impl Iterator<Item = Option<(char, u8)>> + '_ {
         self.0.iter().enumerate().flat_map(|(i, &cell)| {
-            let own = (cell & DOWN != 0).then_some(('│', ((cell & COLOUR_MASK) >> COLOUR) as u8));
+            let own = (cell & DOWN != 0).then_some(('│', ((cell & STYLE_MASK) >> STYLE) as u8));
             std::iter::once(own).chain((i + 1 < self.0.len()).then_some(None))
         })
     }
@@ -296,133 +451,333 @@ pub fn topo_walk(cli: &GitCli, tips: &[CommitId], cancelled: &dyn Fn() -> bool, 
 mod tests {
     use super::*;
 
-    fn id(n: usize) -> CommitId {
+    /// A commit id named by a short string, as lazygit's tests name them.
+    fn id(name: &str) -> CommitId {
         let mut b = [0u8; 20];
-        b[..8].copy_from_slice(&(n as u64 + 1).to_be_bytes());
+        b[..name.len()].copy_from_slice(name.as_bytes());
         CommitId(b)
     }
 
-    /// Lays out `(commit, parents)` in the given (topological) order.
-    fn layout(history: &[(usize, &[usize])]) -> (Rows, Lanes) {
+    /// Lays out `(commit, parents)` in the given order.
+    fn layout(history: &[(&str, &[&str])]) -> (Rows, Lanes) {
         let (mut lanes, mut rows) = (Lanes::default(), Rows::default());
         for (c, ps) in history {
-            let ps: Vec<CommitId> = ps.iter().map(|&p| id(p)).collect();
-            lanes.row(id(*c), &ps, &mut rows);
+            let ps: Vec<CommitId> = ps.iter().map(|p| id(p)).collect();
+            lanes.row(id(c), &ps, &mut rows);
         }
         (rows, lanes)
     }
-    fn text(history: &[(usize, &[usize])]) -> Vec<String> {
+
+    /// lazygit's `TestRenderCommitGraph` output: each row as "<name> <graph>".
+    fn graph(history: &[(&str, &[&str])]) -> String {
         let (rows, _) = layout(history);
-        (0..rows.len()).map(|i| rows.get(i).unwrap().text()).collect()
+        history.iter().enumerate().map(|(i, (c, _))| format!("{c} {}", rows.get(i).unwrap().text()).trim().to_string() + "\n").collect()
     }
+
+    fn expected(s: &str) -> String {
+        s.trim_start_matches('\n').lines().map(|l| l.trim().to_string() + "\n").collect()
+    }
+
+    // ---- lazygit's TestRenderCommitGraph, case by case ----
+
+    #[test]
+    fn with_some_merges() {
+        let h: &[(&str, &[&str])] = &[
+            ("1", &["2"]),
+            ("2", &["3"]),
+            ("3", &["4"]),
+            ("4", &["5", "7"]),
+            ("7", &["5"]),
+            ("5", &["8"]),
+            ("8", &["9"]),
+            ("9", &["A", "B"]),
+            ("B", &["D"]),
+            ("D", &["D"]),
+            ("A", &["E"]),
+            ("E", &["F"]),
+            ("F", &["D"]),
+            ("D", &["G"]),
+        ];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ○
+            3 ○
+            4 ◎─╮
+            7 │ ○
+            5 ○─╯
+            8 ○
+            9 ◎─╮
+            B │ ○
+            D │ ○
+            A ○ │
+            E ○ │
+            F ○ │
+            D ○─╯"));
+    }
+
+    #[test]
+    fn with_a_path_that_has_room_to_move_to_the_left() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("4", &["3", "5"]), ("3", &["5"]), ("5", &["6"]), ("6", &["7"])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            4 │ ◎─╮
+            3 ○─╯ │
+            5 ○───╯
+            6 ○"));
+    }
+
+    #[test]
+    fn with_a_new_commit() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("4", &["3", "5"]), ("Z", &["Z"]), ("3", &["5"]), ("5", &["6"]), ("6", &["7"])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            4 │ ◎─╮
+            Z │ │ │ ○
+            3 ○─╯ │ │
+            5 ○───╯ │
+            6 ○ ╭───╯"));
+    }
+
+    #[test]
+    fn with_a_root_commit_followed_by_an_unrelated_history() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &[]), ("A", &["B"]), ("B", &[])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ○
+            A ○
+            B ○"));
+    }
+
+    #[test]
+    fn with_a_merge_of_an_unrelated_history() {
+        let h: &[(&str, &[&str])] = &[("1", &["2", "A"]), ("2", &["3"]), ("A", &[]), ("3", &[])];
+        assert_eq!(graph(h), expected("
+            1 ◎─╮
+            2 ○ │
+            A │ ○
+            3 ○"));
+    }
+
+    #[test]
+    fn with_a_path_that_has_room_to_move_to_the_left_and_continues() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("3", &["5", "4"]), ("5", &["7", "8"]), ("4", &["7"]), ("7", &["11"])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            3 ◎─│─╮
+            5 ◎─│─│─╮
+            4 │ ○─╯ │
+            7 ○─╯ ╭─╯"));
+    }
+
+    #[test]
+    fn with_a_path_that_has_room_to_move_to_the_left_and_continues_2() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("3", &["5", "4"]), ("5", &["7", "8"]), ("7", &["4", "A"]), ("4", &["B"]), ("B", &["C"])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            3 ◎─│─╮
+            5 ◎─│─│─╮
+            7 ◎─│─│─│─╮
+            4 ○─┴─╯ │ │
+            B ○ ╭───╯ │"));
+    }
+
+    #[test]
+    fn with_a_path_that_has_room_to_move_to_the_left_and_continues_3() {
+        let h: &[(&str, &[&str])] = &[("1", &["2", "3"]), ("3", &["2"]), ("2", &["4", "5"]), ("4", &["6", "7"]), ("6", &["8"])];
+        assert_eq!(graph(h), expected("
+            1 ◎─╮
+            3 │ ○
+            2 ◎─│
+            4 ◎─│─╮
+            6 ○ │ │"));
+    }
+
+    #[test]
+    fn new_merge_path_fills_gap_before_continuing_path_on_right() {
+        let h: &[(&str, &[&str])] = &[("1", &["2", "3", "4", "5"]), ("4", &["2"]), ("2", &["A"]), ("A", &["6", "B"]), ("B", &["C"])];
+        assert_eq!(graph(h), expected("
+            1 ◎─┬─┬─╮
+            4 │ │ ○ │
+            2 ○─│─╯ │
+            A ◎─│─╮ │
+            B │ │ ○ │"));
+    }
+
+    #[test]
+    fn with_a_path_that_has_room_to_move_to_the_left_and_continues_4() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("3", &["5", "4"]), ("5", &["7", "8"]), ("7", &["4", "A"]), ("4", &["B"]), ("B", &["C"]), ("C", &["D"])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            3 ◎─│─╮
+            5 ◎─│─│─╮
+            7 ◎─│─│─│─╮
+            4 ○─┴─╯ │ │
+            B ○ ╭───╯ │
+            C ○ │ ╭───╯"));
+    }
+
+    #[test]
+    fn with_a_path_that_has_room_to_move_to_the_left_and_continues_5() {
+        let h: &[(&str, &[&str])] = &[
+            ("1", &["2"]),
+            ("2", &["3", "4"]),
+            ("3", &["5", "4"]),
+            ("5", &["7", "G"]),
+            ("7", &["8", "A"]),
+            ("8", &["4", "E"]),
+            ("4", &["B"]),
+            ("B", &["C"]),
+            ("C", &["D"]),
+            ("D", &["F"]),
+        ];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            3 ◎─│─╮
+            5 ◎─│─│─╮
+            7 ◎─│─│─│─╮
+            8 ◎─│─│─│─│─╮
+            4 ○─┴─╯ │ │ │
+            B ○ ╭───╯ │ │
+            C ○ │ ╭───╯ │
+            D ○ │ │ ╭───╯"));
+    }
+
+    // ---- lazygit's TestRenderPipeSet (no selection), glyphs and colours ----
+
+    fn pipe(from: &str, to: &str, from_pos: usize, to_pos: usize, kind: PipeKind, colour: u8) -> Pipe {
+        let h = |s: &str| if s == "empty" { None } else { Some(id(s)) };
+        Pipe { from: h(from), to: h(to), from_pos, to_pos, kind, colour }
+    }
+
+    /// One row drawn from `pipes`: its glyphs and their colours, blanks as (' ', None).
+    fn cells(pipes: &[Pipe]) -> (String, Vec<Option<u8>>) {
+        let mut rows = Rows::default();
+        render(pipes, &mut rows);
+        let g: Vec<Option<(char, u8)>> = rows.get(0).unwrap().glyphs().collect();
+        (g.iter().map(|g| g.map_or(' ', |g| g.0)).collect(), g.iter().map(|g| g.map(|g| g.1)).collect())
+    }
+
+    use PipeKind::{Continues as C, Starts as S, Terminates as T};
+    const CYAN: u8 = 0;
+    const RED: u8 = 1;
+    const GREEN: u8 = 2;
+    const YELLOW: u8 = 3;
+    const MAGENTA: u8 = 4;
+
+    #[test]
+    fn pipe_set_single_cell() {
+        assert_eq!(cells(&[pipe("a", "b", 0, 0, T, CYAN), pipe("b", "c", 0, 0, S, GREEN)]), ("○".into(), vec![Some(GREEN)]));
+    }
+
+    #[test]
+    fn pipe_set_terminating_hook_and_starting_hook_prioritise_the_terminating_one() {
+        let p = [pipe("a", "b", 0, 0, T, RED), pipe("c", "b", 1, 0, T, MAGENTA), pipe("b", "d", 0, 0, S, GREEN), pipe("b", "e", 0, 1, S, GREEN)];
+        assert_eq!(cells(&p), ("◎─│".into(), vec![Some(GREEN), Some(GREEN), Some(MAGENTA)]));
+    }
+
+    #[test]
+    fn pipe_set_starting_and_terminating_pipe_sharing_some_space() {
+        let p = [pipe("a1", "a2", 0, 0, T, RED), pipe("a2", "a3", 0, 0, S, YELLOW), pipe("b1", "b2", 1, 1, C, MAGENTA), pipe("e1", "a2", 3, 0, T, GREEN), pipe("a2", "c3", 0, 2, S, YELLOW)];
+        assert_eq!(cells(&p), ("◎─│─┬─╯".into(), vec![Some(YELLOW), Some(YELLOW), Some(MAGENTA), Some(YELLOW), Some(YELLOW), Some(GREEN), Some(GREEN)]));
+    }
+
+    #[test]
+    fn pipe_set_many_terminating_pipes() {
+        let p = [pipe("a1", "a2", 0, 0, T, RED), pipe("a2", "a3", 0, 0, S, YELLOW), pipe("b1", "a2", 1, 0, T, MAGENTA), pipe("c1", "a2", 2, 0, T, GREEN)];
+        assert_eq!(cells(&p), ("○─┴─╯".into(), vec![Some(YELLOW), Some(MAGENTA), Some(MAGENTA), Some(GREEN), Some(GREEN)]));
+    }
+
+    #[test]
+    fn pipe_set_starting_pipe_passing_through() {
+        let p = [pipe("a1", "a2", 0, 0, T, RED), pipe("a2", "a3", 0, 0, S, YELLOW), pipe("a2", "d3", 0, 3, S, YELLOW), pipe("b1", "b3", 1, 1, C, MAGENTA), pipe("c1", "c3", 2, 2, C, GREEN)];
+        assert_eq!(cells(&p), ("◎─│─│─╮".into(), vec![Some(YELLOW), Some(YELLOW), Some(MAGENTA), Some(YELLOW), Some(GREEN), Some(YELLOW), Some(YELLOW)]));
+    }
+
+    #[test]
+    fn pipe_set_starting_and_terminating_path_crossing_continuing_path() {
+        let p = [pipe("a1", "a2", 0, 0, T, RED), pipe("a2", "a3", 0, 0, S, YELLOW), pipe("a2", "b3", 0, 1, S, YELLOW), pipe("b1", "a2", 1, 1, C, GREEN), pipe("c1", "a2", 2, 0, T, MAGENTA)];
+        assert_eq!(cells(&p), ("◎─│─╯".into(), vec![Some(YELLOW), Some(YELLOW), Some(GREEN), Some(MAGENTA), Some(MAGENTA)]));
+    }
+
+    #[test]
+    fn pipe_set_another_clash_of_starting_and_terminating_paths() {
+        let p = [pipe("a1", "a2", 0, 0, T, RED), pipe("a2", "a3", 0, 0, S, YELLOW), pipe("a2", "b3", 0, 1, S, YELLOW), pipe("c1", "c3", 2, 2, C, GREEN), pipe("d1", "a2", 3, 0, T, MAGENTA)];
+        assert_eq!(cells(&p), ("◎─┬─│─╯".into(), vec![Some(YELLOW), Some(YELLOW), Some(YELLOW), Some(MAGENTA), Some(GREEN), Some(MAGENTA), Some(MAGENTA)]));
+    }
+
+    #[test]
+    fn pipe_set_root_commit_has_no_line_below() {
+        let p = [pipe("a", "root", 0, 0, T, CYAN), pipe("root", "empty", 0, 0, S, GREEN)];
+        let mut rows = Rows::default();
+        render(&p, &mut rows);
+        assert_eq!(rows.get(0).unwrap().filler().flatten().count(), 0);
+    }
+
+    // ---- lazygit's TestGetNextPipes ----
+
+    #[test]
+    fn next_pipes() {
+        let mut lanes = Lanes::default();
+        let (a, b, c, d, e) = (id("a"), id("b"), id("c"), id("d"), id("e"));
+        let p = |from, to, from_pos, to_pos, kind| Pipe { from: Some(from), to, from_pos, to_pos, kind, colour: 0 };
+        let colourless = |v: Vec<Pipe>| v.into_iter().map(|p| Pipe { colour: 0, ..p }).collect::<Vec<_>>();
+        assert_eq!(colourless(lanes.next_pipes(&[p(a, Some(b), 0, 0, S)], b, &[c])), [p(a, Some(b), 0, 0, T), p(b, Some(c), 0, 0, S)]);
+        let prev = [p(a, Some(b), 0, 0, T), p(b, Some(c), 0, 0, S), p(b, Some(d), 0, 1, S)];
+        assert_eq!(colourless(lanes.next_pipes(&prev, d, &[e])), [p(b, Some(c), 0, 0, C), p(b, Some(d), 1, 1, T), p(d, Some(e), 1, 1, S)]);
+        let root = id("root");
+        assert_eq!(colourless(lanes.next_pipes(&[p(a, Some(root), 0, 0, T)], root, &[])), [p(root, None, 0, 0, S)]);
+    }
+
+    // ---- gitty's own ----
+
     fn commit_colour(r: Row<'_>) -> u8 {
-        r.glyphs().flatten().find(|g| g.0 == '●').unwrap().1
+        r.glyphs().flatten().find(|g| g.0 == COMMIT_SYMBOL || g.0 == MERGE_SYMBOL).unwrap().1
     }
 
     #[test]
-    fn linear() {
-        assert_eq!(text(&[(3, &[2]), (2, &[1]), (1, &[])]), ["●", "●", "●"]);
-    }
-
-    #[test]
-    fn a_merge_and_its_branch_rejoin() {
-        // 4 merges 2 into 3; 2 branched from 1
-        assert_eq!(text(&[(4, &[3, 2]), (2, &[1]), (3, &[1]), (1, &[0]), (0, &[])]), ["●─╮", "│ ●", "● │", "●─╯", "●"]);
-    }
-
-    #[test]
-    fn two_long_lived_branches_keep_their_lanes_and_colours() {
-        let h: &[(usize, &[usize])] = &[(10, &[9]), (20, &[19]), (9, &[8]), (19, &[18]), (8, &[1]), (18, &[1]), (1, &[])];
-        assert_eq!(text(h), ["●", "│ ●", "● │", "│ ●", "● │", "│ ●", "●─╯"]);
+    fn a_branch_keeps_its_colour_and_the_main_line_keeps_its_own_past_a_merge() {
+        let h: &[(&str, &[&str])] = &[("1", &["2"]), ("2", &["3", "4"]), ("4", &["5"]), ("3", &["5"]), ("5", &["6"]), ("6", &[])];
+        assert_eq!(graph(h), expected("
+            1 ○
+            2 ◎─╮
+            4 │ ○
+            3 ○ │
+            5 ○─╯
+            6 ○"));
         let (rows, _) = layout(h);
-        let left: Vec<u8> = [0, 2, 4].iter().map(|&i| commit_colour(rows.get(i).unwrap())).collect();
-        let right: Vec<u8> = [1, 3, 5].iter().map(|&i| commit_colour(rows.get(i).unwrap())).collect();
-        assert!(left.iter().all(|&c| c == left[0]) && right.iter().all(|&c| c == right[0]) && left[0] != right[0], "{left:?} {right:?}");
-        // the join takes the colour of the lane that ends
-        let last: Vec<(char, u8)> = rows.get(6).unwrap().glyphs().flatten().collect();
-        assert_eq!(last, [('●', left[0]), ('─', right[0]), ('╯', right[0])]);
+        let c: Vec<u8> = (0..6).map(|i| commit_colour(rows.get(i).unwrap())).collect();
+        assert!(c[0] == c[1] && c[1] == c[3] && c[3] == c[4] && c[4] == c[5], "the main line: {c:?}");
+        assert_ne!(c[2], c[0], "the branch has its own");
+        // the join is drawn in the branch's colour
+        let last: Vec<(char, u8)> = rows.get(4).unwrap().glyphs().flatten().collect();
+        assert_eq!(last, [('○', c[0]), ('─', c[2]), ('╯', c[2])]);
     }
 
     #[test]
-    fn an_octopus_merge_opens_and_closes_several_lanes_in_one_row() {
-        let h: &[(usize, &[usize])] = &[(9, &[1, 2, 3]), (3, &[0]), (2, &[0]), (1, &[0]), (0, &[])];
-        assert_eq!(text(h), ["●─┬─╮", "│ │ ●", "│ ● │", "● │ │", "●─┴─╯"]);
-        // each stretch of the fan-out has the colour of the lane it leads to
-        let (rows, _) = layout(h);
-        let g: Vec<u8> = rows.get(0).unwrap().glyphs().flatten().map(|g| g.1).collect();
-        assert_eq!((g[1], g[2], g[3], g[4]), (g[2], g[2], g[4], g[4]));
-        assert_ne!(g[2], g[4]);
-    }
-
-    #[test]
-    fn root_commits_end_their_lanes() {
-        // two unrelated roots, then a merge of an orphan branch
-        assert_eq!(text(&[(2, &[]), (1, &[])]), ["●", "●"]);
-        let (rows, lanes) = layout(&[(5, &[4, 3]), (3, &[]), (4, &[])]);
-        assert_eq!((0..3).map(|i| rows.get(i).unwrap().text()).collect::<Vec<_>>(), ["●─╮", "│ ●", "●"]);
-        assert!(lanes.lanes.is_empty());
-    }
-
-    #[test]
-    fn criss_cross_merges_link_to_the_lanes_already_waiting() {
-        let h: &[(usize, &[usize])] = &[(8, &[1, 2]), (9, &[2, 1]), (1, &[0]), (2, &[0]), (0, &[])];
-        assert_eq!(text(h), ["●─╮", "├─┼─●", "● │ │", "│ ●─╯", "●─╯"]);
-    }
-
-    #[test]
-    fn a_freed_lane_is_reused_with_a_new_colour() {
-        // 2 is a merged orphan root: its lane ends, and the next tip takes it
-        let h: &[(usize, &[usize])] = &[(9, &[1, 2]), (2, &[]), (7, &[1]), (1, &[])];
-        assert_eq!(text(h), ["●─╮", "│ ●", "│ ●", "●─╯"]);
-        let (rows, _) = layout(h);
-        assert_ne!(commit_colour(rows.get(1).unwrap()), commit_colour(rows.get(2).unwrap()));
-    }
-
-    #[test]
-    fn a_lane_opening_left_of_the_commit_curves_the_other_way() {
-        // 1 ends lane 0; then 2, in lane 1, opens its merge parent's lane in free lane 0
-        let h: &[(usize, &[usize])] = &[(9, &[1]), (8, &[2]), (1, &[]), (2, &[3, 4]), (4, &[3]), (3, &[])];
-        assert_eq!(text(h), ["●", "│ ●", "● │", "╭─●", "● │", "●─╯"]);
-    }
-
-    #[test]
-    fn a_link_running_on_past_an_opening_lane_tees_into_it() {
-        // 10, 11 and 12 hold lanes 0 to 2; 1 and 2 end lanes 0 and 1; then 5, in lane 2, opens
-        // two lanes to its left
-        let h: &[(usize, &[usize])] = &[(10, &[1]), (11, &[2]), (12, &[5]), (1, &[]), (2, &[]), (5, &[3, 4, 6]), (4, &[3]), (6, &[3]), (3, &[])];
-        assert_eq!(text(h)[5], "╭─┬─●");
-    }
-
-    #[test]
-    fn a_branch_left_alone_on_the_right_moves_over_to_the_free_lanes() {
-        // three lanes meet at 10, a merge that opens a lane for 12 past the two that end; 12
-        // then moves into the room they left
-        let h: &[(usize, &[usize])] = &[(30, &[10]), (31, &[10]), (32, &[10]), (10, &[11, 12]), (12, &[11]), (11, &[])];
-        assert_eq!(text(h), ["●", "│ ●", "│ │ ●", "●─┴─┴─╮", "│ ●───╯", "●─╯"]);
-        // and keeps its colour
-        let (rows, _) = layout(h);
-        assert_eq!(commit_colour(rows.get(4).unwrap()), rows.get(3).unwrap().glyphs().flatten().last().unwrap().1);
-    }
-
-    #[test]
-    fn rows_wider_than_the_store_are_marked() {
-        let tips: Vec<(usize, Vec<usize>)> = (0..60).map(|i| (100 + i, vec![0])).collect();
-        let h: Vec<(usize, &[usize])> = tips.iter().map(|(c, p)| (*c, p.as_slice())).chain([(0, &[][..])]).collect();
+    fn rows_wider_than_the_store_are_marked_and_keep_the_commit() {
+        let tips: Vec<(String, Vec<&str>)> = (0..60).map(|i| (format!("t{i}"), vec!["0"])).collect();
+        let h: Vec<(&str, &[&str])> = tips.iter().map(|(c, p)| (c.as_str(), p.as_slice())).chain([("0", &[][..])]).collect();
         let (rows, lanes) = layout(&h);
         let last = rows.get(60).unwrap();
         assert!(last.clipped() && last.columns() == MAX_LANES * 2 - 1);
         assert!(!rows.get(0).unwrap().clipped());
-        // a commit in a lane past the store keeps its dot, in the last stored lane
+        // a commit in a column past the store keeps its symbol, in the last stored one
         let far = rows.get(55).unwrap();
         assert!(far.clipped());
-        assert_eq!(far.glyphs().flatten().filter(|g| g.0 == '●').count(), 1);
-        assert_eq!(far.glyphs().last().flatten().map(|g| g.0), Some('●'));
-        assert!(lanes.lanes.is_empty());
+        assert_eq!(far.glyphs().flatten().filter(|g| g.0 == COMMIT_SYMBOL).count(), 1);
+        assert_eq!(far.glyphs().last().flatten().map(|g| g.0), Some(COMMIT_SYMBOL));
+        assert!(lanes.pipes.iter().all(|p| p.kind == PipeKind::Terminates || p.to.is_none()));
     }
 
     #[test]
-    fn filler_continues_the_lanes_that_go_down() {
-        let (rows, _) = layout(&[(4, &[3, 2]), (2, &[1]), (3, &[1]), (1, &[])]);
+    fn filler_continues_the_lines_that_go_down() {
+        let (rows, _) = layout(&[("4", &["3", "2"]), ("2", &["1"]), ("3", &["1"]), ("1", &[])]);
         let f = |i: usize| rows.get(i).unwrap().filler().map(|g| g.map_or(' ', |g| g.0)).collect::<String>().trim_end().to_string();
         assert_eq!((f(0), f(1), f(3)), ("│ │".into(), "│ │".into(), "".into()));
     }
@@ -445,33 +800,31 @@ mod tests {
 
         proptest! {
             #[test]
-            fn every_commit_has_one_dot_and_every_parent_a_lane(parents in dag()) {
+            fn every_commit_has_one_symbol_and_every_parent_a_pipe(parents in dag()) {
+                let name = |i: usize| id(&format!("c{i}"));
                 let mut lanes = Lanes::default();
                 let mut rows = Rows::default();
                 for (i, ps) in parents.iter().enumerate() {
-                    let ps: Vec<CommitId> = ps.iter().map(|&p| id(p)).collect();
-                    lanes.row(id(i), &ps, &mut rows);
+                    let ps: Vec<CommitId> = ps.iter().map(|&p| name(p)).collect();
+                    lanes.row(name(i), &ps, &mut rows);
                     let row = rows.get(i).unwrap();
-                    prop_assert_eq!(row.glyphs().flatten().filter(|g| g.0 == '●').count(), 1);
-                    let c = row.0.iter().position(|cell| cell & COMMIT != 0).unwrap();
-                    // the commit's lane goes on down to its first parent
+                    prop_assert_eq!(row.glyphs().flatten().filter(|g| g.0 == COMMIT_SYMBOL || g.0 == MERGE_SYMBOL).count(), 1);
+                    let c = row.0.iter().position(|cell| cell & TYPE_MASK != 0).unwrap();
+                    // the commit's line goes on down to its first parent from its own column
                     if let Some(&first) = ps.first() {
-                        prop_assert!(lanes.lanes[c].is_some_and(|l| l.want == first));
+                        prop_assert!(lanes.pipes.iter().any(|p| p.kind == PipeKind::Starts && p.from_pos == c && p.to_pos == c && p.to == Some(first)));
                         prop_assert!(row.0[c] & DOWN != 0);
                     }
-                    // every other parent has a lane waiting for it, linked from this row
-                    for p in ps.iter().skip(1).filter(|&&p| p != ps[0]) {
-                        let k = lanes.lanes.iter().position(|l| l.is_some_and(|l| l.want == *p));
-                        prop_assert!(k.is_some(), "parent without a lane");
-                        let k = k.unwrap();
-                        prop_assert!(k < row.0.len() && row.0[k] & (LEFT | RIGHT) != 0, "parent not linked");
+                    // every parent has a pipe leading down to it
+                    for p in &ps {
+                        prop_assert!(lanes.pipes.iter().any(|q| q.kind != PipeKind::Terminates && q.to == Some(*p)), "parent without a pipe");
                     }
-                    // every lane still open waits for a commit not yet shown
-                    for l in lanes.lanes.iter().flatten() {
-                        prop_assert!((i + 1..parents.len()).any(|j| id(j) == l.want));
+                    // every pipe still open leads to a commit not yet shown
+                    for p in lanes.pipes.iter().filter(|p| p.kind != PipeKind::Terminates) {
+                        prop_assert!(p.to.is_none() || (i + 1..parents.len()).any(|j| Some(name(j)) == p.to));
                     }
                 }
-                prop_assert!(lanes.lanes.is_empty(), "lanes left open after the last commit");
+                prop_assert!(lanes.pipes.iter().all(|p| p.kind == PipeKind::Terminates || p.to.is_none()), "pipes left open after the last commit");
             }
         }
     }
