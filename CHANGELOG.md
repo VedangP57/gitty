@@ -8,13 +8,13 @@ All notable changes to gitty are listed here. The format follows
 
 ### Added
 
-- A commit graph in History: a dot per commit and lines where branches split and merge, each lane
-  in a theme colour, like `git log --graph` (git draws it, gitty recolours it). With the graph on,
-  History lists commits in git's topological order. `L` shows or hides it, and
-  `history_graph = false` starts with it hidden. It loads a page at a time as you scroll and steps
-  aside during a search, a range, compare mode and in a History pane under 34 columns. On a very
-  large repository without a commit-graph file it can take a second or more to open (auto-tune
-  writes one). The glyphs and lane colours follow druk (MIT).
+- A commit graph in History: one row per commit, a lane per branch with `╮` where a merge brings
+  a branch in and `╯` where it joins back, each lane in a theme colour it keeps all the way down.
+  With the graph on, History lists commits in topological order (`git rev-list --topo-order`) and
+  lays out the lanes as the walk streams in. `L` shows or hides it, and `history_graph = false`
+  starts with it hidden. It steps aside during a search, a range, compare mode and in a History
+  pane under 34 columns, and cuts lanes wider than the pane with `›`. On a large repository
+  without a commit-graph file the first rows wait for git's sort (about 0.3 s per 100,000 commits).
 - Resolving conflicts in gitty. Conflicted files head the Changes list with their number of
   blocks; selecting one draws its blocks as two tinted sides under header lines that name them by
   the operation (merge: Current / Incoming; rebase: Base branch / Your commit; cherry-pick:

@@ -93,14 +93,15 @@ open it in `$EDITOR` at that line.
 ### History
 
 The History tab lists the commits of the checked-out branch and its upstream (`r` switches to all
-branches and tags). A graph column draws them the way `git log --graph` does: a dot per commit and
-lines where branches split and merge, each lane in a theme colour. git draws the graph and gitty
-loads it a page at a time as you scroll. With the graph on, the list is in git's topological order
-(a branch's commits stay together); `L` hides it and lists commits by date (`history_graph = false`
-starts that way). The graph steps aside during a search, a range (`V`) and compare mode, and in a
-History pane narrower than 34 columns. On a very large repository without a commit-graph file the
-graph can take a second or more on first open; gitty writes one automatically when auto-tune is on,
-or turn the graph off with `L` or `history_graph = false`.
+branches and tags). A graph column to the left of the subjects gives each branch a lane: a dot per
+commit, one row per commit, with `╮` where a merge brings a branch in and `╯` where a branch joins
+the lane it started from. A lane keeps its theme colour from top to bottom, and lanes wider than the
+pane allows are cut with `›`. With the graph on, the list is in topological order (from
+`git rev-list --topo-order`, so a branch's commits stay together); `L` hides it and lists commits by
+date (`history_graph = false` starts that way). The graph steps aside during a search, a range (`V`)
+and compare mode, and in a History pane narrower than 34 columns. On a large repository without a
+commit-graph file the first rows wait for git to sort the whole history (about a third of a second
+per 100,000 commits here); with one (auto-tune writes it) they show at once.
 
 ### Files
 
