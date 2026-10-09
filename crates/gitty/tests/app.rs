@@ -6310,10 +6310,27 @@ fn the_graph_hides_for_search_path_filter_range_compare_and_narrow_panes() {
     assert!(t.app.compare.is_some() && !t.app.graph_shown());
     t.key(KeyCode::Esc);
     assert!(t.app.compare.is_none() && t.app.graph_shown());
-    t.app.handle_resize(47, 30);
-    assert!(!t.app.graph_shown(), "a pane narrower than 48 columns drops it");
+    t.app.handle_resize(33, 30);
+    assert!(!t.app.graph_shown(), "a pane narrower than 34 columns drops it");
     t.app.handle_resize(80, 30);
     assert!(t.app.graph_shown());
+}
+
+#[test]
+fn l_in_a_pane_too_narrow_for_the_graph_says_why_nothing_shows() {
+    let f = graph_fixture();
+    let mut t = H::by_date(&f);
+    t.pump();
+    t.app.handle_resize(33, 30);
+    t.ch('L');
+    assert!(t.app.show_graph && !t.app.graph_shown());
+    let toast = t.app.toast.clone().expect("a note");
+    assert!(toast.what.contains("Graph hidden") && !toast.error, "{toast:?}");
+    // wide enough: no note
+    t.ch('L');
+    t.app.handle_resize(80, 30);
+    t.ch('L');
+    assert!(t.app.graph_shown() && t.app.toast.is_none());
 }
 
 #[test]

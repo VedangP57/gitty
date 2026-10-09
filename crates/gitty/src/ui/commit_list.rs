@@ -19,8 +19,8 @@ use crate::text::truncate_end;
 const MIN_SUMMARY: u16 = 20;
 const MAX_BADGE: usize = 24;
 /// Columns the graph leaves for the marker, the summary and the date (wider art is clipped).
-/// With [`crate::app::GRAPH_MIN_WIDTH`] it leaves the graph at least 8 columns.
-const GRAPH_REST: u16 = 40;
+/// With [`crate::app::GRAPH_MIN_WIDTH`] it leaves the graph at least 6 columns.
+const GRAPH_REST: u16 = 28;
 
 fn group(n: usize) -> String {
     let s = n.to_string();

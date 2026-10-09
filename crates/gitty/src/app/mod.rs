@@ -51,7 +51,7 @@ const ROWS_BATCH: usize = 256;
 /// The first page of graph rows; later pages double.
 const GRAPH_PAGE: usize = 256;
 /// The History pane drops the graph below this width, before badges and dates.
-pub const GRAPH_MIN_WIDTH: u16 = 48;
+pub const GRAPH_MIN_WIDTH: u16 = 34;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -867,6 +867,10 @@ impl App {
         self.selected = 0;
         self.list_scroll = 0;
         self.start_walk();
+        // on, but nothing to see: say why
+        if self.show_graph && !self.graph_fits() {
+            self.toast = Some(Toast { what: format!("Graph hidden: the History pane is narrower than {GRAPH_MIN_WIDTH} columns"), detail: String::new(), error: false });
+        }
     }
 
     /// Whether the list draws the graph now. Hidden where the rows are not the plain history
@@ -876,7 +880,11 @@ impl App {
             && self.compare.is_none()
             && !self.search_active()
             && self.range_anchor.is_none()
-            && self.panes().history.map_or(self.size.0, |r| r.width) >= GRAPH_MIN_WIDTH
+            && self.graph_fits()
+    }
+
+    fn graph_fits(&self) -> bool {
+        self.panes().history.map_or(self.size.0, |r| r.width) >= GRAPH_MIN_WIDTH
     }
 
     /// Checks the graph's rows against the list, from where the last check stopped. git draws

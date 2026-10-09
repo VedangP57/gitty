@@ -578,6 +578,21 @@ fn the_commit_graph_at_80_and_140_columns() {
 }
 
 #[test]
+fn a_43_column_history_pane_keeps_the_graph() {
+    let f = graph_fixture();
+    let mut t = H::new(&f, "github-dark", (180, 24));
+    t.app.ui_state.history_width = Some(43);
+    let b = t.render(180, 24);
+    assert_eq!(t.app.hits.panes.history.map(|r| r.width), Some(43));
+    let s = text(&b);
+    assert!(s.contains('●'), "{s}");
+    // the subjects keep their room, cut with an ellipsis
+    assert!(s.contains("Merge branches") && s.contains('…'), "{s}");
+    let pane: String = s.lines().map(|l| l.chars().take(43).collect::<String>().trim_end().to_string() + "\n").collect();
+    insta::assert_snapshot!("graph_43_pane", pane);
+}
+
+#[test]
 fn comfortable_rows_carry_the_lanes_through_their_second_line() {
     let f = graph_fixture();
     let mut t = H::new(&f, "github-dark", (80, 30));
@@ -603,7 +618,7 @@ fn the_graph_leaves_with_a_search_and_comes_back() {
     t.key(KeyCode::Esc);
     assert!(text(&t.render(80, 24)).contains('●'));
     // too narrow for it: the subjects keep the room
-    let s = text(&t.render(46, 24));
+    let s = text(&t.render(33, 24));
     assert!(!s.contains('●'), "{s}");
 }
 
