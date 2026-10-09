@@ -18,8 +18,8 @@ use crate::text::truncate_end;
 /// Summary keeps at least this many columns before badges, then the date, are dropped.
 const MIN_SUMMARY: u16 = 20;
 const MAX_BADGE: usize = 24;
-/// Columns the graph leaves for the marker, the summary and the date (wider art is clipped).
-/// With [`crate::app::GRAPH_MIN_WIDTH`] it leaves the graph at least 6 columns.
+/// Columns the graph leaves for the marker, the summary and the date (wider rows are cut with
+/// `›`). With [`crate::app::GRAPH_MIN_WIDTH`] it leaves the graph at least 6 columns.
 const GRAPH_REST: u16 = 28;
 
 fn group(n: usize) -> String {
@@ -65,8 +65,10 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let scope = if app.scope == HistoryScope::AllRefs { " · all refs" } else { "" };
     title(app, buf, r, "History", app.focus == Focus::History, &format!("{count}{scope}"));
     let rows = Rect::new(r.x, r.y + 1, r.width, r.height.saturating_sub(1));
+    let row_h = app.row_height() as u16;
     app.hits.history_rows = Some(rows);
-    app.hits.history_lines.clear();
+    app.hits.history_first = app.list_scroll;
+    app.hits.history_row_h = row_h;
     if rows.height == 0 {
         return;
     }
@@ -76,53 +78,24 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         return;
     }
     let shown = app.graph_shown();
-    // the rows that fit, top down: (index, id, screen lines)
-    let blocks: Vec<(usize, gitty_core::CommitId, usize)> = {
+    let ids: Vec<(usize, gitty_core::CommitId, Option<Graph>)> = {
         let Some(h) = &app.history else { return };
         let h = h.read().unwrap_or_else(PoisonError::into_inner);
-        let mut out = Vec::new();
-        let (mut i, mut used) = (app.list_scroll, 0);
-        while i < h.len() && used < rows.height as usize {
-            let n = app.row_lines(i, shown);
-            out.push((i, h.id(i), n));
-            used += n;
-            i += 1;
-        }
-        out
+        let n = (rows.height / row_h.max(1)) as usize;
+        (app.list_scroll..(app.list_scroll + n).min(h.len()))
+            .map(|i| {
+                let graph = h.graph_row(i).filter(|_| shown).map(|r| Graph { cells: r.glyphs().collect(), filler: r.filler().collect(), clipped: r.clipped() });
+                (i, h.id(i), graph)
+            })
+            .collect()
     };
-    app.hits.history_lines = draw_rows(app, buf, rows, &blocks, shown);
-}
-
-/// The graph art of row `i`, one entry per screen line (none without art for it).
-fn art_lines(app: &App, i: usize) -> Vec<String> {
-    let Some(g) = app.graph.as_ref().filter(|_| i < app.graph_valid) else { return Vec::new() };
-    let mut lines: Vec<String> = std::iter::once(g.commit_line(i)).chain(g.connectors(i)).map(String::from).collect();
-    // comfortable rows have a second line of text: carry on the lanes that go on below
-    if app.row_height() > 1 && lines.len() == 1 {
-        let below = if i + 1 < g.len() {
-            g.commit_line(i + 1)
-        } else if g.complete() {
-            ""
-        } else {
-            g.commit_line(i)
-        };
-        lines.push(gitty_core::graph::padding(g.commit_line(i), below));
-    }
-    lines
-}
-
-/// Draws the rows; returns the row index of each screen line drawn.
-fn draw_rows(app: &App, buf: &mut Buffer, rows: Rect, blocks: &[(usize, gitty_core::CommitId, usize)], shown: bool) -> Vec<usize> {
-    let ui = &app.theme.ui;
+    let app: &App = app;
     let focused = app.focus == Focus::History;
     let range = app.selected_range();
-    let row_h = app.row_height();
-    let arts: Vec<Vec<String>> = blocks.iter().map(|&(i, _, _)| if shown { art_lines(app, i) } else { Vec::new() }).collect();
-    let widest = arts.iter().flatten().map(|l| l.len()).max().unwrap_or(0) as u16;
+    let widest = ids.iter().filter_map(|r| r.2.as_ref()).map(|g| g.cells.len() + usize::from(g.clipped)).max().unwrap_or(0) as u16;
     let graph_w = widest.min(rows.width.saturating_sub(GRAPH_REST));
-    let mut lines = Vec::new();
-    let mut y = rows.y;
-    for (&(i, id, n), art) in blocks.iter().zip(&arts) {
+    for (k, (i, id, graph)) in ids.into_iter().enumerate() {
+        let y = rows.y + k as u16 * row_h;
         let selected = i == app.selected;
         let in_range = range.is_some_and(|(oldest, newest)| (newest..=oldest).contains(&i));
         let bg = match (selected, in_range) {
@@ -131,51 +104,55 @@ fn draw_rows(app: &App, buf: &mut Buffer, rows: Rect, blocks: &[(usize, gitty_co
             _ => ui.bg,
         };
         draw_row(app, buf, rows, y, id, app.rows.get(&i), bg, app.search.hits.contains(&i), graph_w);
-        for k in 0..n {
-            let ly = y + k as u16;
-            if ly >= rows.bottom() {
-                break;
+        if let Some(g) = graph {
+            let x = rows.x + 3;
+            draw_graph(app, buf, x, y, graph_w, &g.cells, g.clipped, bg);
+            if row_h > 1 && y + 1 < rows.bottom() {
+                // a second line of text: the lanes that go on down carry on through it
+                draw_graph(app, buf, x, y + 1, graph_w, &g.filler, false, bg);
             }
-            // connector lines below the row's text keep the pane's background
-            let line_bg = if k < row_h { bg } else { ui.bg };
-            if k >= row_h {
-                fill(buf, Rect::new(rows.x, ly, rows.width, 1), Style::new().bg(line_bg));
-            }
-            if let Some(line) = art.get(k) {
-                draw_art(app, buf, rows.x + 3, ly, graph_w, line, line_bg);
-            }
-            lines.push(i);
         }
-        y = y.saturating_add(n as u16);
     }
-    lines
 }
 
-/// One line of graph art in box glyphs, each lane in its colour, clipped to `w` columns.
-fn draw_art(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, line: &str, bg: ratatui::style::Color) {
+/// A row's graph columns, copied out from under the history lock.
+struct Graph {
+    cells: Vec<Option<(char, u8)>>,
+    filler: Vec<Option<(char, u8)>>,
+    clipped: bool,
+}
+
+/// One line of the graph, each lane in its colour. A row wider than `w` columns (or wider than
+/// the lanes stored) ends in `›`.
+#[allow(clippy::too_many_arguments)]
+fn draw_graph(app: &App, buf: &mut Buffer, x: u16, y: u16, w: u16, cells: &[Option<(char, u8)>], clipped: bool, bg: ratatui::style::Color) {
     let ui = &app.theme.ui;
-    let palette = [ui.accent, ui.status_added, ui.status_modified, ui.status_renamed, ui.status_deleted];
+    // one theme hue per lane colour index (gitty_core::graph::COLOURS of them)
+    let palette = [ui.accent, ui.status_added, ui.status_modified, ui.status_renamed, ui.status_deleted, ui.pr_merged, ui.behind];
+    let w = w as usize;
+    let cut = clipped || cells.len() > w;
+    let shown = if cut { w.saturating_sub(1) } else { w };
     // cells of one colour in a row make one span; blanks join the span before them
     let mut parts: Vec<(String, Style)> = Vec::new();
-    let mut col = 0;
-    for c in gitty_core::graph::cells(line).take_while(|c| c.col < w as usize) {
-        let st = Style::new().bg(bg).fg(palette[c.lane % palette.len()]);
-        let gap = " ".repeat(c.col - col);
-        match parts.last_mut() {
-            Some((s, last)) if *last == st => {
-                s.push_str(&gap);
-                s.push(c.glyph);
+    for cell in cells.iter().take(shown) {
+        match (cell, parts.last_mut()) {
+            (Some((g, c)), last) => {
+                let st = Style::new().bg(bg).fg(palette[*c as usize % palette.len()]);
+                match last {
+                    Some((s, l)) if *l == st => s.push(*g),
+                    _ => parts.push((g.to_string(), st)),
+                }
             }
-            Some((s, _)) => {
-                s.push_str(&gap);
-                parts.push((c.glyph.to_string(), st));
-            }
-            None => parts.push((format!("{gap}{}", c.glyph), st)),
+            (None, Some((s, _))) => s.push(' '),
+            (None, None) => parts.push((" ".into(), Style::new().bg(bg))),
         }
-        col = c.col + 1;
+    }
+    if cut && w > 0 {
+        let pad = shown.saturating_sub(cells.len().min(shown));
+        parts.push((format!("{}›", " ".repeat(pad)), Style::new().bg(bg).fg(ui.muted)));
     }
     let parts: Vec<(&str, Style)> = parts.iter().map(|(s, st)| (s.as_str(), *st)).collect();
-    spans(buf, x, y, x + w, &parts);
+    spans(buf, x, y, x + w as u16, &parts);
 }
 
 /// Compare mode: title, the Behind / Ahead / Files tabs, then the tab's commits.
@@ -208,8 +185,8 @@ fn draw_compare(app: &mut App, buf: &mut Buffer, r: Rect) {
     let row_h = app.row_height() as u16;
     let first = c.first_visible();
     app.hits.history_rows = Some(rows);
-    // a click below the last commit picks the last one
-    app.hits.history_lines = (0..rows.height).map(|l| first + (l / row_h.max(1)) as usize).collect();
+    app.hits.history_first = first;
+    app.hits.history_row_h = row_h;
     let app: &App = app;
     let Some(c) = &app.compare else { return };
     if c.tab == CompareTab::Files {

@@ -20,8 +20,8 @@ fn main() {
     println!("refs             {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
     let tips = refs.unwrap().tips(HistoryScope::HeadAndUpstream);
     let mut hist = None;
-    // the graph view lists git's topological order; without it, commit-time order
-    for (topo, label) in [(true, "topo"), (false, "walk")] {
+    // by date, then in topological order with the graph's lanes
+    for topo in [false, true] {
         let t = Instant::now();
         let mut first = None;
         let mut msgs = 0;
@@ -34,14 +34,10 @@ fn main() {
             }
         }, &gens);
         let (n, d) = first.unwrap();
-        println!("{label} first chunk {:>8.1} ms ({n} rows)", d.as_secs_f64() * 1e3);
-        let len = hist.as_ref().unwrap().read().unwrap().len();
-        println!("{label} total       {:>8.1} ms ({len} rows, {msgs} msgs)", t.elapsed().as_secs_f64() * 1e3);
-    }
-    for rows in [256, 4096, 65536] {
-        let t = Instant::now();
-        exec(&h, Request::Graph { session: 0, generation: 0, tips: tips.clone(), rows }, &mut |_| {}, &gens);
-        println!("graph {rows:>6} rows {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        let order = if topo { "topo" } else { "date" };
+        println!("walk {order} first  {:>8.1} ms ({n} rows)", d.as_secs_f64() * 1e3);
+        let h = hist.as_ref().unwrap().read().unwrap();
+        println!("walk {order} total  {:>8.1} ms ({} rows, {msgs} msgs, lanes {} KiB)", t.elapsed().as_secs_f64() * 1e3, h.len(), h.graph_bytes() / 1024);
     }
     let hist = hist.unwrap();
     let len = hist.read().unwrap().len();

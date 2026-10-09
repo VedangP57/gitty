@@ -395,7 +395,7 @@ impl App {
                 self.compare_select(t);
             }
             Focus::History => {
-                let t = target(self.selected, self.history_len, self.list_rows_shown(), m);
+                let t = target(self.selected, self.history_len, self.list_capacity(), m);
                 self.select(t);
             }
             Focus::Files => {
@@ -599,8 +599,7 @@ impl App {
         }
         if let Some(r) = inside(self.hits.history_rows, x, y) {
             self.focus = Focus::History;
-            // below the last row: nothing to select
-            let i = self.hits.history_lines.get((y - r.y) as usize).copied().unwrap_or(usize::MAX);
+            let i = self.hits.history_first + ((y - r.y) / self.hits.history_row_h.max(1)) as usize;
             if self.compare.is_some() {
                 self.compare_select(i);
             } else if i < self.history_len {
@@ -766,7 +765,7 @@ impl App {
             return;
         }
         if inside(self.hits.panes.history, x, y).is_some() {
-            let max = self.max_list_scroll();
+            let max = self.history_len.saturating_sub(self.list_capacity());
             self.list_scroll = scroll(self.list_scroll, max);
             self.request_visible_rows();
         } else if inside(self.hits.panes.files, x, y).is_some() {

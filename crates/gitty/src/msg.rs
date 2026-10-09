@@ -13,7 +13,6 @@ use gitty_core::commit_files::{BlobId, FileChange, LineStats};
 use gitty_core::diff::text::Text;
 use gitty_core::diff::{DiffOptions, FileDiff};
 use gitty_highlight::Highlights;
-use gitty_core::graph::GraphArt;
 use gitty_core::history::{CommitDetail, CommitRow, History};
 use gitty_core::op_state::{OpState, RepoOp};
 use gitty_core::refs::RefsSnapshot;
@@ -50,8 +49,6 @@ pub struct Gens {
     pub commit: AtomicU64,
     pub file: AtomicU64,
     pub search: AtomicU64,
-    /// The graph page asked for last (see `Request::Graph`).
-    pub graph: AtomicU64,
     /// Files tab: the directory listings wanted now.
     pub files_dirs: AtomicU64,
     /// Files tab: the file in the viewer (and its highlight). Only the Files tab moves it.
@@ -254,11 +251,9 @@ impl WriteOp {
 
 pub enum Request {
     Refs,
-    /// `topo`: git's topological order (the graph view) instead of commit-time order.
+    /// `topo`: the graph view's walk, git's topological order with a graph row per commit,
+    /// instead of commit-time order.
     Walk { session: u64, tips: Vec<CommitId>, topo: bool },
-    /// The commit graph of the walk's first `rows` rows (same `tips`, topological order).
-    /// `generation` is `Gens::graph`: a deeper page asked for cancels this one.
-    Graph { session: u64, generation: u64, tips: Vec<CommitId>, rows: usize },
     /// `upstream: None` is a branch never pushed: ahead is what pushing it would publish.
     AheadBehind { local: CommitId, upstream: Option<CommitId> },
     Rows { session: u64, ids: Vec<(usize, CommitId)> },
@@ -343,7 +338,7 @@ impl NetOp {
 impl Request {
     /// Prefetches go to the low-priority queue.
     pub fn is_background(&self) -> bool {
-        matches!(self, Request::Files { prefetch: true, .. } | Request::Search { .. } | Request::SearchPath { .. } | Request::Graph { .. })
+        matches!(self, Request::Files { prefetch: true, .. } | Request::Search { .. } | Request::SearchPath { .. })
     }
 }
 
@@ -352,7 +347,6 @@ pub enum Msg {
     HistoryStarted { session: u64, history: SharedHistory },
     HistoryProgress { session: u64, len: usize, done: bool },
     Rows { session: u64, rows: Vec<(usize, CommitRow)> },
-    Graph { session: u64, art: Arc<GraphArt> },
     /// History indices in `range` that match, ascending.
     SearchHits { generation: u64, range: Range<usize>, hits: Vec<usize> },
     SearchPaths { generation: u64, result: Result<Arc<HashSet<CommitId>>, String> },
@@ -429,7 +423,6 @@ impl std::fmt::Debug for Msg {
             Msg::HistoryStarted { session, .. } => write!(f, "HistoryStarted {{ session: {session} }}"),
             Msg::HistoryProgress { session, len, done } => write!(f, "HistoryProgress {{ session: {session}, len: {len}, done: {done} }}"),
             Msg::Rows { session, rows } => write!(f, "Rows {{ session: {session}, n: {} }}", rows.len()),
-            Msg::Graph { session, art } => write!(f, "Graph {{ session: {session}, n: {}, complete: {} }}", art.len(), art.complete()),
             Msg::SearchHits { generation, range, hits } => write!(f, "SearchHits {{ generation: {generation}, {range:?}: {} }}", hits.len()),
             Msg::SearchPaths { generation, result } => write!(f, "SearchPaths {{ generation: {generation}, {:?} }}", result.as_ref().map(|s| s.len())),
             Msg::CommitRows { rows } => write!(f, "CommitRows {{ n: {} }}", rows.len()),

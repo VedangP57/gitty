@@ -1,295 +1,436 @@
-//! The History list's commit graph: git draws it (`git log --graph`) and gitty re-skins the art.
+//! The History list's commit graph: one row per commit, its lanes laid out by gitty.
 //!
-//! Re-skinning git's own ASCII graph instead of laying out lanes, the glyph map and the lane
-//! colouring rule follow the editor druk's commit graph (https://github.com/letstri/druk, MIT,
-//! Copyright (c) Valerii Strilets).
+//! With the graph on, History lists git's topological order ([`topo_walk`]: `git rev-list
+//! --topo-order --parents`, so a commit always comes before its parents) and [`Lanes`] gives each
+//! commit a lane as the walk streams in. The rows are ready together with the list's ids.
 //!
-//! With the graph on, History lists git's topological order: [`topo_walk`] streams the ids and
-//! [`GraphArt::load`] draws the first rows with the same revisions. git keeps a graph's lane
-//! state inside the process, so a deeper page runs git from the top again; the caller doubles
-//! the pages. With a commit-graph file git streams in topological order, so a page costs about
-//! its rows and the doubled pages add up to about twice the deepest one. Without one git walks
-//! the whole history before its first line, so every page costs a full walk.
-//!
-//! Tips go to git on stdin (`--stdin`): a repository with tens of thousands of refs would
-//! overflow the argument list.
+//! A lane is two terminal columns: its own cell, then a gap that only carries horizontal links.
+//! A lane keeps the colour it was opened with until it ends, so a branch keeps one colour all
+//! the way down. Commits that more than one lane waits for (branches meeting at their fork
+//! point) take the leftmost lane and the others join it with `╯`; a merge's other parents open
+//! lanes with `╮` (`╭` on the left), or link to a lane already waiting for them.
+
+use smallvec::SmallVec;
 
 use crate::git_cli::{GitCli, Kind};
 use crate::types::CommitId;
 
-/// Separates the art from the commit id on a commit's line (`%x1f`; argv cannot hold a NUL).
-const US: u8 = 0x1f;
+const UP: u16 = 1;
+const DOWN: u16 = 2;
+const LEFT: u16 = 4;
+const RIGHT: u16 = 8;
+const DIRS: u16 = UP | DOWN | LEFT | RIGHT;
+const COMMIT: u16 = 1 << 4;
+const COLOUR: u16 = 5;
+const COLOUR_MASK: u16 = 0b111 << COLOUR;
+/// The gap after a lane carries a horizontal link, in the colour at `GAP_COLOUR`.
+const GAP: u16 = 1 << 8;
+const GAP_COLOUR: u16 = 9;
+const GAP_COLOUR_MASK: u16 = 0b111 << GAP_COLOUR;
+/// On a row's last stored lane: the row has more lanes than are stored.
+const MORE: u16 = 1 << 12;
+/// Lane colours cycle through this many indices; the theme maps each to one of its seven hues
+/// (accent, green, yellow, blue, red, magenta, cyan), so no two indices share a colour.
+pub const COLOURS: u8 = 7;
+/// Lanes stored per row: no pane draws more, and a pathological history stays small.
+const MAX_LANES: usize = 48;
 
-/// `git log --graph` output for the first rows of a history: each commit's line, then the
-/// connector lines (`|\`, `|/`…) drawn before the next commit.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GraphArt {
-    /// Every kept line's art, concatenated (git draws it in ASCII).
-    text: String,
-    /// End of each line in `text`.
-    ends: Vec<u32>,
-    /// Each commit's id and the index of its line.
-    commits: Vec<(CommitId, u32)>,
-    /// Commits kept: the line of the one after them only ends the last one's connectors.
-    max: usize,
-    /// A commit past `max` was seen: there is more history than this.
-    more: bool,
-    complete: bool,
+#[derive(Debug, Clone, Copy)]
+struct Lane {
+    /// The commit this lane leads down to.
+    want: CommitId,
+    colour: u8,
 }
 
-impl GraphArt {
-    fn new(max: usize) -> GraphArt {
-        GraphArt { max, ..Default::default() }
+/// The layout state of a topological walk: which commit each lane waits for.
+#[derive(Debug, Default)]
+pub struct Lanes {
+    lanes: Vec<Option<Lane>>,
+    opened: u32,
+}
+
+fn colour(c: u8) -> u16 {
+    u16::from(c) << COLOUR
+}
+
+impl Lanes {
+    fn open(&mut self) -> u8 {
+        let c = (self.opened % u32::from(COLOURS)) as u8;
+        self.opened = self.opened.wrapping_add(1);
+        c
     }
 
-    /// Parses `git log --graph --format=%x1f%H` output, keeping `max` commits.
-    pub fn parse(out: &[u8], max: usize) -> GraphArt {
-        let mut art = GraphArt::new(max);
-        let all = out.split(|&b| b == b'\n').all(|l| art.push_line(l));
-        art.finish(all)
+    /// The first lane free at the start of this row (lanes that end in it are not reused yet).
+    fn free(&self, busy: &[usize]) -> usize {
+        (0..).find(|&i| i >= self.lanes.len() || (self.lanes[i].is_none() && !busy.contains(&i))).expect("a free lane")
     }
 
-    /// Takes one line of output; false once the line of the commit after the last kept one
-    /// is in (the lines before it are the last commit's connectors).
-    fn push_line(&mut self, l: &[u8]) -> bool {
-        let (art, id) = match l.iter().position(|&b| b == US) {
-            Some(us) => {
-                // only the id is asked for; anything after a second separator is ignored
-                let field = l[us + 1..].split(|&b| b == US).next().unwrap_or_default();
-                let Some(id) = std::str::from_utf8(field).ok().and_then(|s| CommitId::from_hex(s.trim())) else { return true };
-                (&l[..us], Some(id))
+    /// Lays out the next commit of a topological walk and appends its row to `out`.
+    pub fn row(&mut self, id: CommitId, parents: &[CommitId], out: &mut Rows) {
+        let matches: SmallVec<[usize; 4]> = (0..self.lanes.len()).filter(|&i| self.lanes[i].is_some_and(|l| l.want == id)).collect();
+        let c = match matches.first() {
+            Some(&c) => c,
+            // a branch tip: a new lane
+            None => {
+                let c = self.free(&[]);
+                let colour = self.open();
+                if c == self.lanes.len() {
+                    self.lanes.push(None);
+                }
+                self.lanes[c] = Some(Lane { want: id, colour });
+                c
             }
-            None => (l, None),
         };
-        match id {
-            Some(_) if self.commits.len() == self.max => {
-                self.more = true;
-                return false;
+        let mut cells: SmallVec<[u16; 16]> = SmallVec::from_elem(0, self.lanes.len());
+        for (i, l) in self.lanes.iter().enumerate() {
+            if let Some(l) = l
+                && i != c
+                && !matches.contains(&i)
+            {
+                cells[i] = UP | DOWN | colour(l.colour);
             }
-            Some(id) => self.commits.push((id, self.ends.len() as u32)),
-            // nothing comes before the first commit; a blank line connects nothing
-            None if self.commits.is_empty() || art.trim_ascii().is_empty() => return true,
-            None => {}
         }
-        self.text.push_str(String::from_utf8_lossy(art).trim_end());
-        self.ends.push(self.text.len() as u32);
-        true
-    }
-
-    fn finish(mut self, read_all: bool) -> GraphArt {
-        self.complete = read_all && !self.more;
-        self
-    }
-
-    /// Runs `git log --graph` over `tips` (in [`topo_walk`]'s order) and keeps `rows` commits.
-    /// `None` when `cancelled` stopped it.
-    pub fn load(cli: &GitCli, tips: &[CommitId], rows: usize, cancelled: &dyn Fn() -> bool) -> anyhow::Result<Option<GraphArt>> {
-        let mut art = GraphArt::new(rows);
-        if tips.is_empty() {
-            return Ok(Some(art.finish(true)));
+        let own = self.lanes[c].expect("the commit's lane").colour;
+        cells[c] = COMMIT | colour(own) | if matches.is_empty() { 0 } else { UP } | if parents.is_empty() { 0 } else { DOWN };
+        // (lane, its colour, the directions it adds at its end)
+        let mut links: SmallVec<[(usize, u8, u16); 4]> = SmallVec::new();
+        let mut ended: SmallVec<[usize; 4]> = SmallVec::new();
+        // the other lanes waiting for this commit end in it
+        for &j in matches.iter().skip(1) {
+            links.push((j, self.lanes[j].expect("a waiting lane").colour, UP));
+            ended.push(j);
         }
-        // one commit more than kept: its line closes the last kept commit's connectors
-        let n = format!("-n{}", rows.saturating_add(1));
-        let args = ["--no-optional-locks", "log", "--graph", "--topo-order", "--no-color", "--no-show-signature", "--format=%x1f%H", &n, "--stdin"];
-        let read_all = cli.read_lines(cli.cmd(Kind::Read, &args), tips_input(tips), cancelled, &mut |l| art.push_line(l))?;
-        if cancelled() {
-            return Ok(None);
+        let mut busy: SmallVec<[usize; 4]> = matches.clone();
+        match parents.first() {
+            Some(&first) => self.lanes[c] = Some(Lane { want: first, colour: own }),
+            None => ended.push(c),
         }
-        Ok(Some(art.finish(read_all)))
+        for (n, &p) in parents.iter().enumerate().skip(1) {
+            // a parent listed twice links once
+            if parents[..n].contains(&p) {
+                continue;
+            }
+            match (0..self.lanes.len()).find(|&k| k != c && !ended.contains(&k) && self.lanes[k].is_some_and(|l| l.want == p)) {
+                Some(k) => links.push((k, self.lanes[k].expect("a lane").colour, 0)),
+                None => {
+                    let k = self.free(&busy);
+                    let colour = self.open();
+                    if k >= self.lanes.len() {
+                        self.lanes.resize(k + 1, None);
+                    }
+                    self.lanes[k] = Some(Lane { want: p, colour });
+                    busy.push(k);
+                    links.push((k, colour, DOWN));
+                }
+            }
+        }
+        for j in ended {
+            self.lanes[j] = None;
+        }
+        // farthest first: on a stretch two links share, the nearer one's colour wins
+        links.sort_by_key(|l| std::cmp::Reverse(l.0.abs_diff(c)));
+        for (j, lc, dirs) in links {
+            if j >= cells.len() {
+                cells.resize(j + 1, 0);
+            }
+            let (lo, hi) = (c.min(j), c.max(j));
+            cells[j] = (cells[j] & !COLOUR_MASK) | dirs | if j > c { LEFT } else { RIGHT } | colour(lc);
+            for x in lo..hi {
+                cells[x] = (cells[x] & !GAP_COLOUR_MASK) | GAP | (u16::from(lc) << GAP_COLOUR);
+                if x > lo {
+                    // an empty cell takes the link's colour; a lane crossing it keeps its own
+                    if cells[x] & DIRS == 0 {
+                        cells[x] |= colour(lc);
+                    }
+                    cells[x] |= LEFT | RIGHT;
+                }
+            }
+        }
+        while self.lanes.last().is_some_and(Option::is_none) {
+            self.lanes.pop();
+        }
+        while cells.last() == Some(&0) {
+            cells.pop();
+        }
+        if cells.len() > MAX_LANES {
+            cells.truncate(MAX_LANES);
+            cells[MAX_LANES - 1] |= MORE;
+        }
+        out.push(&cells);
     }
+}
 
-    /// Commits drawn.
+/// The rows of a graph, stored flat: two bytes per lane.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Rows {
+    cells: Vec<u16>,
+    /// End of each row in `cells`.
+    ends: Vec<u32>,
+}
+
+impl Rows {
+    fn push(&mut self, cells: &[u16]) {
+        self.cells.extend_from_slice(cells);
+        self.ends.push(self.cells.len() as u32);
+    }
+    /// Moves `other`'s rows to the end of these.
+    pub fn append(&mut self, other: &mut Rows) {
+        let base = self.cells.len() as u32;
+        self.ends.extend(other.ends.drain(..).map(|e| e + base));
+        self.cells.append(&mut other.cells);
+    }
     pub fn len(&self) -> usize {
-        self.commits.len()
+        self.ends.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty()
+        self.ends.is_empty()
     }
-    /// The whole history is drawn: no deeper page exists.
-    pub fn complete(&self) -> bool {
-        self.complete
+    pub fn get(&self, i: usize) -> Option<Row<'_>> {
+        let end = *self.ends.get(i)? as usize;
+        let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
+        Some(Row(&self.cells[start..end]))
     }
-    pub fn id(&self, i: usize) -> CommitId {
-        self.commits[i].0
-    }
-    fn line(&self, k: usize) -> &str {
-        let start = if k == 0 { 0 } else { self.ends[k - 1] as usize };
-        &self.text[start..self.ends[k] as usize]
-    }
-    /// The art on commit `i`'s own line (`| * |`).
-    pub fn commit_line(&self, i: usize) -> &str {
-        self.line(self.commits[i].1 as usize)
-    }
-    /// The connector lines between commit `i` and the next one.
-    pub fn connectors(&self, i: usize) -> impl Iterator<Item = &str> {
-        let from = self.commits[i].1 as usize + 1;
-        let to = self.commits.get(i + 1).map_or(self.ends.len(), |c| c.1 as usize);
-        (from..to).map(|k| self.line(k))
-    }
-    pub fn connector_count(&self, i: usize) -> usize {
-        let from = self.commits[i].1 as usize + 1;
-        self.commits.get(i + 1).map_or(self.ends.len(), |c| c.1 as usize) - from
+    /// Heap bytes held.
+    pub fn bytes(&self) -> usize {
+        self.cells.capacity() * 2 + self.ends.capacity() * 4
     }
 }
 
-/// Streams the ids of the commits reachable from `tips` in the order [`GraphArt::load`] draws
-/// them (`git rev-list --topo-order`). `id` returns false to stop. Returns whether the walk
-/// reached its end.
-pub fn topo_walk(cli: &GitCli, tips: &[CommitId], cancelled: &dyn Fn() -> bool, id: &mut dyn FnMut(CommitId) -> bool) -> anyhow::Result<bool> {
+/// One commit's row.
+#[derive(Debug, Clone, Copy)]
+pub struct Row<'a>(&'a [u16]);
+
+fn glyph(cell: u16) -> Option<char> {
+    if cell & COMMIT != 0 {
+        return Some('●');
+    }
+    let (u, d, l, r) = (cell & UP != 0, cell & DOWN != 0, cell & LEFT != 0, cell & RIGHT != 0);
+    Some(match (u, d, l, r) {
+        (false, false, false, false) => return None,
+        (true, true, true, true) => '┼',
+        (true, true, true, false) => '┤',
+        (true, true, false, true) => '├',
+        // a link that runs on past a lane opening or ending there: drawn as the corner
+        (false, true, true, _) => '╮',
+        (true, false, true, _) => '╯',
+        (false, true, false, true) => '╭',
+        (true, false, false, true) => '╰',
+        (_, _, false, false) => '│',
+        (false, false, _, _) => '─',
+    })
+}
+
+impl Row<'_> {
+    /// Terminal columns the row's lanes take.
+    pub fn columns(&self) -> usize {
+        (self.0.len() * 2).saturating_sub(1)
+    }
+    /// More lanes than are stored: the row is cut on the right.
+    pub fn clipped(&self) -> bool {
+        self.0.last().is_some_and(|c| c & MORE != 0)
+    }
+    /// Each column's glyph and colour index (None: blank).
+    pub fn glyphs(&self) -> impl Iterator<Item = Option<(char, u8)>> + '_ {
+        self.0.iter().enumerate().flat_map(|(i, &cell)| {
+            let own = glyph(cell).map(|g| (g, ((cell & COLOUR_MASK) >> COLOUR) as u8));
+            let gap = (cell & GAP != 0).then_some(('─', ((cell & GAP_COLOUR_MASK) >> GAP_COLOUR) as u8));
+            std::iter::once(own).chain((i + 1 < self.0.len()).then_some(gap))
+        })
+    }
+    /// The line under the row (a second line of text): every lane that goes on down.
+    pub fn filler(&self) -> impl Iterator<Item = Option<(char, u8)>> + '_ {
+        self.0.iter().enumerate().flat_map(|(i, &cell)| {
+            let own = (cell & DOWN != 0).then_some(('│', ((cell & COLOUR_MASK) >> COLOUR) as u8));
+            std::iter::once(own).chain((i + 1 < self.0.len()).then_some(None))
+        })
+    }
+    /// The glyphs as text, blanks as spaces.
+    pub fn text(&self) -> String {
+        let s: String = self.glyphs().map(|g| g.map_or(' ', |g| g.0)).collect();
+        s.trim_end().to_string()
+    }
+}
+
+/// Streams the commits reachable from `tips` with their parents, in git's topological order
+/// (`git rev-list --topo-order --parents`; tips on stdin, so tens of thousands of refs fit).
+/// `commit` returns false to stop. Returns whether the walk reached its end.
+pub fn topo_walk(cli: &GitCli, tips: &[CommitId], cancelled: &dyn Fn() -> bool, commit: &mut dyn FnMut(CommitId, &[CommitId]) -> bool) -> anyhow::Result<bool> {
     if tips.is_empty() {
         return Ok(true);
     }
-    let args = ["--no-optional-locks", "rev-list", "--topo-order", "--stdin"];
-    cli.read_lines(cli.cmd(Kind::Read, &args), tips_input(tips), cancelled, &mut |l| match std::str::from_utf8(l).ok().and_then(|s| CommitId::from_hex(s.trim())) {
-        Some(c) => id(c),
-        None => true,
-    })
-}
-
-/// `tips` one per line, for `--stdin`.
-fn tips_input(tips: &[CommitId]) -> Vec<u8> {
-    let mut v = Vec::with_capacity(tips.len() * 41);
+    let mut input = Vec::with_capacity(tips.len() * 41);
     for t in tips {
-        v.extend_from_slice(t.to_hex().as_bytes());
-        v.push(b'\n');
+        input.extend_from_slice(t.to_hex().as_bytes());
+        input.push(b'\n');
     }
-    v
-}
-
-/// One drawn cell of an art line: its column, glyph and lane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cell {
-    pub col: usize,
-    pub glyph: char,
-    pub lane: usize,
-}
-
-/// The cells of an art line in box glyphs, blanks left out. git gives each lane two columns;
-/// a diagonal belongs to the lane it reaches for. Colours go by lane, which is a column, so a
-/// branch that git shifts sideways changes colour (git's art does not say which branch a
-/// column carries; following branches needs gitty's own lane layout).
-pub fn cells(line: &str) -> impl Iterator<Item = Cell> + '_ {
-    line.chars().enumerate().filter(|(_, c)| *c != ' ').map(|(col, c)| {
-        let (glyph, lane) = match c {
-            '*' => ('●', col / 2),
-            '|' => ('│', col / 2),
-            '/' => ('╱', col.div_ceil(2)),
-            '\\' => ('╲', col.div_ceil(2)),
-            // `.` is where an octopus merge's dashes turn down into its lanes
-            '-' | '_' | '.' => ('─', col / 2),
-            c => (c, col / 2),
-        };
-        Cell { col, glyph, lane }
+    let args = ["--no-optional-locks", "rev-list", "--topo-order", "--parents", "--stdin"];
+    let mut parents: SmallVec<[CommitId; 2]> = SmallVec::new();
+    cli.read_lines(cli.cmd(Kind::Read, &args), input, cancelled, &mut |l| {
+        let mut ids = std::str::from_utf8(l).unwrap_or_default().split(' ').filter_map(|s| CommitId::from_hex(s.trim()));
+        let Some(id) = ids.next() else { return true };
+        parents.clear();
+        parents.extend(ids);
+        commit(id, &parents)
     })
-}
-
-/// A filler line under a commit line that has no connector below it (a second row of text):
-/// a vertical wherever `above` and `below` both have a line or a commit in that column.
-pub fn padding(above: &str, below: &str) -> String {
-    let v = |c: Option<char>| matches!(c, Some('|' | '*'));
-    let below: Vec<char> = below.chars().collect();
-    let line: String = above.chars().enumerate().map(|(i, c)| if v(Some(c)) && v(below.get(i).copied()) { '|' } else { ' ' }).collect();
-    line.trim_end().to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn h(n: u8) -> String {
-        format!("{n:02x}").repeat(20)
+    fn id(n: usize) -> CommitId {
+        let mut b = [0u8; 20];
+        b[..8].copy_from_slice(&(n as u64 + 1).to_be_bytes());
+        CommitId(b)
     }
-    fn id(n: u8) -> CommitId {
-        CommitId::from_hex(&h(n)).unwrap()
+
+    /// Lays out `(commit, parents)` in the given (topological) order.
+    fn layout(history: &[(usize, &[usize])]) -> (Rows, Lanes) {
+        let (mut lanes, mut rows) = (Lanes::default(), Rows::default());
+        for (c, ps) in history {
+            let ps: Vec<CommitId> = ps.iter().map(|&p| id(p)).collect();
+            lanes.row(id(*c), &ps, &mut rows);
+        }
+        (rows, lanes)
     }
-    fn out(lines: &[String]) -> Vec<u8> {
-        let mut s = lines.join("\n");
-        s.push('\n');
-        s.into_bytes()
+    fn text(history: &[(usize, &[usize])]) -> Vec<String> {
+        let (rows, _) = layout(history);
+        (0..rows.len()).map(|i| rows.get(i).unwrap().text()).collect()
     }
-    fn c(art: &str, n: u8) -> String {
-        format!("{art}\x1f{}", h(n))
-    }
-    fn rows(a: &GraphArt) -> Vec<(CommitId, String, Vec<String>)> {
-        (0..a.len()).map(|i| (a.id(i), a.commit_line(i).to_string(), a.connectors(i).map(String::from).collect())).collect()
+    fn commit_colour(r: Row<'_>) -> u8 {
+        r.glyphs().flatten().find(|g| g.0 == '●').unwrap().1
     }
 
     #[test]
-    fn linear_history() {
-        let a = GraphArt::parse(&out(&[c("* ", 1), c("* ", 2), c("* ", 3)]), 10);
-        assert_eq!(rows(&a), vec![(id(1), "*".into(), vec![]), (id(2), "*".into(), vec![]), (id(3), "*".into(), vec![])]);
-        assert!(a.complete());
+    fn linear() {
+        assert_eq!(text(&[(3, &[2]), (2, &[1]), (1, &[])]), ["●", "●", "●"]);
     }
 
     #[test]
-    fn a_merge_keeps_its_connector_rows() {
-        let lines = [c("*   ", 1), "|\\  ".into(), c("| * ", 2), c("* | ", 3), "|/  ".into(), c("* ", 4)];
-        let a = GraphArt::parse(&out(&lines), 10);
-        assert_eq!(a.len(), 4);
-        assert_eq!(a.connectors(0).collect::<Vec<_>>(), ["|\\"]);
-        assert_eq!(a.connector_count(1), 0);
-        assert_eq!(a.connectors(2).collect::<Vec<_>>(), ["|/"]);
-        assert_eq!(a.commit_line(1), "| *");
+    fn a_merge_and_its_branch_rejoin() {
+        // 4 merges 2 into 3; 2 branched from 1
+        assert_eq!(text(&[(4, &[3, 2]), (2, &[1]), (3, &[1]), (1, &[0]), (0, &[])]), ["●─╮", "│ ●", "● │", "●─╯", "●"]);
     }
 
     #[test]
-    fn an_octopus_merge_fans_out_over_several_connector_rows() {
-        let lines = [c("*-.   ", 1), "|\\ \\  ".into(), c("| | * ", 2), c("| * | ", 3), "| |/  ".into(), c("* | ", 4), "|/  ".into(), c("* ", 5)];
-        let a = GraphArt::parse(&out(&lines), 10);
-        assert_eq!(a.len(), 5);
-        assert_eq!(a.commit_line(0), "*-.");
-        assert_eq!(a.connectors(0).collect::<Vec<_>>(), ["|\\ \\"]);
-        assert_eq!(a.connectors(2).collect::<Vec<_>>(), ["| |/"]);
-        let dash: Vec<Cell> = cells("*-.").collect();
-        assert_eq!(dash.iter().map(|c| c.glyph).collect::<String>(), "●──");
+    fn two_long_lived_branches_keep_their_lanes_and_colours() {
+        let h: &[(usize, &[usize])] = &[(10, &[9]), (20, &[19]), (9, &[8]), (19, &[18]), (8, &[1]), (18, &[1]), (1, &[])];
+        assert_eq!(text(h), ["●", "│ ●", "● │", "│ ●", "● │", "│ ●", "●─╯"]);
+        let (rows, _) = layout(h);
+        let left: Vec<u8> = [0, 2, 4].iter().map(|&i| commit_colour(rows.get(i).unwrap())).collect();
+        let right: Vec<u8> = [1, 3, 5].iter().map(|&i| commit_colour(rows.get(i).unwrap())).collect();
+        assert!(left.iter().all(|&c| c == left[0]) && right.iter().all(|&c| c == right[0]) && left[0] != right[0], "{left:?} {right:?}");
+        // the join takes the colour of the lane that ends
+        let last: Vec<(char, u8)> = rows.get(6).unwrap().glyphs().flatten().collect();
+        assert_eq!(last, [('●', left[0]), ('─', right[0]), ('╯', right[0])]);
     }
 
     #[test]
-    fn only_the_id_after_the_separator_is_read() {
-        // a stray separator or odd text after the id never becomes art or a second commit
-        let lines = [format!("* \x1f{}\x1f| * \\ / ü \x1f x", h(1)), c("* ", 2)];
-        let a = GraphArt::parse(&out(&lines), 10);
-        assert_eq!(rows(&a), vec![(id(1), "*".into(), vec![]), (id(2), "*".into(), vec![])]);
+    fn an_octopus_merge_opens_and_closes_several_lanes_in_one_row() {
+        let h: &[(usize, &[usize])] = &[(9, &[1, 2, 3]), (3, &[0]), (2, &[0]), (1, &[0]), (0, &[])];
+        assert_eq!(text(h), ["●─╮─╮", "│ │ ●", "│ ● │", "● │ │", "●─╯─╯"]);
+        // each stretch of the fan-out has the colour of the lane it leads to
+        let (rows, _) = layout(h);
+        let g: Vec<u8> = rows.get(0).unwrap().glyphs().flatten().map(|g| g.1).collect();
+        assert_eq!((g[1], g[2], g[3], g[4]), (g[2], g[2], g[4], g[4]));
+        assert_ne!(g[2], g[4]);
     }
 
     #[test]
-    fn a_line_without_a_valid_id_is_skipped() {
-        let lines = [c("* ", 1), "* \x1fnot-an-id".into(), c("* ", 2)];
-        assert_eq!(GraphArt::parse(&out(&lines), 10).len(), 2);
+    fn root_commits_end_their_lanes() {
+        // two unrelated roots, then a merge of an orphan branch
+        assert_eq!(text(&[(2, &[]), (1, &[])]), ["●", "●"]);
+        let (rows, lanes) = layout(&[(5, &[4, 3]), (3, &[]), (4, &[])]);
+        assert_eq!((0..3).map(|i| rows.get(i).unwrap().text()).collect::<Vec<_>>(), ["●─╮", "│ ●", "●"]);
+        assert!(lanes.lanes.is_empty());
     }
 
     #[test]
-    fn empty_output_is_an_empty_complete_graph() {
-        let a = GraphArt::parse(b"", 10);
-        assert!(a.is_empty() && a.complete());
+    fn criss_cross_merges_link_to_the_lanes_already_waiting() {
+        let h: &[(usize, &[usize])] = &[(8, &[1, 2]), (9, &[2, 1]), (1, &[0]), (2, &[0]), (0, &[])];
+        assert_eq!(text(h), ["●─╮", "├─┼─●", "● │ │", "│ ●─╯", "●─╯"]);
     }
 
     #[test]
-    fn the_commit_after_the_page_closes_it_and_marks_more() {
-        let lines = [c("*   ", 1), "|\\  ".into(), c("| * ", 2), c("* | ", 3)];
-        let a = GraphArt::parse(&out(&lines), 1);
-        assert_eq!(a.len(), 1);
-        assert_eq!(a.connectors(0).collect::<Vec<_>>(), ["|\\"]);
-        assert!(!a.complete());
-        // exactly `max` commits in the whole history: complete
-        assert!(GraphArt::parse(&out(&[c("* ", 1)]), 1).complete());
+    fn a_freed_lane_is_reused_with_a_new_colour() {
+        // 2 is a merged orphan root: its lane ends, and the next tip takes it
+        let h: &[(usize, &[usize])] = &[(9, &[1, 2]), (2, &[]), (7, &[1]), (1, &[])];
+        assert_eq!(text(h), ["●─╮", "│ ●", "│ ●", "●─╯"]);
+        let (rows, _) = layout(h);
+        assert_ne!(commit_colour(rows.get(1).unwrap()), commit_colour(rows.get(2).unwrap()));
     }
 
     #[test]
-    fn glyphs_and_lanes() {
-        let got: Vec<(char, usize)> = cells("| | * |").map(|c| (c.glyph, c.lane)).collect();
-        assert_eq!(got, [('│', 0), ('│', 1), ('●', 2), ('│', 3)]);
-        // a diagonal takes the lane it reaches for (the higher of the two it spans)
-        let got: Vec<(usize, char, usize)> = cells("|\\ /").map(|c| (c.col, c.glyph, c.lane)).collect();
-        assert_eq!(got, [(0, '│', 0), (1, '╲', 1), (3, '╱', 2)]);
-        assert_eq!(cells("|_|/").map(|c| c.glyph).collect::<String>(), "│─│╱");
+    fn a_lane_opening_left_of_the_commit_curves_the_other_way() {
+        // 1 ends lane 0; then 2, in lane 1, opens its merge parent's lane in free lane 0
+        let h: &[(usize, &[usize])] = &[(9, &[1]), (8, &[2]), (1, &[]), (2, &[3, 4]), (4, &[3]), (3, &[])];
+        assert_eq!(text(h), ["●", "│ ●", "● │", "╭─●", "● │", "●─╯"]);
     }
 
     #[test]
-    fn padding_continues_lines_that_go_on() {
-        assert_eq!(padding("| * |", "| * |"), "| | |");
-        // a root commit's lane ends: nothing under it
-        assert_eq!(padding("| *", "*"), "|");
-        assert_eq!(padding("*", ""), "");
+    fn rows_wider_than_the_store_are_marked() {
+        let tips: Vec<(usize, Vec<usize>)> = (0..60).map(|i| (100 + i, vec![0])).collect();
+        let h: Vec<(usize, &[usize])> = tips.iter().map(|(c, p)| (*c, p.as_slice())).chain([(0, &[][..])]).collect();
+        let (rows, lanes) = layout(&h);
+        let last = rows.get(60).unwrap();
+        assert!(last.clipped() && last.columns() == MAX_LANES * 2 - 1);
+        assert!(!rows.get(0).unwrap().clipped());
+        assert!(lanes.lanes.is_empty());
+    }
+
+    #[test]
+    fn filler_continues_the_lanes_that_go_down() {
+        let (rows, _) = layout(&[(4, &[3, 2]), (2, &[1]), (3, &[1]), (1, &[])]);
+        let f = |i: usize| rows.get(i).unwrap().filler().map(|g| g.map_or(' ', |g| g.0)).collect::<String>().trim_end().to_string();
+        assert_eq!((f(0), f(1), f(3)), ("│ │".into(), "│ │".into(), "".into()));
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// A random DAG in topological order: commit `i`'s parents are later commits.
+        fn dag() -> impl Strategy<Value = Vec<Vec<usize>>> {
+            (2usize..40).prop_flat_map(|n| {
+                (0..n)
+                    .map(move |i| {
+                        let later = (i + 1)..n;
+                        if later.is_empty() { Just(Vec::new()).boxed() } else { proptest::collection::vec(later, 0..4).boxed() }
+                    })
+                    .collect::<Vec<_>>()
+            })
+        }
+
+        proptest! {
+            #[test]
+            fn every_commit_has_one_dot_and_every_parent_a_lane(parents in dag()) {
+                let mut lanes = Lanes::default();
+                let mut rows = Rows::default();
+                for (i, ps) in parents.iter().enumerate() {
+                    let ps: Vec<CommitId> = ps.iter().map(|&p| id(p)).collect();
+                    lanes.row(id(i), &ps, &mut rows);
+                    let row = rows.get(i).unwrap();
+                    prop_assert_eq!(row.glyphs().flatten().filter(|g| g.0 == '●').count(), 1);
+                    let c = row.0.iter().position(|cell| cell & COMMIT != 0).unwrap();
+                    // the commit's lane goes on down to its first parent
+                    if let Some(&first) = ps.first() {
+                        prop_assert!(lanes.lanes[c].is_some_and(|l| l.want == first));
+                        prop_assert!(row.0[c] & DOWN != 0);
+                    }
+                    // every other parent has a lane waiting for it, linked from this row
+                    for p in ps.iter().skip(1).filter(|&&p| p != ps[0]) {
+                        let k = lanes.lanes.iter().position(|l| l.is_some_and(|l| l.want == *p));
+                        prop_assert!(k.is_some(), "parent without a lane");
+                        let k = k.unwrap();
+                        prop_assert!(k < row.0.len() && row.0[k] & (LEFT | RIGHT) != 0, "parent not linked");
+                    }
+                    // every lane still open waits for a commit not yet shown
+                    for l in lanes.lanes.iter().flatten() {
+                        prop_assert!((i + 1..parents.len()).any(|j| id(j) == l.want));
+                    }
+                }
+                prop_assert!(lanes.lanes.is_empty(), "lanes left open after the last commit");
+            }
+        }
     }
 }

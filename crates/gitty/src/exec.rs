@@ -105,8 +105,10 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             };
             let stale = || !Gens::is(&gens.session, session);
             let cli = gitty_core::git_cli::GitCli::new(h.owner());
-            let walked = gitty_core::graph::topo_walk(&cli, &tips, &stale, &mut |id| {
-                chunk.push(id);
+            // the lanes are laid out as the commits stream in: each row is ready with its id
+            let mut lanes = gitty_core::graph::Lanes::default();
+            let walked = gitty_core::graph::topo_walk(&cli, &tips, &stale, &mut |id, parents| {
+                chunk.push_laid_out(id, parents, &mut lanes);
                 if chunk.len() >= if len == 0 { WALK_FIRST_CHUNK } else { WALK_CHUNK } {
                     len = publish(&mut chunk);
                     sink(Msg::HistoryProgress { session, len, done: false });
@@ -118,18 +120,6 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
                 sink(error("walking history", &e));
             }
             sink(Msg::HistoryProgress { session, len, done: true });
-        }
-        Request::Graph { session, generation, tips, rows } => {
-            // a new walk, or a deeper page of this one, makes this page useless
-            let stale = || !Gens::is(&gens.session, session) || !Gens::is(&gens.graph, generation);
-            if stale() {
-                return;
-            }
-            match gitty_core::graph::GraphArt::load(&gitty_core::git_cli::GitCli::new(h.owner()), &tips, rows, &stale) {
-                Ok(Some(art)) => sink(Msg::Graph { session, art: Arc::new(art) }),
-                Ok(None) => {}
-                Err(e) => sink(error("drawing the commit graph", &e)),
-            }
         }
         Request::Walk { session, tips, topo: false } => {
             let done = |sink: &mut dyn FnMut(Msg), len| sink(Msg::HistoryProgress { session, len, done: true });

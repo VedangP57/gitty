@@ -570,7 +570,7 @@ fn the_commit_graph_at_80_and_140_columns() {
         t.app.focus = Focus::History;
         let b = t.render(w, 24);
         let s = text(&b);
-        assert!(s.contains('●') && s.contains('╲') && s.contains('╱'), "{s}");
+        assert!(s.contains("●─╮─╮─╮") && s.contains('╯'), "the octopus opens its lanes on its own row: {s}");
         assert!(s.contains("Release 1.0") && s.contains("Parse nested lists"), "subjects stay readable: {s}");
         insta::assert_snapshot!(format!("graph_{w}_text"), s);
         insta::assert_snapshot!(format!("graph_{w}_style"), digest(&b));
@@ -623,19 +623,26 @@ fn the_graph_leaves_with_a_search_and_comes_back() {
 }
 
 #[test]
-fn a_click_on_a_connector_line_selects_the_commit_above_it() {
-    let f = graph_fixture();
-    let mut t = H::new(&f, "github-dark", (80, 24));
-    t.app.focus = Focus::History;
-    let b = t.render(80, 24);
-    let (_, merge_y) = find(&b, "Merge branch 'feature'").expect("merge row");
-    let merge = t.app.hits.history_lines[(merge_y - t.app.hits.history_rows.unwrap().y) as usize];
-    // the merge's fan-out is drawn on the line below it
-    assert!(!text(&b).lines().nth(merge_y as usize + 1).unwrap().contains("Parse"));
-    t.click(10, merge_y + 1);
-    assert_eq!(t.app.selected, merge);
-    t.click(10, merge_y + 2);
-    assert_eq!(t.app.selected, merge + 1);
+fn lanes_wider_than_the_pane_are_cut_with_a_marker() {
+    let f = Fixture::new();
+    f.write("a.txt", "x\n");
+    f.commit("Initial commit", NOW - 30 * DAY);
+    for i in 0..12 {
+        f.git(&["switch", "-q", "-c", &format!("b{i}"), "main"]);
+        f.write(&format!("b{i}.txt"), "x\n");
+        f.commit(&format!("Branch {i}"), NOW - 20 * DAY + i * DAY);
+    }
+    f.git(&["switch", "-q", "main"]);
+    let mut args = vec!["merge".to_string(), "-q".into(), "--no-edit".into()];
+    args.extend((0..12).map(|i| format!("b{i}")));
+    f.git(&args.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut t = H::new(&f, "github-dark", (180, 24));
+    t.app.ui_state.history_width = Some(43);
+    let s = text(&t.render(180, 24));
+    let pane: Vec<String> = s.lines().map(|l| l.chars().take(43).collect()).collect();
+    assert!(pane.iter().any(|l| l.contains('›')), "{}", pane.join("\n"));
+    assert!(pane.iter().any(|l| l.contains("Branch 0")), "the subjects keep their room: {}", pane.join("\n"));
+    insta::assert_snapshot!("graph_43_clipped", pane.iter().map(|l| l.trim_end().to_string() + "\n").collect::<String>());
 }
 
 #[test]

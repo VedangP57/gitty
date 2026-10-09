@@ -26,7 +26,6 @@ use gitty_core::commit_files::{FileChange, LineStats};
 use gitty_core::diff::DiffOptions;
 use gitty_core::diff::ops::WsMode;
 use gitty_core::forge::PrInfo;
-use gitty_core::graph::GraphArt;
 use gitty_core::history::{CommitDetail, CommitRow};
 use gitty_highlight::Highlights;
 use gitty_core::refs::{HistoryScope, RefsSnapshot};
@@ -48,8 +47,6 @@ const IDLE_BEFORE_LEADING_EDGE: Duration = Duration::from_millis(100);
 const NEIGHBOURS: usize = 10;
 const MAX_PREFETCH_IN_FLIGHT: usize = 20;
 const ROWS_BATCH: usize = 256;
-/// The first page of graph rows; later pages double.
-const GRAPH_PAGE: usize = 256;
 /// The History pane drops the graph below this width, before badges and dates.
 pub const GRAPH_MIN_WIDTH: u16 = 34;
 
@@ -107,8 +104,8 @@ pub struct Toast {
 pub struct Hits {
     pub panes: Panes,
     pub history_rows: Option<Rect>,
-    /// Row index of each screen line of `history_rows` (a row's text and graph lines repeat it).
-    pub history_lines: Vec<usize>,
+    pub history_first: usize,
+    pub history_row_h: u16,
     pub files_rows: Option<Rect>,
     pub files_first: usize,
     pub diff_rows: Option<Rect>,
@@ -216,13 +213,6 @@ pub struct App {
     requested_rows: HashSet<usize>,
     /// `L`: History lists git's topological order and draws its commit graph.
     pub show_graph: bool,
-    /// The walk's tips: graph pages draw the same revisions.
-    walk_tips: Vec<CommitId>,
-    /// The graph of the walk's first rows; rows below `graph_valid` are checked to be the list's.
-    pub graph: Option<Arc<GraphArt>>,
-    pub graph_valid: usize,
-    /// Rows of graph asked for in this walk (each page doubles); `usize::MAX` stops asking.
-    graph_asked: usize,
     pub selected: usize,
     pub list_scroll: usize,
     selected_id: Option<CommitId>,
@@ -381,10 +371,6 @@ impl App {
             rows: HashMap::new(),
             requested_rows: HashSet::new(),
             show_graph: false,
-            walk_tips: Vec::new(),
-            graph: None,
-            graph_valid: 0,
-            graph_asked: 0,
             selected: 0,
             list_scroll: 0,
             selected_id: None,
@@ -470,7 +456,6 @@ impl App {
 
     pub fn take_requests(&mut self) -> Vec<Request> {
         self.settle_files();
-        self.request_graph();
         std::mem::take(&mut self.outbox)
     }
     pub fn take_requests_peek(&self) -> &[Request] {
@@ -668,28 +653,12 @@ impl App {
                 if self.reselect.is_none() && self.selected_id.is_none() && len > 0 {
                     self.select_at(0);
                 }
-                // rows the graph now covers can grow connector lines
-                let checked = self.graph_valid;
-                self.check_graph();
-                if self.graph_valid > checked {
-                    self.ensure_list_visible();
-                }
                 self.request_visible_rows();
                 self.request_search_chunks();
             }
             Msg::Rows { session, rows } => {
                 if session == self.session {
                     self.rows.extend(rows);
-                }
-            }
-            Msg::Graph { session, art } => {
-                // pages answer in any order: a smaller one never replaces a bigger one
-                if session == self.session && self.graph.as_ref().is_none_or(|g| art.len() > g.len() || art.complete()) {
-                    self.graph = Some(art);
-                    self.graph_valid = 0;
-                    self.check_graph();
-                    // connector lines make rows taller
-                    self.ensure_list_visible();
                 }
             }
             Msg::AheadBehind { local, upstream, ab } => {
@@ -851,10 +820,6 @@ impl App {
         self.requested_rows.clear();
         // indices of the old walk mean nothing in the new one
         self.range_anchor = None;
-        self.graph = None;
-        self.graph_valid = 0;
-        self.graph_asked = 0;
-        self.walk_tips = tips.clone();
         self.outbox.push(Request::Walk { session: self.session, tips, topo: self.show_graph });
         self.restart_search();
     }
@@ -876,63 +841,11 @@ impl App {
     /// Whether the list draws the graph now. Hidden where the rows are not the plain history
     /// (search, path filter, a range, compare) and in a pane too narrow for it.
     pub fn graph_shown(&self) -> bool {
-        self.show_graph
-            && self.compare.is_none()
-            && !self.search_active()
-            && self.range_anchor.is_none()
-            && self.graph_fits()
+        self.show_graph && self.compare.is_none() && !self.search_active() && self.range_anchor.is_none() && self.graph_fits()
     }
 
     fn graph_fits(&self) -> bool {
         self.panes().history.map_or(self.size.0, |r| r.width) >= GRAPH_MIN_WIDTH
-    }
-
-    /// Checks the graph's rows against the list, from where the last check stopped. git draws
-    /// the same revisions in the same order as the walk listed them; should a row ever differ,
-    /// the graph stops there rather than draw lines that belong to other commits.
-    fn check_graph(&mut self) {
-        let (Some(art), Some(h)) = (&self.graph, &self.history) else { return };
-        let h = h.read().unwrap_or_else(PoisonError::into_inner);
-        let end = art.len().min(h.len());
-        let mut i = self.graph_valid;
-        while i < end && art.id(i) == h.id(i) {
-            i += 1;
-        }
-        if i < end {
-            self.graph_asked = usize::MAX;
-        }
-        self.graph_valid = i;
-    }
-
-    /// Asks for a deeper page of the graph when the list nears the end of the drawn rows.
-    fn request_graph(&mut self) {
-        if self.history_len == 0 || self.graph.as_ref().is_some_and(|g| g.complete()) || !self.graph_shown() {
-            return;
-        }
-        let mut need = self.list_scroll + 3 * self.list_capacity();
-        if self.history_done {
-            need = need.min(self.history_len);
-        }
-        if need <= self.graph_asked {
-            return;
-        }
-        // each page draws from the top. With a commit-graph file git streams, and doubling keeps
-        // the pages' total near twice the deepest; without one every page is a full walk, so
-        // doubling at least keeps their number logarithmic
-        let rows = need.next_power_of_two().max(GRAPH_PAGE);
-        self.graph_asked = rows;
-        // the smaller page still running is cancelled: this one draws its rows too
-        let generation = Gens::bump(&self.gens.graph);
-        self.outbox.push(Request::Graph { session: self.session, generation, tips: self.walk_tips.clone(), rows });
-    }
-
-    /// Screen lines of history row `i`: its text, or more where the graph draws connector lines
-    /// under it. `shown` is [`App::graph_shown`].
-    pub fn row_lines(&self, i: usize, shown: bool) -> usize {
-        match &self.graph {
-            Some(g) if shown && i < self.graph_valid => self.row_height().max(1 + g.connector_count(i)),
-            _ => self.row_height(),
-        }
     }
 
     pub fn toggle_scope(&mut self) {
@@ -1000,14 +913,11 @@ impl App {
             None => Some(self.selected),
         };
         self.load_files();
-        // the graph comes back with the range gone, and its connector lines make rows taller
-        self.ensure_list_visible();
     }
 
     pub fn end_range(&mut self) {
         if self.range_anchor.take().is_some() {
             self.load_files();
-            self.ensure_list_visible();
         }
     }
 
@@ -1160,47 +1070,12 @@ impl App {
         }
     }
 
-    /// History rows on screen from the first one shown (the graph's connector lines take room):
-    /// what a page moves by.
-    pub fn list_rows_shown(&self) -> usize {
-        let (lines, shown) = (self.list_capacity() * self.row_height(), self.graph_shown());
-        let mut used = 0;
-        // past the end of the list a row counts as one of text, so a short list pages as before
-        let n = (self.list_scroll..self.list_scroll + self.list_capacity())
-            .take_while(|&i| {
-                used += self.row_lines(i, shown);
-                used <= lines
-            })
-            .count();
-        n.max(1)
-    }
-
-    /// The furthest the list scrolls: its last row at the bottom of the pane.
-    pub fn max_list_scroll(&self) -> usize {
-        let Some(last) = self.history_len.checked_sub(1) else { return 0 };
-        let (lines, shown) = (self.list_capacity() * self.row_height(), self.graph_shown());
-        let (mut top, mut used) = (last, self.row_lines(last, shown));
-        while top > 0 && used + self.row_lines(top - 1, shown) <= lines {
-            top -= 1;
-            used += self.row_lines(top, shown);
-        }
-        top
-    }
-
     pub fn ensure_list_visible(&mut self) {
+        let cap = self.list_capacity();
         if self.selected < self.list_scroll {
             self.list_scroll = self.selected;
-        } else {
-            // rows differ in height under the graph: walk up from the selection to the highest
-            // first row that still shows all of it
-            let (lines, shown) = (self.list_capacity() * self.row_height(), self.graph_shown());
-            let mut top = self.selected;
-            let mut used = self.row_lines(top, shown);
-            while top > self.list_scroll && used + self.row_lines(top - 1, shown) <= lines {
-                top -= 1;
-                used += self.row_lines(top, shown);
-            }
-            self.list_scroll = top;
+        } else if self.selected >= self.list_scroll + cap {
+            self.list_scroll = self.selected + 1 - cap;
         }
         self.list_scroll = self.list_scroll.min(self.history_len.saturating_sub(1));
     }

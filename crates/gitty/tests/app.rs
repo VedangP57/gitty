@@ -6223,6 +6223,12 @@ fn git_ids(f: &Fixture, args: &[&str]) -> Vec<CommitId> {
     f.git(args).lines().map(id).collect()
 }
 
+/// The lanes of row `i` as text, if the walk laid them out.
+fn lanes(t: &H, i: usize) -> Option<String> {
+    let h = t.app.history.as_ref()?.read().unwrap();
+    h.graph_row(i).map(|r| r.text())
+}
+
 #[test]
 fn the_graph_is_on_by_default_and_lists_git_topological_order() {
     let f = graph_fixture();
@@ -6231,12 +6237,8 @@ fn the_graph_is_on_by_default_and_lists_git_topological_order() {
     assert!(t.app.show_graph && t.app.graph_shown());
     assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "--topo-order", "main"]));
     assert_ne!(history_ids(&t), git_ids(&f, &["rev-list", "main"]), "the fixture's time order differs");
-    let g = t.app.graph.clone().expect("the graph is drawn");
-    assert!(g.complete());
-    assert_eq!(t.app.graph_valid, t.app.history_len);
-    // the merge (row 0) draws its fan-out on a line of its own
-    assert_eq!(t.app.row_lines(0, true), 2);
-    assert_eq!(t.app.row_lines(0, false), 1);
+    let rows: Vec<String> = (0..t.app.history_len).map(|i| lanes(&t, i).expect("laid out")).collect();
+    assert_eq!(rows, ["●─╮", "│ ●", "│ ●", "● │", "● │", "●─╯"]);
 }
 
 #[test]
@@ -6251,7 +6253,7 @@ fn l_toggles_the_graph_and_the_order_and_keeps_the_selected_commit() {
     assert!(t.app.take_requests_peek().iter().any(|r| matches!(r, Request::Walk { topo: false, .. })));
     t.pump();
     assert!(!t.app.show_graph && !t.app.graph_shown());
-    assert!(t.app.graph.is_none(), "no graph is drawn while it is off");
+    assert_eq!(lanes(&t, 0), None, "a walk by date lays out no lanes");
     let by_date = git_ids(&f, &["rev-list", "main"]);
     assert_eq!(history_ids(&t), by_date);
     assert_eq!(t.selected_id(), sel);
@@ -6261,7 +6263,7 @@ fn l_toggles_the_graph_and_the_order_and_keeps_the_selected_commit() {
     assert!(t.app.graph_shown());
     assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "--topo-order", "main"]));
     assert_eq!(t.selected_id(), sel);
-    assert!(t.app.graph.is_some());
+    assert!(lanes(&t, 0).is_some());
 }
 
 #[test]
@@ -6270,7 +6272,7 @@ fn history_graph_false_walks_by_date_and_never_draws() {
     let mut t = H::by_date(&f);
     t.pump();
     assert!(!t.app.show_graph);
-    assert!(t.app.graph.is_none());
+    assert_eq!(lanes(&t, 0), None);
     assert_eq!(history_ids(&t), git_ids(&f, &["rev-list", "main"]));
     t.ch('L');
     t.pump();
@@ -6289,7 +6291,6 @@ fn the_graph_hides_for_search_path_filter_range_compare_and_narrow_panes() {
     t.key(KeyCode::Enter);
     t.pump();
     assert!(t.app.search_active() && !t.app.graph_shown());
-    assert_eq!(t.app.row_lines(0, t.app.graph_shown()), 1, "no connector lines either");
     t.key(KeyCode::Esc);
     assert!(t.app.graph_shown());
     t.ch('/');
@@ -6333,68 +6334,6 @@ fn l_in_a_pane_too_narrow_for_the_graph_says_why_nothing_shows() {
     assert!(t.app.graph_shown() && t.app.toast.is_none());
 }
 
-#[test]
-fn a_graph_page_from_an_old_walk_is_dropped() {
-    let f = graph_fixture();
-    let mut t = H::new(&f);
-    t.pump();
-    let (old, art) = (t.app.session, t.app.graph.clone().unwrap());
-    t.ch('r');
-    assert!(t.app.graph.is_none());
-    t.app.handle_msg(Msg::Graph { session: old, art });
-    assert!(t.app.graph.is_none());
-    t.pump();
-    assert!(t.app.graph.is_some());
-}
-
-#[test]
-fn a_graph_that_differs_from_the_list_stops_where_it_differs() {
-    let f = graph_fixture();
-    let mut t = H::new(&f);
-    t.pump();
-    let ids = history_ids(&t);
-    // walk again, leaving git's graph unanswered
-    t.ch('r');
-    loop {
-        let reqs: Vec<Request> = t.app.take_requests().into_iter().filter(|r| !matches!(r, Request::Graph { .. })).collect();
-        if reqs.is_empty() {
-            break;
-        }
-        for m in t.exec_all(reqs) {
-            t.app.handle_msg(m);
-        }
-    }
-    assert!(t.app.graph.is_none());
-    let out = format!("* \x1f{}\n* \x1f{}\n* \x1f{}\n", ids[0], ids[2], ids[1]);
-    let art = gitty_core::graph::GraphArt::parse(out.as_bytes(), 3);
-    t.app.handle_msg(Msg::Graph { session: t.app.session, art: Arc::new(art) });
-    assert_eq!(t.app.graph_valid, 1, "row 1 is another commit");
-    assert_eq!(t.app.row_lines(1, true), 1);
-}
-
-#[test]
-fn moving_through_rows_with_connector_lines_keeps_the_selection_on_screen() {
-    let f = Fixture::new();
-    many_merges(&f, 40);
-    let mut t = H::new(&f);
-    t.app.handle_resize(140, 12);
-    t.pump();
-    let lines = t.app.list_capacity() * t.app.row_height();
-    let shown = t.app.graph_shown();
-    assert!(shown);
-    assert!((0..t.app.history_len).any(|i| t.app.row_lines(i, shown) > 1), "the fixture has connector lines");
-    for _ in 1..t.app.history_len {
-        t.ch('j');
-        let used: usize = (t.app.list_scroll..=t.app.selected).map(|i| t.app.row_lines(i, shown)).sum();
-        assert!(used <= lines, "row {} drawn whole from {}", t.app.selected, t.app.list_scroll);
-        // and not scrolled further than needed
-        if t.app.list_scroll > 0 {
-            assert!(used + t.app.row_lines(t.app.list_scroll - 1, shown) > lines);
-        }
-    }
-    assert_eq!(t.app.selected, t.app.history_len - 1);
-}
-
 /// `n` commits on main with a side branch merged every fourth, written by fast-import (fast
 /// for big histories).
 fn many_merges(f: &Fixture, n: usize) {
@@ -6433,61 +6372,6 @@ fn many_merges(f: &Fixture, n: usize) {
 }
 
 #[test]
-fn a_deeper_graph_page_cancels_the_smaller_one_still_running() {
-    let f = Fixture::new();
-    many_merges(&f, 1200);
-    let mut t = H::new(&f);
-    // run everything but the graph page, which stays "in flight"
-    let page = |reqs: &[Request]| reqs.iter().find_map(|r| if let Request::Graph { generation, rows, .. } = r { Some((*generation, *rows)) } else { None });
-    let mut first = None;
-    for _ in 0..100 {
-        let reqs = t.app.take_requests();
-        first = first.or(page(&reqs));
-        let rest: Vec<Request> = reqs.into_iter().filter(|r| !matches!(r, Request::Graph { .. })).collect();
-        if rest.is_empty() {
-            break;
-        }
-        for m in t.exec_all(rest) {
-            t.app.handle_msg(m);
-        }
-    }
-    let first = first.expect("the first page is asked for");
-    assert_eq!(first.1, 256);
-    t.ch('G');
-    let deeper = page(&t.app.take_requests()).expect("G asks for a deeper page");
-    assert!(deeper.1 > 256);
-    assert!(!Gens::is(&t.gens.graph, first.0), "the first page's git is told to stop");
-    assert!(Gens::is(&t.gens.graph, deeper.0));
-}
-
-#[test]
-fn the_wheel_reaches_the_last_row_and_a_page_moves_by_what_is_shown() {
-    let f = Fixture::new();
-    many_merges(&f, 40);
-    let mut t = H::new(&f);
-    t.app.handle_resize(140, 12);
-    t.pump();
-    let shown = t.app.graph_shown();
-    let lines = t.app.list_capacity() * t.app.row_height();
-    assert!(t.app.list_rows_shown() < t.app.list_capacity(), "connector lines take room");
-    t.app.hits.panes = t.app.panes();
-    let r = t.app.hits.panes.history.unwrap();
-    let wheel = crossterm::event::MouseEvent { kind: crossterm::event::MouseEventKind::ScrollDown, column: r.x + 2, row: r.y + 2, modifiers: KeyModifiers::NONE };
-    for _ in 0..100 {
-        t.app.handle_mouse(wheel);
-    }
-    let len = t.app.history_len;
-    assert_eq!(t.app.list_scroll, t.app.max_list_scroll());
-    let used: usize = (t.app.list_scroll..len).map(|i| t.app.row_lines(i, shown)).sum();
-    assert!(used <= lines, "the last row fits");
-    assert!(used + t.app.row_lines(t.app.list_scroll - 1, shown) > lines, "and the pane is full");
-    t.ch('g');
-    let page = t.app.list_rows_shown();
-    t.key(KeyCode::PageDown);
-    assert_eq!(t.app.selected, page);
-}
-
-#[test]
 fn a_range_counts_its_extra_commits_in_topological_order() {
     let f = Fixture::new();
     f.write("base.txt", "0\n");
@@ -6522,22 +6406,21 @@ fn a_range_counts_its_extra_commits_in_topological_order() {
 }
 
 #[test]
-fn graph_pages_follow_the_scroll_and_join_up_with_the_first() {
+fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
     let f = Fixture::new();
     many_merges(&f, 1200);
     let mut t = H::new(&f);
     t.pump();
-    let first = t.app.graph.clone().unwrap();
-    assert_eq!(first.len(), 256, "the first page");
-    assert!(!first.complete());
-    t.ch('G');
-    t.pump();
-    let all = t.app.graph.clone().unwrap();
-    assert!(all.complete());
-    assert_eq!(all.len(), t.app.history_len);
-    assert_eq!(t.app.graph_valid, t.app.history_len, "every row checked against the list");
-    for i in 0..first.len() {
-        assert_eq!(first.commit_line(i), all.commit_line(i), "row {i}");
-        assert_eq!(first.connectors(i).collect::<Vec<_>>(), all.connectors(i).collect::<Vec<_>>(), "row {i}");
+    let len = t.app.history_len;
+    assert_eq!(len, 1200 + 1200 / 4);
+    for i in 0..len {
+        let row = lanes(&t, i).unwrap_or_else(|| panic!("row {i} has no lanes"));
+        assert_eq!(row.matches('●').count(), 1, "row {i}: {row}");
     }
+    assert_eq!(lanes(&t, len - 1).as_deref(), Some("●"), "the root ends alone");
+    // one line per commit: a page moves by the pane's rows
+    t.ch('g');
+    let page = t.app.list_capacity();
+    t.key(KeyCode::PageDown);
+    assert_eq!(t.app.selected, page);
 }

@@ -22,6 +22,8 @@ pub struct History {
     entries: Vec<u32>,
     overflow: Vec<gix::ObjectId>,
     graph: Option<Arc<Graph>>,
+    /// Graph rows of the graph view's walk, one per entry (none for a time-ordered walk).
+    lanes: crate::graph::Rows,
 }
 
 impl History {
@@ -31,6 +33,7 @@ impl History {
         let base = self.overflow.len() as u32;
         self.entries.extend(other.entries.drain(..).map(|e| if e & OVERFLOW_BIT != 0 { OVERFLOW_BIT | ((e & !OVERFLOW_BIT) + base) } else { e }));
         self.overflow.append(&mut other.overflow);
+        self.lanes.append(&mut other.lanes);
     }
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -53,10 +56,23 @@ impl History {
     }
     /// An empty history on the same commit-graph, to fill privately and [`History::append`].
     pub fn empty_like(&self) -> History {
-        History { entries: Vec::new(), overflow: Vec::new(), graph: self.graph.clone() }
+        History { entries: Vec::new(), overflow: Vec::new(), graph: self.graph.clone(), lanes: Default::default() }
     }
-    /// Appends `id`, in whatever order the caller found it (the graph view's topological walk).
-    pub fn push(&mut self, id: CommitId) {
+    /// Appends the next commit of a topological walk with its graph row, laid out by `lanes`.
+    pub fn push_laid_out(&mut self, id: CommitId, parents: &[CommitId], lanes: &mut crate::graph::Lanes) {
+        self.push(id);
+        lanes.row(id, parents, &mut self.lanes);
+    }
+    /// Row `i`'s graph row (None: a time-ordered walk, or not walked yet).
+    pub fn graph_row(&self, i: usize) -> Option<crate::graph::Row<'_>> {
+        self.lanes.get(i)
+    }
+    /// Heap bytes the graph rows hold.
+    pub fn graph_bytes(&self) -> usize {
+        self.lanes.bytes()
+    }
+    /// Appends `id`, in whatever order the caller found it.
+    fn push(&mut self, id: CommitId) {
         let oid = to_oid(id);
         match self.graph.as_ref().and_then(|g| g.lookup(oid)) {
             Some(pos) => self.entries.push(pos.0),
@@ -71,7 +87,7 @@ impl History {
 impl Handle {
     /// An empty history to fill with [`History::push`].
     pub fn empty_history(&self) -> History {
-        History { entries: Vec::new(), overflow: Vec::new(), graph: self.commit_graph().map(Arc::new) }
+        History { entries: Vec::new(), overflow: Vec::new(), graph: self.commit_graph().map(Arc::new), lanes: Default::default() }
     }
 }
 
@@ -138,7 +154,7 @@ impl Walker {
 
     /// An empty history sharing this walker's graph, to be filled by [`Walker::step`].
     pub fn new_history(&self) -> History {
-        History { entries: Vec::new(), overflow: Vec::new(), graph: self.graph.clone() }
+        History { entries: Vec::new(), overflow: Vec::new(), graph: self.graph.clone(), lanes: Default::default() }
     }
 
     fn push_graph(&mut self, p: u32) {
