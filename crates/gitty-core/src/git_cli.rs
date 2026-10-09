@@ -147,6 +147,55 @@ impl GitCli {
         Ok(got)
     }
 
+    /// Runs a read and hands each stdout line (without its `\n`) to `line` as it arrives. When
+    /// `line` returns false or `cancelled` says so (checked every 20 ms, also while git is quiet)
+    /// the process group is killed. Returns whether the output was read to its end.
+    pub fn read_lines(&self, mut cmd: Command, cancelled: &dyn Fn() -> bool, line: &mut dyn FnMut(&[u8]) -> bool) -> anyhow::Result<bool> {
+        use std::sync::mpsc::{RecvTimeoutError, sync_channel};
+        let args: Vec<String> = cmd.get_args().skip(2).map(|a| a.to_string_lossy().into_owned()).collect();
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().with_context(|| format!("running git {args:?}"))?;
+        let (out, mut err) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
+        let errs = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = err.read_to_string(&mut s);
+            s
+        });
+        // bounded: a reader that stopped early leaves git blocked on the pipe, not buffered here
+        let (tx, rx) = sync_channel::<Vec<u8>>(1024);
+        std::thread::spawn(move || {
+            for l in BufReader::new(out).split(b'\n') {
+                let Ok(l) = l else { break };
+                if tx.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+        let finished = loop {
+            if cancelled() {
+                break false;
+            }
+            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(l) if line(&l) => {}
+                Ok(_) => break false,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break true,
+            }
+        };
+        if !finished {
+            // SAFETY: the child runs in its own session (`cmd`), so its group is its pid
+            unsafe { libc::killpg(child.id() as i32, libc::SIGKILL) };
+            let _ = child.wait();
+            return Ok(false);
+        }
+        let status = child.wait()?;
+        if !status.success() {
+            let stderr = errs.join().unwrap_or_default();
+            return Err(GitError { args, code: status.code(), stderr: stderr.trim_end().to_string() }.into());
+        }
+        Ok(true)
+    }
+
     pub(crate) fn quiet(&self, kind: Kind, args: &[&str], stdin: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
         self.run(self.cmd(kind, args), stdin, &mut |_| {})
     }

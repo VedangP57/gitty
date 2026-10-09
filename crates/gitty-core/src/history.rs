@@ -1,7 +1,8 @@
 //! Commit-time ordered history walk, commit-graph native with an ODB fallback.
 //!
 //! Entries are `u32`: a commit-graph position, or `OVERFLOW_BIT | i` indexing commits that are
-//! not (yet) in the graph. Never topo-sorted: a flat list only needs commit-time order.
+//! not (yet) in the graph. Never topo-sorted: a flat list only needs commit-time order (the
+//! graph view lists git's topological order instead, see [`crate::graph`]).
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
@@ -49,6 +50,24 @@ impl History {
     pub fn ids(&self, r: Range<usize>) -> Vec<CommitId> {
         let end = r.end.min(self.len());
         (r.start.min(end)..end).map(|i| self.id(i)).collect()
+    }
+    /// Appends `id`, in whatever order the caller found it (the graph view's topological walk).
+    pub fn push(&mut self, id: CommitId) {
+        let oid = to_oid(id);
+        match self.graph.as_ref().and_then(|g| g.lookup(oid)) {
+            Some(pos) => self.entries.push(pos.0),
+            None => {
+                self.entries.push(OVERFLOW_BIT | self.overflow.len() as u32);
+                self.overflow.push(oid);
+            }
+        }
+    }
+}
+
+impl Handle {
+    /// An empty history to fill with [`History::push`].
+    pub fn empty_history(&self) -> History {
+        History { entries: Vec::new(), overflow: Vec::new(), graph: self.commit_graph().map(Arc::new) }
     }
 }
 
