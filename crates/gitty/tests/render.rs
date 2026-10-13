@@ -38,8 +38,7 @@ impl H {
         let clock = Instant::now();
         let app = App::new(AppInit {
             repo_name: "repo".into(),
-            // one line per commit unless a test asks for the roomy graph (see `roomy`)
-            config: Config { history_graph_style: GraphStyle::Compact, ..Config::default() },
+            config: Config::default(),
             registry,
             theme,
             depth: ColorDepth::True,

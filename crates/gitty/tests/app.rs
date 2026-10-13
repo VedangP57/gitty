@@ -6406,7 +6406,7 @@ fn a_range_counts_its_extra_commits_in_topological_order() {
 }
 
 #[test]
-fn every_row_of_a_long_history_has_its_lanes_and_two_lines() {
+fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
     let f = Fixture::new();
     many_merges(&f, 1200);
     let mut t = H::new(&f);
@@ -6418,8 +6418,8 @@ fn every_row_of_a_long_history_has_its_lanes_and_two_lines() {
         assert_eq!(row.matches(['●', '◉', '◎']).count(), 1, "row {i}: {row}");
     }
     assert_eq!(lanes(&t, len - 1).as_deref(), Some("●"), "the root ends alone");
-    // roomy rows are two lines: a page moves by the commits that fit
-    assert_eq!(t.app.row_height(), 2);
+    // one line per commit by default, as without the graph: a page moves by the pane's rows
+    assert_eq!(t.app.row_height(), 1);
     t.ch('g');
     let page = t.app.list_capacity();
     t.key(KeyCode::PageDown);
@@ -6431,18 +6431,17 @@ fn the_graph_style_sets_the_rows_lines_and_density_still_applies_without_the_gra
     let f = graph_fixture();
     let mut t = H::new(&f);
     t.pump();
-    assert_eq!(t.app.row_height(), 2, "roomy by default");
+    assert!(t.app.graph_shown());
+    assert_eq!(t.app.row_height(), 1, "compact by default");
+    t.ch('z');
+    assert_eq!(t.app.row_height(), 2, "comfortable density still gives two lines");
+    let mut t = H::with(&f, Config { history_graph_style: gitty::config::GraphStyle::Roomy, ..Config::default() }, None);
+    t.pump();
+    assert_eq!(t.app.row_height(), 2, "roomy");
     // without the graph (a search) the list keeps its own density
     t.ch('/');
     typed(&mut t, "f1");
     t.key(KeyCode::Enter);
     t.pump();
     assert_eq!(t.app.row_height(), 1);
-    t.key(KeyCode::Esc);
-    let mut t = H::with(&f, Config { history_graph_style: gitty::config::GraphStyle::Compact, ..Config::default() }, None);
-    t.pump();
-    assert!(t.app.graph_shown());
-    assert_eq!(t.app.row_height(), 1, "compact");
-    t.ch('z');
-    assert_eq!(t.app.row_height(), 2, "comfortable density still gives two lines");
 }

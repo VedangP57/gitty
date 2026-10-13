@@ -11,8 +11,8 @@ All notable changes to gitty are listed here. The format follows
 - A commit graph in History, laid out like lazygit's (its layout ported, MIT): `●` for commits,
   `◉` for merges and `◎` for the checked-out commit, each branch in a theme colour it keeps all
   the way down, with its labels as pills in that colour, and the current branch's line drawn
-  heavy. Each commit takes two lines, its graph lines running on through the second;
-  `history_graph_style = "compact"` gives one line per commit. With the graph on, History lists
+  heavy. Rows stay one line per commit; `history_graph_style = "roomy"` gives each commit two
+  lines, its graph lines running on through the second. With the graph on, History lists
   commits in topological order (`git rev-list --topo-order`) and lays out the graph as the walk
   streams in. `L` shows or hides it, and `history_graph = false` starts with it hidden. It steps
   aside during a search, a range, compare mode and in a History pane under 34 columns, and cuts
