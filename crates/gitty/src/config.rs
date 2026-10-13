@@ -18,13 +18,12 @@ pub enum Density {
 /// How the commit graph spaces its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GraphStyle {
-    /// One line per commit, like the list without the graph (two only when `density` is
-    /// comfortable).
+    /// Each commit's line as in the list, then a spacer line that carries only the lines going
+    /// down to the next commit, so the dots of a lane are joined. `density` adds nothing here.
     #[default]
+    Spaced,
+    /// One line per commit, dots only (two lines when `density` is comfortable).
     Compact,
-    /// Two lines per commit: the node, then its lines carried on down (and the commit's second
-    /// line of text), so the graph reads as continuous lines.
-    Roomy,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,7 +66,7 @@ impl Default for Config {
             auto_tune: true,
             files_show_ignored: true,
             history_graph: true,
-            history_graph_style: GraphStyle::Compact,
+            history_graph_style: GraphStyle::Spaced,
             difftool: None,
             keys: toml::Table::new(),
         }
@@ -153,7 +152,7 @@ impl Config {
                 "history_graph" => c.history_graph = pick(v, k, w, toml::Value::as_bool).unwrap_or(c.history_graph),
                 "history_graph_style" => {
                     c.history_graph_style = pick(v, k, w, |v| match v.as_str()? {
-                        "roomy" => Some(GraphStyle::Roomy),
+                        "spaced" => Some(GraphStyle::Spaced),
                         "compact" => Some(GraphStyle::Compact),
                         _ => None,
                     })
@@ -299,14 +298,14 @@ mod tests {
         assert!(c.auto_tune);
         assert!(c.files_show_ignored);
         assert!(c.history_graph);
-        assert_eq!(c.history_graph_style, GraphStyle::Compact);
+        assert_eq!(c.history_graph_style, GraphStyle::Spaced);
         assert_eq!(c.emph_alpha, None);
     }
 
     #[test]
-    fn an_unknown_history_graph_style_warns_and_keeps_compact() {
-        let (c, w) = load_str("history_graph_style = \"spacious\"\n");
-        assert_eq!(c.history_graph_style, GraphStyle::Compact);
+    fn an_unknown_history_graph_style_warns_and_keeps_spaced() {
+        let (c, w) = load_str("history_graph_style = \"roomy\"\n");
+        assert_eq!(c.history_graph_style, GraphStyle::Spaced);
         assert_eq!(w.len(), 1);
         assert!(w[0].contains("history_graph_style"), "{w:?}");
     }
@@ -316,7 +315,7 @@ mod tests {
         let (c, w) = load_str(
             "theme = \"dracula\"\ntab_size = 8\ndiff_algorithm = \"histogram\"\nwhitespace = \"ignore-all\"\n\
              split_threshold = 180\ndate_mode = \"both\"\ndensity = \"comfortable\"\nemph_alpha = 0.4\n\
-             auto_fetch_minutes = 0\nauto_tune = false\nfiles_show_ignored = false\nhistory_graph = false\nhistory_graph_style = \"roomy\"\ndifftool = \"code --diff\"\n",
+             auto_fetch_minutes = 0\nauto_tune = false\nfiles_show_ignored = false\nhistory_graph = false\nhistory_graph_style = \"compact\"\ndifftool = \"code --diff\"\n",
         );
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.theme, "dracula");
@@ -331,7 +330,7 @@ mod tests {
         assert!(!c.auto_tune);
         assert!(!c.files_show_ignored);
         assert!(!c.history_graph);
-        assert_eq!(c.history_graph_style, GraphStyle::Roomy);
+        assert_eq!(c.history_graph_style, GraphStyle::Compact);
         assert_eq!(c.difftool.as_deref(), Some("code --diff"));
     }
 

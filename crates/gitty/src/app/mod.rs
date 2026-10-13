@@ -537,14 +537,19 @@ impl App {
         Mode::of(self.size.0)
     }
 
-    /// Lines per History row: two in comfortable density, and two while a roomy graph shows (its
-    /// lines run on through the second line, which carries the commit's author and date).
+    /// Lines per History row: two while the spaced graph shows (the commit's line, then a
+    /// spacer with its graph lines only), else two in comfortable density.
     pub fn row_height(&self) -> usize {
-        let roomy = self.config.history_graph_style == GraphStyle::Roomy && self.graph_shown();
         match self.density {
-            Density::Compact if !roomy => 1,
-            _ => 2,
+            _ if self.graph_spaced() => 2,
+            Density::Compact => 1,
+            Density::Comfortable => 2,
         }
+    }
+
+    /// The graph shows with a spacer line under each commit (`density` adds nothing then).
+    pub fn graph_spaced(&self) -> bool {
+        self.config.history_graph_style == GraphStyle::Spaced && self.graph_shown()
     }
 
     /// Commits visible in the history pane (one title row).

@@ -124,8 +124,10 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         if let Some(g) = graph {
             let x = rows.x + 3;
             draw_graph(app, buf, x, y, graph_w, &g.cells, g.clipped, bg);
-            if row_h > 1 && y + 1 < rows.bottom() {
-                // a second line of text: the lanes that go on down carry on through it
+            // the line under the commit (the spaced graph's spacer, or comfortable density's
+            // second line of text) carries the lines going down to the next commit; under the
+            // last row loaded there is no next commit to lead to
+            if row_h > 1 && y + 1 < rows.bottom() && i + 1 < app.history_len {
                 draw_graph(app, buf, x, y + 1, graph_w, &g.filler, false, bg);
             }
         }
@@ -247,7 +249,7 @@ fn draw_compare(app: &mut App, buf: &mut Buffer, r: Rect) {
     }
 }
 
-/// One commit row at `y` (and the line below it in comfortable density), leaving `graph_w`
+/// One commit row at `y` (and its second line of text in comfortable density), leaving `graph_w`
 /// columns after the marker for the graph.
 #[allow(clippy::too_many_arguments)]
 fn draw_row(app: &App, buf: &mut Buffer, rows: Rect, y: u16, id: gitty_core::CommitId, row: Option<&CommitRow>, bg: ratatui::style::Color, hit: bool, graph_w: u16, lane: Option<ratatui::style::Color>) {
@@ -284,8 +286,9 @@ fn draw_row(app: &App, buf: &mut Buffer, rows: Rect, y: u16, id: gitty_core::Com
     let badges: Vec<(String, Style)> = labels.iter().map(|l| (format!(" {} ", truncate_end(&l.name, MAX_BADGE)), badge_style(app, l, lane))).collect();
     let badges_w: u16 = badges.iter().map(|(s, _)| width(s) + 1).sum();
     let avail = right.saturating_sub(x0);
-    // the second line carries author and date (comfortable density, or a roomy graph)
-    let comfortable = app.row_height() > 1;
+    // a second line of text: author and date (comfortable density; the spaced graph keeps its
+    // spacer for the graph lines only)
+    let comfortable = app.row_height() > 1 && !app.graph_spaced();
     let meta_w = if comfortable { 0 } else { width(&ini) + 1 + width(&date) + 1 };
     let (show_badges, show_date) = if avail >= MIN_SUMMARY + badges_w + meta_w {
         (true, true)

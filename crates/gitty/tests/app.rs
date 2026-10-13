@@ -6406,7 +6406,7 @@ fn a_range_counts_its_extra_commits_in_topological_order() {
 }
 
 #[test]
-fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
+fn every_row_of_a_long_history_has_its_lanes_and_a_spacer() {
     let f = Fixture::new();
     many_merges(&f, 1200);
     let mut t = H::new(&f);
@@ -6418,8 +6418,8 @@ fn every_row_of_a_long_history_has_its_lanes_and_one_line() {
         assert_eq!(row.matches(['●', '◉', '◎']).count(), 1, "row {i}: {row}");
     }
     assert_eq!(lanes(&t, len - 1).as_deref(), Some("●"), "the root ends alone");
-    // one line per commit by default, as without the graph: a page moves by the pane's rows
-    assert_eq!(t.app.row_height(), 1);
+    // a commit's line and its spacer: a page moves by the commits that fit
+    assert_eq!(t.app.row_height(), 2);
     t.ch('g');
     let page = t.app.list_capacity();
     t.key(KeyCode::PageDown);
@@ -6431,17 +6431,44 @@ fn the_graph_style_sets_the_rows_lines_and_density_still_applies_without_the_gra
     let f = graph_fixture();
     let mut t = H::new(&f);
     t.pump();
-    assert!(t.app.graph_shown());
-    assert_eq!(t.app.row_height(), 1, "compact by default");
+    assert!(t.app.graph_shown() && t.app.graph_spaced());
+    assert_eq!(t.app.row_height(), 2, "spaced by default: the commit's line and a spacer");
     t.ch('z');
-    assert_eq!(t.app.row_height(), 2, "comfortable density still gives two lines");
-    let mut t = H::with(&f, Config { history_graph_style: gitty::config::GraphStyle::Roomy, ..Config::default() }, None);
-    t.pump();
-    assert_eq!(t.app.row_height(), 2, "roomy");
+    assert_eq!(t.app.row_height(), 2, "comfortable density adds nothing to the spaced graph");
+    t.ch('z');
     // without the graph (a search) the list keeps its own density
     t.ch('/');
     typed(&mut t, "f1");
     t.key(KeyCode::Enter);
     t.pump();
+    assert!(!t.app.graph_spaced());
     assert_eq!(t.app.row_height(), 1);
+    let mut t = H::with(&f, Config { history_graph_style: gitty::config::GraphStyle::Compact, ..Config::default() }, None);
+    t.pump();
+    assert_eq!(t.app.row_height(), 1, "compact");
+    t.ch('z');
+    assert_eq!(t.app.row_height(), 2, "comfortable density gives compact two lines");
+}
+
+#[test]
+fn a_click_on_a_spacer_selects_the_commit_above_it() {
+    let f = graph_fixture();
+    let mut t = H::new(&f);
+    t.app.handle_resize(120, 30);
+    t.pump();
+    t.app.hits.panes = t.app.panes();
+    let r = t.app.hits.panes.history.unwrap();
+    // the list starts one line under the pane's title; commit 2's line, then its spacer
+    t.app.hits.history_rows = Some(ratatui::layout::Rect::new(r.x, r.y + 1, r.width, r.height - 1));
+    t.app.hits.history_first = 0;
+    t.app.hits.history_row_h = t.app.row_height() as u16;
+    let click = |t: &mut H, row: u16| {
+        let m = |kind| crossterm::event::MouseEvent { kind, column: r.x + 10, row, modifiers: KeyModifiers::NONE };
+        t.app.handle_mouse(m(crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left)));
+        t.app.handle_mouse(m(crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)));
+    };
+    click(&mut t, r.y + 1 + 2 * 2 + 1);
+    assert_eq!(t.app.selected, 2, "the spacer under commit 2");
+    click(&mut t, r.y + 1 + 3 * 2);
+    assert_eq!(t.app.selected, 3, "commit 3's own line");
 }

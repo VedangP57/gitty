@@ -96,9 +96,10 @@ The History tab lists the commits of the checked-out branch and its upstream (`r
 branches and tags). A graph column to the left of the subjects draws the branches the way
 [lazygit](https://github.com/jesseduffield/lazygit) does (its layout, ported): `●` for a commit,
 `◉` for a merge and `◎` for the checked-out commit, `╮` where a merge brings a branch in and `╯`
-where a branch joins back. Rows stay one line per commit, as without the graph;
-`history_graph_style = "roomy"` gives each commit two lines, its graph lines running on through
-the second next to the author and date. The current branch, the checked-out commit's first-parent line, is drawn heavy (`┃`). A
+where a branch joins back. Each commit keeps its one line from the list (subject, author, age,
+labels), and a spacer line under it carries only the graph's lines going down to the next commit,
+so the dots of a branch are joined; `density` adds nothing to it. `history_graph_style = "compact"`
+drops the spacers for one line per commit. The current branch, the checked-out commit's first-parent line, is drawn heavy (`┃`). A
 branch keeps its theme colour from top to bottom, its labels are pills in that colour, and lines
 wider than the pane allows are cut with `›`. With the graph on, the list is in topological order (from
 `git rev-list --topo-order`, so a branch's commits stay together); `L` hides it and lists commits by
@@ -345,7 +346,7 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `auto_tune` | `true` | tune large repositories (see below) |
 | `files_show_ignored` | `true` | list ignored files in the Files tab when it starts (`i` toggles them there) |
 | `history_graph` | `true` | start History with the commit graph and topological order (`L` toggles) |
-| `history_graph_style` | `"compact"` | `"compact"`: one line per commit with the graph (two in comfortable `density`); `"roomy"`: two lines per commit, the graph's lines running on through the second (with the author and date) |
+| `history_graph_style` | `"spaced"` | `"spaced"`: each commit's line, then a spacer line with only the graph's lines (comfortable `density` adds nothing); `"compact"`: one line per commit (two in comfortable `density`). Any other value, including the former `"roomy"`, warns and keeps `"spaced"` |
 | `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 

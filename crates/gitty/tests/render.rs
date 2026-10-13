@@ -562,7 +562,7 @@ fn graph_fixture() -> Fixture {
     f
 }
 
-const GRAPH_STYLES: [(GraphStyle, &str); 2] = [(GraphStyle::Roomy, "roomy"), (GraphStyle::Compact, "compact")];
+const GRAPH_STYLES: [(GraphStyle, &str); 2] = [(GraphStyle::Spaced, "spaced"), (GraphStyle::Compact, "compact")];
 
 #[test]
 fn the_commit_graph_at_80_and_140_columns() {
@@ -603,20 +603,23 @@ fn a_43_column_history_pane_keeps_the_graph() {
 }
 
 #[test]
-fn roomy_rows_continue_every_lane_and_carry_the_second_line() {
+fn spacers_carry_only_the_lines_going_down() {
     let f = graph_fixture();
     let mut t = H::new(&f, "github-dark", (80, 30));
-    t.app.config.history_graph_style = GraphStyle::Roomy;
     t.app.focus = Focus::History;
     let b = t.render(80, 30);
     let s = text(&b);
     let lines: Vec<&str> = s.lines().collect();
     let (_, y) = find(&b, "Release 1.0").unwrap();
-    // HEAD's node, then its heavy line on with the author and date beside it
-    assert!(lines[y as usize].contains("◎ Release 1.0"), "{s}");
-    assert!(lines[y as usize + 1].contains("┃ TU Test User"), "{s}");
-    let (_, y) = find(&b, "Update lint").unwrap();
-    assert!(lines[y as usize + 1].contains("┃ │ │ │ TU Test User"), "{s}");
+    // the commit's line is the list's own (initials and date on it); the spacer under it holds
+    // HEAD's heavy line and nothing else
+    assert!(lines[y as usize].contains("◎ Release 1.0") && lines[y as usize].trim_end().ends_with("TU Sep 10"), "{s}");
+    assert_eq!(lines[y as usize + 1].trim(), "┃", "{s}");
+    let (_, y) = find(&b, "Merge branches").unwrap();
+    assert_eq!(lines[y as usize + 1].trim(), "┃ │ │ │", "the octopus's lines all go on down: {s}");
+    // the last commit has nothing below it
+    let (_, y) = find(&b, "Initial commit").unwrap();
+    assert_eq!(lines[y as usize + 1].trim(), "", "{s}");
     // a click on either line selects the commit
     let (_, y) = find(&b, "Update ci").unwrap();
     t.click(40, y + 1);
@@ -648,6 +651,8 @@ fn branch_labels_take_their_commits_lane_colour() {
 fn comfortable_rows_carry_the_lanes_through_their_second_line() {
     let f = graph_fixture();
     let mut t = H::new(&f, "github-dark", (80, 30));
+    // comfortable density only adds a line to the compact graph
+    t.app.config.history_graph_style = GraphStyle::Compact;
     t.app.focus = Focus::History;
     t.key(KeyCode::Char('z'));
     insta::assert_snapshot!("graph_80_comfortable", text(&t.render(80, 30)));
@@ -708,9 +713,9 @@ fn lanes_wider_than_the_pane_are_cut_with_a_marker() {
     let mut args = vec!["merge".to_string(), "-q".into(), "--no-edit".into()];
     args.extend((0..12).map(|i| format!("b{i}")));
     f.git(&args.iter().map(String::as_str).collect::<Vec<_>>());
-    let mut t = H::new(&f, "github-dark", (180, 24));
+    let mut t = H::new(&f, "github-dark", (180, 34));
     t.app.ui_state.history_width = Some(43);
-    let s = text(&t.render(180, 24));
+    let s = text(&t.render(180, 34));
     let pane: Vec<String> = s.lines().map(|l| l.chars().take(43).collect()).collect();
     assert!(pane.iter().any(|l| l.contains('›')), "{}", pane.join("\n"));
     assert!(pane.iter().any(|l| l.contains("Branch 0")), "the subjects keep their room: {}", pane.join("\n"));
@@ -1278,6 +1283,8 @@ fn shift_click_extends_a_range_and_the_header_shows_it() {
         f.commit(&format!("change {i}"), NOW - DAY + i * 60);
     }
     let mut t = H::new(&f, "github-dark", (140, 40));
+    // one line per commit, so the line under a commit is the next one
+    t.app.config.history_graph_style = GraphStyle::Compact;
     let b = t.render(140, 40);
     let (x, y) = find(&b, "change 2").unwrap();
     let m = |kind| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::SHIFT };
