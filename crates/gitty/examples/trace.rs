@@ -19,23 +19,28 @@ fn main() {
     exec(&h, Request::Refs, &mut |m| if let Msg::Refs { refs: r, .. } = m { refs = Some(r) }, &gens);
     println!("refs             {:>8.1} ms", t.elapsed().as_secs_f64() * 1e3);
     let tips = refs.unwrap().tips(HistoryScope::HeadAndUpstream);
-    let t = Instant::now();
-    let mut first = None;
     let mut hist = None;
-    let mut msgs = 0;
-    exec(&h, Request::Walk { session: 0, tips }, &mut |m| {
-        msgs += 1;
-        match m {
-            Msg::HistoryStarted { history, .. } => hist = Some(history),
-            Msg::HistoryProgress { len, .. } if first.is_none() => first = Some((len, t.elapsed())),
-            _ => {}
-        }
-    }, &gens);
-    let (n, d) = first.unwrap();
-    println!("walk first chunk {:>8.1} ms ({n} rows)", d.as_secs_f64() * 1e3);
+    // by date, then in topological order with the graph's lanes
+    for topo in [false, true] {
+        let t = Instant::now();
+        let mut first = None;
+        let mut msgs = 0;
+        exec(&h, Request::Walk { session: 0, tips: tips.clone(), topo, head: None }, &mut |m| {
+            msgs += 1;
+            match m {
+                Msg::HistoryStarted { history, .. } => hist = Some(history),
+                Msg::HistoryProgress { len, .. } if first.is_none() => first = Some((len, t.elapsed())),
+                _ => {}
+            }
+        }, &gens);
+        let (n, d) = first.unwrap();
+        let order = if topo { "topo" } else { "date" };
+        println!("walk {order} first  {:>8.1} ms ({n} rows)", d.as_secs_f64() * 1e3);
+        let h = hist.as_ref().unwrap().read().unwrap();
+        println!("walk {order} total  {:>8.1} ms ({} rows, {msgs} msgs, lanes {} KiB)", t.elapsed().as_secs_f64() * 1e3, h.len(), h.graph_bytes() / 1024);
+    }
     let hist = hist.unwrap();
     let len = hist.read().unwrap().len();
-    println!("walk total       {:>8.1} ms ({len} rows, {msgs} msgs)", t.elapsed().as_secs_f64() * 1e3);
     let ids: Vec<_> = { let h = hist.read().unwrap(); (0..100).map(|i| (i, h.id(i))).collect() };
     let t = Instant::now();
     exec(&h, Request::Rows { session: 0, ids: ids.clone() }, &mut |_| {}, &gens);

@@ -90,6 +90,24 @@ panes and `?` shows every key. The mouse works throughout: click to select, scro
 gutter to pick lines, Shift-click for a commit range, and double-click a file or diff line to
 open it in `$EDITOR` at that line.
 
+### History
+
+The History tab lists the commits of the checked-out branch and its upstream (`r` switches to all
+branches and tags). A graph column to the left of the subjects draws the branches the way
+[lazygit](https://github.com/jesseduffield/lazygit) does (its layout, ported): `●` for a commit,
+`◉` for a merge and `◎` for the checked-out commit, `╮` where a merge brings a branch in and `╯`
+where a branch joins back. Each commit keeps its one line from the list (subject, author, age,
+labels), and a spacer line under it carries only the graph's lines going down to the next commit,
+so the dots of a branch are joined; `density` adds nothing to it. `history_graph_style = "compact"`
+drops the spacers for one line per commit. The current branch, the checked-out commit's first-parent line, is drawn heavy (`┃`). A
+branch keeps its theme colour from top to bottom, its labels are pills in that colour, and lines
+wider than the pane allows are cut with `›`. With the graph on, the list is in topological order (from
+`git rev-list --topo-order`, so a branch's commits stay together); `L` hides it and lists commits by
+date (`history_graph = false` starts that way). The graph steps aside during a search, a range (`V`)
+and compare mode, and in a History pane narrower than 34 columns. On a large repository without a
+commit-graph file the first rows wait for git to sort the whole history (about a third of a second
+per 100,000 commits here); with one (auto-tune writes it) they show at once.
+
 ### Files
 
 The Files tab (`3`) browses the working tree, ignored files included, and shows the selected file
@@ -280,6 +298,7 @@ reported at startup:
 | `o` | expand the commit header | `header` |
 | `D` | date format | `dates` |
 | `z` | row density | `density` |
+| `L` | show or hide the commit graph | `graph` |
 | `h` `←` | scroll the diff left | `scroll_left` |
 | `l` `→` | scroll the diff right | `scroll_right` |
 | `[` | previous hunk | `prev_hunk` |
@@ -326,6 +345,8 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `auto_fetch_minutes` | `5` | 0 turns the background fetch off |
 | `auto_tune` | `true` | tune large repositories (see below) |
 | `files_show_ignored` | `true` | list ignored files in the Files tab when it starts (`i` toggles them there) |
+| `history_graph` | `true` | start History with the commit graph and topological order (`L` toggles) |
+| `history_graph_style` | `"spaced"` | `"spaced"`: each commit's line, then a spacer line with only the graph's lines (comfortable `density` adds nothing); `"compact"`: one line per commit (two in comfortable `density`). Any other value, including the former `"roomy"`, warns and keeps `"spaced"` |
 | `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 

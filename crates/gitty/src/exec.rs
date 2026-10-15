@@ -92,7 +92,36 @@ pub fn exec(h: &Handle, req: Request, sink: &mut dyn FnMut(Msg), gens: &Gens) {
             }
             Err(e) => sink(error("reading refs", &e)),
         },
-        Request::Walk { session, tips } => {
+        Request::Walk { session, tips, topo: true, head } => {
+            let history = Arc::new(RwLock::new(h.empty_history()));
+            sink(Msg::HistoryStarted { session, history: history.clone() });
+            let mut chunk = history.read().unwrap_or_else(PoisonError::into_inner).empty_like();
+            let mut len = 0;
+            // fill a private chunk; hold the lock only to publish it
+            let publish = |chunk: &mut gitty_core::history::History| {
+                let mut shared = history.write().unwrap_or_else(PoisonError::into_inner);
+                shared.append(chunk);
+                shared.len()
+            };
+            let stale = || !Gens::is(&gens.session, session);
+            let cli = gitty_core::git_cli::GitCli::new(h.owner());
+            // the lanes are laid out as the commits stream in: each row is ready with its id
+            let mut lanes = gitty_core::graph::Lanes::new(head);
+            let walked = gitty_core::graph::topo_walk(&cli, &tips, &stale, &mut |id, parents| {
+                chunk.push_laid_out(id, parents, &mut lanes);
+                if chunk.len() >= if len == 0 { WALK_FIRST_CHUNK } else { WALK_CHUNK } {
+                    len = publish(&mut chunk);
+                    sink(Msg::HistoryProgress { session, len, done: false });
+                }
+                true
+            });
+            len = publish(&mut chunk);
+            if let Err(e) = walked {
+                sink(error("walking history", &e));
+            }
+            sink(Msg::HistoryProgress { session, len, done: true });
+        }
+        Request::Walk { session, tips, topo: false, .. } => {
             let done = |sink: &mut dyn FnMut(Msg), len| sink(Msg::HistoryProgress { session, len, done: true });
             let mut walker = match h.walker(&tips) {
                 Ok(w) => w,

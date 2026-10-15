@@ -165,7 +165,8 @@ impl App {
             }
             Action::StageHunk => self.toggle_hunk(),
             // history-only: compare mode shows its own lists
-            Action::Search | Action::NextMatch | Action::PrevMatch | Action::Range | Action::Scope if comparing => {}
+            Action::Search | Action::NextMatch | Action::PrevMatch | Action::Range | Action::Scope | Action::Graph if comparing => {}
+            Action::Graph => self.toggle_graph(),
             Action::Search => self.open_search(),
             Action::NextMatch => self.search_step(true),
             Action::PrevMatch => self.search_step(false),
