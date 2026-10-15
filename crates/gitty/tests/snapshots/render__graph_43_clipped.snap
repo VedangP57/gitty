@@ -5,7 +5,7 @@ expression: "pane.iter().map(|l| l.trim_end().to_string() + \"\\n\").collect::<S
  gitty repo  ⎇ main
  History · 14
    ◎─┬─┬─┬─┬─┬─┬─› Merge branches 'b0'… TU
-   ┃ │ │ │ │ │ │ ›▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   ┃ │ │ │ │ │ │ ›
    ┃ │ │ │ │ │ │ ● Branch 11            TU
    ┃ │ │ │ │ │ │ ›
    ┃ │ │ │ │ │ │ ● Branch 10            TU

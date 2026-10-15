@@ -614,8 +614,7 @@ fn spacers_carry_only_the_lines_going_down() {
     // the commit's line is the list's own (initials and date on it); the spacer under it holds
     // HEAD's heavy line and nothing else
     assert!(lines[y as usize].contains("◎ Release 1.0") && lines[y as usize].trim_end().ends_with("TU Sep 10"), "{s}");
-    // (it is selected, so the bar's lower half runs along the spacer right of the graph)
-    assert_eq!(lines[y as usize + 1].replace('▀', " ").trim(), "┃", "{s}");
+    assert_eq!(lines[y as usize + 1].trim(), "┃", "{s}");
     let (_, y) = find(&b, "Merge branches").unwrap();
     assert_eq!(lines[y as usize + 1].trim(), "┃ │ │ │", "the octopus's lines all go on down: {s}");
     // the last commit has nothing below it
@@ -630,104 +629,45 @@ fn spacers_carry_only_the_lines_going_down() {
     assert_eq!(t.app.rows.get(&sel).map(|r| r.summary.as_str()), Some("Update ci"));
 }
 
-/// The (symbol, fg, bg) of a cell.
-fn cell(b: &Buffer, x: u16, y: u16) -> (String, Color, Color) {
-    let c = &b[(x, y)];
-    (c.symbol().to_string(), c.fg, c.bg)
-}
-
 #[test]
-fn the_spaced_selection_bar_sits_half_a_line_above_and_below_the_commit() {
-    let f = graph_fixture();
-    let mut t = H::new(&f, "github-dark", (80, 30));
-    t.app.focus = Focus::History;
-    let (sel, bg) = (t.app.theme.ui.selection, t.app.theme.ui.bg);
-    let b = t.render(80, 30);
-    let (tx, y) = find(&b, "Update ci").unwrap();
-    t.click(tx, y);
-    let b = t.render(80, 30);
-    let node = (3..tx).find(|&x| gitty_core::graph::is_node(b[(x, y)].symbol().chars().next().unwrap_or(' '))).unwrap();
-    // the commit's own line is the bar's middle, right of the graph; the margin and the graph
-    // keep the list's background, and the dot shows the selection as a pill in its lane colour
-    for x in 0..tx - 1 {
-        if x != node {
-            assert_eq!(b[(x, y)].bg, bg, "margin and graph, x {x}");
-        }
-    }
-    assert_eq!(b[(node, y)].fg, bg);
-    assert!(t.app.theme.ui.lanes.contains(&b[(node, y)].bg));
-    assert_eq!(b[(tx - 1, y)].bg, sel);
-    assert_eq!(b[(tx, y)].bg, sel);
-    assert_eq!(b[(70, y)].bg, sel);
-    // right of the graph, the line above ends in the bar's top half and the spacer under it
-    // starts with its bottom half, both in the selection colour over the list's
-    for x in [tx - 1, tx, 40, 79] {
-        assert_eq!(cell(&b, x, y - 1), ("▄".into(), sel, bg), "above, x {x}");
-        assert_eq!(cell(&b, x, y + 1), ("▀".into(), sel, bg), "below, x {x}");
-    }
-    // in the graph the lines go on unbroken, on the list's background
-    for x in 1..tx - 1 {
-        for yy in [y - 1, y + 1] {
-            let (s, _, cbg) = cell(&b, x, yy);
-            assert!(s != "▄" && s != "▀", "{x},{yy}");
-            assert_eq!(cbg, bg, "{x},{yy}");
-        }
-    }
-    assert_eq!(b[(node, y + 1)].symbol(), "│");
-    // the other rows have no bar
-    let s = text(&b);
-    let halves = |s: &str| s.lines().enumerate().filter(|(_, l)| l.contains('▄') || l.contains('▀')).map(|(i, _)| i as u16).collect::<Vec<_>>();
-    assert_eq!(halves(&s), vec![y - 1, y + 1], "{s}");
-    // a click on the half line above selects the commit above it (its spacer), below keeps it
-    t.click(40, y + 1);
-    assert_eq!(t.app.rows.get(&t.app.selected).map(|r| r.summary.as_str()), Some("Update ci"));
-    t.click(40, y - 1);
-    assert_eq!(t.app.rows.get(&t.app.selected).map(|r| r.summary.as_str()), Some("Update lint"));
-    // unfocused, the bar takes the inactive selection colour
-    // (wide enough that the diff shows beside the list)
-    let mut t = H::new(&f, "github-dark", (140, 30));
-    t.app.focus = Focus::History;
-    t.key(KeyCode::Char('j'));
-    t.app.focus = Focus::Diff;
-    let b = t.render(140, 30);
-    let (_, y) = find(&b, "◉─┬").unwrap();
-    assert_eq!(cell(&b, 30, y - 1), ("▄".into(), t.app.theme.ui.selection_inactive, bg), "{}", text(&b));
-    assert_eq!(b[(30, y)].bg, t.app.theme.ui.selection_inactive);
-    // and the dot sits on it, in its lane colour
-    assert_eq!(b[(3, y)].symbol(), "◉");
-    assert_eq!(b[(3, y)].bg, t.app.theme.ui.selection_inactive);
-    assert!(t.app.theme.ui.lanes.contains(&b[(3, y)].fg));
-    assert_eq!(b[(1, y)].bg, bg);
-}
-
-#[test]
-fn the_spaced_bar_at_the_ends_of_the_list_and_in_the_compact_graph() {
+fn the_spaced_selection_is_the_commits_line_alone() {
     let f = graph_fixture();
     let mut t = H::new(&f, "github-dark", (80, 30));
     t.app.focus = Focus::History;
     let ui = t.app.theme.ui.clone();
-    // the first row has the title above it: the bar starts at the commit's line
     let b = t.render(80, 30);
-    let (_, y) = find(&b, "Release 1.0").unwrap();
-    assert_eq!(b[(0, y - 1)].bg, ui.bg);
-    assert!(!text(&b).lines().nth(y as usize - 1).unwrap().contains('▄'));
-    assert_eq!(cell(&b, 40, y + 1), ("▀".into(), ui.selection, ui.bg));
-    // the last commit still gets its lower half, under an empty spacer
-    let (x, y) = find(&b, "Initial commit").unwrap();
-    t.click(x, y);
+    let (tx, y) = find(&b, "Update ci").unwrap();
+    t.click(tx, y);
     let b = t.render(80, 30);
-    assert_eq!(cell(&b, 40, y - 1), ("▄".into(), ui.selection, ui.bg));
-    assert_eq!(cell(&b, 40, y + 1), ("▀".into(), ui.selection, ui.bg));
-    // the compact graph keeps a one-line bar
-    t.app.config.history_graph_style = GraphStyle::Compact;
-    let b = t.render(80, 30);
+    // the whole line, margin, graph, subject, initials and date, as in the list without the graph
+    // (all but the branch's pill, which keeps its lane colour)
+    let line = text(&b).lines().nth(y as usize).unwrap().to_string();
+    assert!(line.trim_end().ends_with(" ci  TU Sep 8"), "{line}");
+    let pill = line[..line.rfind(" ci ").unwrap()].chars().count() as u16;
+    for x in (0..80).filter(|x| !(pill..pill + 4).contains(x)) {
+        assert_eq!(b[(x, y)].bg, ui.selection, "x {x}");
+    }
+    // the dot is drawn like any other, in its lane colour
+    let node = (3..tx).find(|&x| gitty_core::graph::is_node(b[(x, y)].symbol().chars().next().unwrap_or(' '))).unwrap();
+    assert!(ui.lanes.contains(&b[(node, y)].fg));
+    // the spacers above and below are not, and still carry the lines
+    for yy in [y - 1, y + 1] {
+        for x in 0..80 {
+            assert_eq!(b[(x, yy)].bg, ui.bg, "{x},{yy}");
+        }
+    }
+    assert_eq!(b[(node, y + 1)].symbol(), "│");
     let s = text(&b);
     assert!(!s.contains('▄') && !s.contains('▀'), "{s}");
-    // over the whole row, graph included
-    let (_, y) = find(&b, "Initial commit").unwrap();
-    assert_eq!(b[(1, y)].bg, ui.selection);
-    assert_eq!(b[(3, y)].bg, ui.selection);
-    assert_eq!(b[(40, y)].bg, ui.selection);
+    // unfocused, the inactive selection colour (wide enough that the files show beside the list)
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.focus = Focus::Files;
+    let b = t.render(140, 30);
+    let (_, y) = find(&b, "◎ Release 1.0").unwrap();
+    assert_eq!(b[(1, y)].bg, ui.selection_inactive);
+    assert_eq!(b[(20, y)].bg, ui.selection_inactive);
+    assert_eq!(b[(1, y + 1)].bg, ui.bg);
+    assert_eq!(b[(20, y + 1)].bg, ui.bg);
 }
 
 #[test]

@@ -108,7 +108,6 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let app: &App = app;
     let focused = app.focus == Focus::History;
     let range = app.selected_range();
-    let mut bar = None;
     for (k, (i, id, graph)) in ids.into_iter().enumerate() {
         let y = rows.y + k as u16 * row_h;
         let selected = i == app.selected;
@@ -129,45 +128,8 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             // second line of text) carries the lines going down to the next commit; under the
             // last row loaded there is no next commit to lead to
             if row_h > 1 && y + 1 < rows.bottom() && i + 1 < app.history_len {
-                draw_graph(app, buf, x, y + 1, graph_w, &g.filler, false, bg);
-            }
-            if selected && app.graph_spaced() {
-                bar = Some((y, x + graph_w, bg));
-            }
-        }
-    }
-    if let Some((y, text_x, sel)) = bar {
-        centre_bar(buf, rows, y, text_x, sel, ui.bg, focused);
-    }
-}
-
-/// The spaced graph's selection bar, moved up half a line so the commit's text sits in its
-/// middle: the half line above and below are `▄` and `▀` in the selection colour over the
-/// list's, right of the graph. In the graph a cell holds one glyph, so the bar stays right of
-/// it (two lines tall throughout) and the lines keep the list's background, unbroken; the
-/// commit's dot shows the selection instead, as a pill in its lane colour (on the inactive
-/// selection colour when the list is not focused).
-fn centre_bar(buf: &mut Buffer, rows: Rect, y: u16, text_x: u16, sel: ratatui::style::Color, bg: ratatui::style::Color, focused: bool) {
-    for x in rows.x..text_x.min(rows.right()) {
-        let cell = &mut buf[(x, y)];
-        cell.set_bg(bg);
-        if cell.symbol().chars().next().is_some_and(gitty_core::graph::is_node) {
-            if focused {
-                let lane = cell.fg;
-                cell.set_fg(bg).set_bg(lane);
-            } else {
-                cell.set_bg(sel);
-            }
-        }
-    }
-    let halves = [(y.checked_sub(1).filter(|&a| a >= rows.y), '▄'), (Some(y + 1).filter(|&b| b < rows.bottom()), '▀')];
-    for (line, half) in halves {
-        let Some(line) = line else { continue };
-        for x in rows.x..rows.right() {
-            let cell = &mut buf[(x, line)];
-            cell.set_bg(bg);
-            if x >= text_x && cell.symbol() == " " {
-                cell.set_char(half).set_fg(sel);
+                let under = if app.graph_spaced() { ui.bg } else { bg };
+                draw_graph(app, buf, x, y + 1, graph_w, &g.filler, false, under);
             }
         }
     }
@@ -295,7 +257,12 @@ fn draw_row(app: &App, buf: &mut Buffer, rows: Rect, y: u16, id: gitty_core::Com
     let ui = &app.theme.ui;
     let row_h = app.row_height() as u16;
     let base = Style::new().bg(bg).fg(ui.fg);
-    fill(buf, Rect::new(rows.x, y, rows.width, row_h.min(rows.bottom() - y)), base);
+    // the spaced graph's spacer line is not part of the selection: only the commit's line is
+    let lit = if app.graph_spaced() { 1 } else { row_h };
+    fill(buf, Rect::new(rows.x, y, rows.width, lit.min(rows.bottom() - y)), base);
+    if row_h > lit && y + 1 < rows.bottom() {
+        fill(buf, Rect::new(rows.x, y + 1, rows.width, 1), base.bg(ui.bg));
+    }
     let behind = app.behind.contains(&id);
     let (marker, mst) = if app.ahead.contains(&id) {
         ("↑", base.fg(ui.ahead))
