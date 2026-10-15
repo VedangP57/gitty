@@ -137,15 +137,29 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
         }
     }
     if let Some((y, text_x, sel)) = bar {
-        centre_bar(buf, rows, y, text_x, sel, ui.bg);
+        centre_bar(buf, rows, y, text_x, sel, ui.bg, focused);
     }
 }
 
 /// The spaced graph's selection bar, moved up half a line so the commit's text sits in its
 /// middle: the half line above and below are `▄` and `▀` in the selection colour over the
-/// list's, right of the graph. In the graph a cell holds one glyph, so the lines there keep the
-/// list's background and stay unbroken; the bar is one line tall over the graph.
-fn centre_bar(buf: &mut Buffer, rows: Rect, y: u16, text_x: u16, sel: ratatui::style::Color, bg: ratatui::style::Color) {
+/// list's, right of the graph. In the graph a cell holds one glyph, so the bar stays right of
+/// it (two lines tall throughout) and the lines keep the list's background, unbroken; the
+/// commit's dot shows the selection instead, as a pill in its lane colour (on the inactive
+/// selection colour when the list is not focused).
+fn centre_bar(buf: &mut Buffer, rows: Rect, y: u16, text_x: u16, sel: ratatui::style::Color, bg: ratatui::style::Color, focused: bool) {
+    for x in rows.x..text_x.min(rows.right()) {
+        let cell = &mut buf[(x, y)];
+        cell.set_bg(bg);
+        if cell.symbol().chars().next().is_some_and(gitty_core::graph::is_node) {
+            if focused {
+                let lane = cell.fg;
+                cell.set_fg(bg).set_bg(lane);
+            } else {
+                cell.set_bg(sel);
+            }
+        }
+    }
     let halves = [(y.checked_sub(1).filter(|&a| a >= rows.y), '▄'), (Some(y + 1).filter(|&b| b < rows.bottom()), '▀')];
     for (line, half) in halves {
         let Some(line) = line else { continue };

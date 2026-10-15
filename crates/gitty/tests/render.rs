@@ -647,9 +647,16 @@ fn the_spaced_selection_bar_sits_half_a_line_above_and_below_the_commit() {
     t.click(tx, y);
     let b = t.render(80, 30);
     let node = (3..tx).find(|&x| gitty_core::graph::is_node(b[(x, y)].symbol().chars().next().unwrap_or(' '))).unwrap();
-    // the commit's own line is the bar's middle, over the graph and the text
-    assert_eq!(b[(node, y)].bg, sel);
-    assert_eq!(b[(1, y)].bg, sel);
+    // the commit's own line is the bar's middle, right of the graph; the margin and the graph
+    // keep the list's background, and the dot shows the selection as a pill in its lane colour
+    for x in 0..tx - 1 {
+        if x != node {
+            assert_eq!(b[(x, y)].bg, bg, "margin and graph, x {x}");
+        }
+    }
+    assert_eq!(b[(node, y)].fg, bg);
+    assert!(t.app.theme.ui.lanes.contains(&b[(node, y)].bg));
+    assert_eq!(b[(tx - 1, y)].bg, sel);
     assert_eq!(b[(tx, y)].bg, sel);
     assert_eq!(b[(70, y)].bg, sel);
     // right of the graph, the line above ends in the bar's top half and the spacer under it
@@ -686,6 +693,11 @@ fn the_spaced_selection_bar_sits_half_a_line_above_and_below_the_commit() {
     let (_, y) = find(&b, "◉─┬").unwrap();
     assert_eq!(cell(&b, 30, y - 1), ("▄".into(), t.app.theme.ui.selection_inactive, bg), "{}", text(&b));
     assert_eq!(b[(30, y)].bg, t.app.theme.ui.selection_inactive);
+    // and the dot sits on it, in its lane colour
+    assert_eq!(b[(3, y)].symbol(), "◉");
+    assert_eq!(b[(3, y)].bg, t.app.theme.ui.selection_inactive);
+    assert!(t.app.theme.ui.lanes.contains(&b[(3, y)].fg));
+    assert_eq!(b[(1, y)].bg, bg);
 }
 
 #[test]
@@ -711,6 +723,11 @@ fn the_spaced_bar_at_the_ends_of_the_list_and_in_the_compact_graph() {
     let b = t.render(80, 30);
     let s = text(&b);
     assert!(!s.contains('▄') && !s.contains('▀'), "{s}");
+    // over the whole row, graph included
+    let (_, y) = find(&b, "Initial commit").unwrap();
+    assert_eq!(b[(1, y)].bg, ui.selection);
+    assert_eq!(b[(3, y)].bg, ui.selection);
+    assert_eq!(b[(40, y)].bg, ui.selection);
 }
 
 #[test]
