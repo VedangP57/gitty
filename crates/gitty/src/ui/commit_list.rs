@@ -108,6 +108,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     let app: &App = app;
     let focused = app.focus == Focus::History;
     let range = app.selected_range();
+    let mut bar = None;
     for (k, (i, id, graph)) in ids.into_iter().enumerate() {
         let y = rows.y + k as u16 * row_h;
         let selected = i == app.selected;
@@ -129,6 +130,30 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
             // last row loaded there is no next commit to lead to
             if row_h > 1 && y + 1 < rows.bottom() && i + 1 < app.history_len {
                 draw_graph(app, buf, x, y + 1, graph_w, &g.filler, false, bg);
+            }
+            if selected && app.graph_spaced() {
+                bar = Some((y, x + graph_w, bg));
+            }
+        }
+    }
+    if let Some((y, text_x, sel)) = bar {
+        centre_bar(buf, rows, y, text_x, sel, ui.bg);
+    }
+}
+
+/// The spaced graph's selection bar, moved up half a line so the commit's text sits in its
+/// middle: the half line above and below are `▄` and `▀` in the selection colour over the
+/// list's, right of the graph. In the graph a cell holds one glyph, so the lines there keep the
+/// list's background and stay unbroken; the bar is one line tall over the graph.
+fn centre_bar(buf: &mut Buffer, rows: Rect, y: u16, text_x: u16, sel: ratatui::style::Color, bg: ratatui::style::Color) {
+    let halves = [(y.checked_sub(1).filter(|&a| a >= rows.y), '▄'), (Some(y + 1).filter(|&b| b < rows.bottom()), '▀')];
+    for (line, half) in halves {
+        let Some(line) = line else { continue };
+        for x in rows.x..rows.right() {
+            let cell = &mut buf[(x, line)];
+            cell.set_bg(bg);
+            if x >= text_x && cell.symbol() == " " {
+                cell.set_char(half).set_fg(sel);
             }
         }
     }
