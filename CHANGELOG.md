@@ -6,100 +6,87 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-19
+
 ### Added
 
-- A commit graph in History, laid out like lazygit's (its layout ported, MIT): `●` for commits,
-  `◉` for merges and `◎` for the checked-out commit, each branch in a theme colour it keeps all
-  the way down, with its labels as pills in that colour, and the current branch's line drawn
-  heavy. Each commit keeps its one line from the list, with a spacer line under it that carries
-  only the graph's lines down to the next commit (`density` adds nothing to it);
-  `history_graph_style = "compact"` gives one line per commit, and any other value (including
-  `"roomy"`) warns and keeps the spaced look. With the graph on, History lists
-  commits in topological order (`git rev-list --topo-order`) and lays out the graph as the walk
-  streams in. `L` shows or hides it, and `history_graph = false` starts with it hidden. It steps
-  aside during a search, a range, compare mode and in a History pane under 34 columns, and cuts
-  lines wider than the pane with `›`. On a large repository without a commit-graph file the first rows wait for git's sort
-  (about 0.3 s per 100,000 commits).
-- Resolving conflicts in gitty. Conflicted files head the Changes list with their number of
-  blocks; selecting one draws its blocks as two tinted sides under header lines that name them by
-  the operation (merge: Current / Incoming; rebase: Base branch / Your commit; cherry-pick:
-  Current branch / Picked commit; revert: Current branch / Without change, since git swaps ours and
-  theirs there and a revert's second side is the code without the commit). `o` keeps the first side, `t` takes
-  the second, `b` keeps both, `n` and `p` move between blocks, `u` takes the last resolution back
-  and `e` opens the editor at the block. A resolution is written atomically and only over the text
-  that was shown; a block with a line that looks like a marker is flagged and left to the editor,
-  and `conflict-marker-size` is honoured. Conflicts without markers (binary, deleted by one side) are explained and settled
-  whole after asking. Nothing is staged for you. `p` and `u` mean previous conflict and undo while
-  a conflicted file is selected. The marker parser is adapted from druk (MIT).
-- A merge, rebase, cherry-pick or revert that stopped (started in gitty or in another terminal) is
-  shown in the top bar with its conflict count (`MERGING topic · 2 conflicts`, `REBASING feat ·
-  step 2/5 · 1 conflict`). `m` opens a dialog to continue it once nothing conflicts, with no
-  editor and the prepared message, or to abort it after asking. If the next step of a rebase
-  conflicts too, it says so instead of failing.
-- Twelve more built-in themes: `nord`, `one-dark`, `one-light`, `gruvbox-light`, `catppuccin-frappe`,
-  `catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`, `everforest-dark`,
-  `ayu-mirage` and `nightfox`. Each is credited, with its licence, in `THIRD-PARTY-LICENSES.md`.
-- A Files tab (`3`): the working tree as a lazily loaded tree (ignored files dimmed, symlinks and
-  submodules as leaves) with a read-only, syntax-coloured viewer. `Enter`/`l` open a directory,
-  `h` closes it, `e` or a double-click opens the file in `$EDITOR`. Files named like secrets
-  (`.env`, keys, tokens) are not read until you press `v`.
-- Git marks in the Files tab: changed files show their Changes letter and colour, and directories
-  with changes below them show a `●` (also when folded). `i` hides or shows ignored files; the
-  `files_show_ignored` option sets the starting state.
-- `B` opens a branch picker: Enter switches (a remote-only branch gets a local tracking branch),
-  `Ctrl-N` creates a branch from the typed name, `Ctrl-R` renames, `Ctrl-D` deletes. Deleting a
-  branch with unmerged commits asks twice. With uncommitted changes, switching asks first.
-- `Ctrl-G` in the branch picker merges the highlighted branch (a remote-only one too) into the
-  checked-out branch after asking. A merge that hits conflicts is left open and gitty asks
-  "Resolve now?": Enter goes to the first conflicted file in Changes, `a` aborts the merge, Esc
-  decides later (the top bar shows it and `m` opens the dialog). With uncommitted changes it
-  offers "stash and merge": the changes are put back after the merge, and stay in the stash (with
-  a notice) if they cannot be. When the merge has conflicts they stay in the stash while it is
-  open; aborting from the question puts them back.
-- A pull (merge or rebase) that hits conflicts asks the same "Resolve now?" question instead of
-  failing, decided by the state git leaves on disk. A pull that fails with nothing in progress, and
-  a diverged fast-forward, are reported as before.
-- `S` opens the stash list: `a` applies, `p` pops, `d` drops (asks), `n` stashes the current
-  changes under a message. Each stash shows its age. `Z` in the Changes tab stashes them with an optional message. A stash that hits conflicts
-  is kept.
-- Switching branches with uncommitted changes offers "stash and switch": the changes are stashed
-  (untracked files included) under `gitty: auto-stash from <branch>`, and put back if the switch
-  fails. gitty never re-applies a stash by itself.
-- `R` opens the current branch's pull-request page (GitHub only) in the browser (the branch must be
-  pushed first). It opens the open pull request if there is one (needs the `gh` CLI), otherwise the
-  new-pull-request page.
-- The top bar shows `PR #<n>` after the branch when it has a pull request (GitHub only, needs the
-  `gh` CLI and a GitHub remote; a merged pull request still shows after its branch is deleted on the remote). The colour is the state, as on GitHub: green open, grey draft,
-  purple merged, red closed; set `pr_open`, `pr_draft`, `pr_merged` and `pr_closed` under `[ui]` in
-  a theme to change them. Clicking the badge opens the pull request in the browser. Pull requests
-  from forks that share the branch name are ignored (also by `R`). The badge is looked up in the
-  background whenever the refs refresh (focus regained, commits, branch changes, fetch, push), at
-  most every 30 seconds per branch, and every 5 minutes while the terminal has focus. Without
-  `gh`, a login or a network the badge is not added, and when a lookup fails (offline, timeout) the
-  badge already shown for that branch stays; it goes when the branch changes or `gh` reports that
-  there is no pull request.
-
-- A push rejected because the remote moved on (typically after amending a pushed commit or
-  rebasing) asks whether to force push with a lease. The question lists the remote commits you
-  don't have that the push would remove (and says so when git cannot tell). Enter runs
-  `git push --force-with-lease` with the commit you last fetched as the expected value, so the
-  remote branch is replaced only if nobody pushed to it since; a fetch in between (auto-fetch
-  included) makes git refuse instead of overwriting, and the refusal says to fetch first. A
-  rejection that says "fetch first" asks you to fetch instead. `main` and `master` (any case) and
-  the branch `origin/HEAD` points to are never force pushed, nor is a branch with no
-  remote-tracking branch to check against.
+- A commit graph in History, shown by default. Its lanes are laid out as lazygit lays them out
+  (the layout is ported from lazygit, MIT): `●` for a commit, `◉` for a merge and `◎` for the
+  checked-out commit. Each branch keeps one theme colour from top to bottom, its labels are pills
+  in that colour, and the current branch's line is drawn heavy. Each commit keeps its one line from
+  the list, with a spacer line under it that carries only the branch lines down to the next commit.
+  `history_graph_style = "compact"` drops the spacers (one line per commit); any other value than
+  `"spaced"` or `"compact"` warns and keeps `"spaced"`. `L` shows or hides the graph, and
+  `history_graph = false` starts with it hidden. It steps aside during a search, a `V` range,
+  compare mode and in a History pane under 34 columns, and cuts lines wider than the pane with `›`.
+- Conflict help. Conflicted files head the Changes list with their number of blocks; selecting one
+  shows its blocks as two tinted sides under headers named for the operation (merge: Current /
+  Incoming; rebase: Base branch / Your commit; cherry-pick: Current branch / Picked commit; revert:
+  Current branch / Without change). `o` keeps the first side, `t` takes the second, `b` keeps both,
+  `n` and `p` move between blocks, `u` takes the last resolution back and `e` opens the editor at
+  the block. A resolution is written atomically and only over the text that was shown; a block
+  with ambiguous markers is left to the editor, and `conflict-marker-size` is honoured. Conflicts
+  without markers (binary, deleted by one side) are explained and settled whole after asking.
+  Nothing is staged for you. The marker parser is adapted from druk (MIT).
+- A merge, rebase, cherry-pick or revert that stopped (in gitty or in another terminal) shows in the
+  top bar with its conflict count (`MERGING topic · 2 conflicts`, `REBASING feat · step 2/5 · 1
+  conflict`). `m` continues it once nothing conflicts (no editor; the prepared message is used) or
+  aborts it after asking.
+- A merge or pull (merge or rebase) that hits conflicts is left open and asks "Resolve now?":
+  Enter goes to the first conflicted file, `a` aborts, Esc decides later (`m` opens the dialog).
+- A branch picker (`B`): Enter switches (a remote-only branch gets a local tracking branch),
+  `Ctrl-N` creates, `Ctrl-R` renames, `Ctrl-D` deletes (asking twice when the branch has commits
+  its upstream lacks, or HEAD without an upstream, as git judges it) and `Ctrl-G` merges the
+  highlighted branch into the checked-out one after asking. With uncommitted changes, switching
+  offers "stash and switch" and merging "stash and merge". After a switch the changes are put back;
+  after a conflicted merge they stay in the stash until you finish it (aborting from gitty puts
+  them back). gitty never re-applies a stash by itself otherwise.
+- A stash list (`S`): `a` applies, `p` pops, `d` drops (asks), `n` stashes the current changes
+  under a message; each stash shows its age. `Z` in the Changes tab stashes with an optional
+  message. Stashes include untracked files, and the prompts say so (with the count when there are
+  more than 500).
+- A Files tab (`3`): the working tree as a lazily loaded tree with a read-only, syntax-coloured
+  viewer. Changed files show their Changes letter and colour, and folders with changes below them
+  a `●`. `i` hides or shows ignored files (`files_show_ignored` sets the start). `e` or a
+  double-click opens the file in `$EDITOR`. Files named like secrets (`.env`, keys, tokens) are not
+  read until you press `v`.
+- The top bar shows `PR #<n>` when the branch has a GitHub pull request, coloured by its state
+  (open, draft, merged, closed; themes can set `pr_open`, `pr_draft`, `pr_merged`, `pr_closed`
+  under `[ui]`). Clicking it opens the pull request. It needs the `gh` CLI logged in, is looked up
+  in the background (at most every 30 seconds per branch, every 5 minutes while focused), ignores
+  pull requests from forks, and keeps the last known badge through a failed lookup.
+- `R` opens the branch's pull request on GitHub in the browser, or the new-pull-request page when
+  there is none (or no `gh`). The branch must be pushed first.
+- A push rejected because the remote moved on (after an amend or a rebase) offers a force push with
+  lease. The question lists the remote commits it would remove; the lease is the commit you last
+  fetched, so git refuses if anyone pushed since. `main`, `master` and the branch `origin/HEAD`
+  points to are never force pushed.
+- Twelve more built-in themes: `nord`, `one-dark`, `one-light`, `gruvbox-light`,
+  `catppuccin-frappe`, `catppuccin-macchiato`, `tokyo-night-storm`, `tokyo-night-day`, `kanagawa`,
+  `everforest-dark`, `ayu-mirage` and `nightfox`, credited in `THIRD-PARTY-LICENSES.md`.
+- A [herdr](https://herdr.dev) plugin (`herdr-plugin/`) that opens gitty in a popup on the focused
+  pane's repository, downloading a checksum-verified release binary when none is installed.
 
 ### Changed
 
-- The stash message prompt and the "stash and switch/merge" prompt say that untracked files are included, and how many when there are more than 500 (it can take a while).
+- With the graph shown (the default), History lists commits in topological order (`git rev-list
+  --topo-order`) instead of by date; `L` or `history_graph = false` brings the date order back. On
+  a large repository without a commit-graph file the first rows wait for git's sort (about 0.3 s
+  per 100,000 commits); auto-tune writes that file on repositories with 10,000 commits or more.
+- While a conflicted file is selected in Changes, `p` and `u` mean previous conflict and undo the
+  resolution, not pull and undo the last commit.
 
 ### Fixed
 
-- Sideways scrolling (`h`/`l`, the sideways wheel, Shift+wheel) in the diff and the Files viewer only happens when a line is wider than the pane, and stops at the end of the widest line. `‹` and `›` mark lines with text hidden on the left or right.
-- In compare mode the footer labels `b` "other branch" (it picks another branch to compare with) instead of "branch".
-- The footer no longer shows the hints of the pane underneath while a picker, prompt or confirmation is open.
-- Deleting an unmerged branch asks the force question under non-English git locales too, and judges "merged" against the branch's upstream (HEAD without one), as git does.
-- Outside a repository gitty prints `gitty: <dir> is not a git repository`, without the internal source path.
+- Sideways scrolling (`h`/`l`, the sideways wheel, Shift+wheel) in the diff and the Files viewer
+  only happens when a line is wider than the pane, and stops at the end of the widest line. `‹` and
+  `›` mark lines with text hidden on the left or right.
+- In compare mode the footer labels `b` "other branch" (it picks another branch to compare with)
+  instead of "branch".
+- The footer no longer shows the hints of the pane underneath while a picker, prompt or
+  confirmation is open.
+- Outside a repository gitty prints `gitty: <dir> is not a git repository`, without the internal
+  source path.
 
 ## [0.1.2] - 2026-10-05
 
@@ -149,7 +136,8 @@ The first public release.
 - Automatic tuning of large repositories (commit-graph, untracked cache, fsmonitor where git
   supports it), reverted exactly by `gitty untune`.
 
-[Unreleased]: https://github.com/VedangP57/gitty/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/VedangP57/gitty/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/VedangP57/gitty/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/VedangP57/gitty/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/VedangP57/gitty/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/VedangP57/gitty/releases/tag/v0.1.0
