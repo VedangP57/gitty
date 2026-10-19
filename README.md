@@ -12,12 +12,17 @@ fetch / pull / push, search and compare, in Rust with Ratatui.
 
 ![gitty: browsing History with a split diff, then staging and committing in Changes](assets/demo.gif)
 
-- **History:** local and remote commits with their refs, and marks for what is ahead of or
-  behind the upstream (on a branch never pushed, ↑ marks what pushing it would publish). Select a commit (or a `V` range of them) for its files and a syntax-highlighted diff, unified
-  or split (added and deleted files always use the full width).
+- **History:** local and remote commits with their refs and a commit graph (`L` hides it), and
+  marks for what is ahead of or behind the upstream (on a branch never pushed, ↑ marks what pushing
+  it would publish). Select a commit (or a `V` range of them) for its files and a
+  syntax-highlighted diff, unified or split (added and deleted files always use the full width).
 - **Changes:** status that follows the file system, staging by file, hunk or line (Space, or a
   click in the gutter), discard with a copy kept in the Trash, and a commit box with amend and
   undo.
+- **Conflicts:** a stopped merge, rebase, cherry-pick or revert shows in the top bar; resolve each
+  conflict block by keeping one side or both (`o`, `t`, `b`), then continue or abort with `m`.
+- **Files:** browse the working tree with git marks and a syntax-coloured viewer (`3`); files that
+  look like secrets stay unread until you ask.
 - **Network:** fetch, pull (fast-forward, merge or rebase) and push with progress, cancel, and
   password or passphrase prompts inside the app. A background fetch runs every few minutes. A push
   rejected because the remote moved on (after an amend or rebase) offers a force push with lease,
@@ -346,7 +351,7 @@ unknown keys and bad values are reported at startup and fall back to the default
 | `auto_tune` | `true` | tune large repositories (see below) |
 | `files_show_ignored` | `true` | list ignored files in the Files tab when it starts (`i` toggles them there) |
 | `history_graph` | `true` | start History with the commit graph and topological order (`L` toggles) |
-| `history_graph_style` | `"spaced"` | `"spaced"`: each commit's line, then a spacer line with only the graph's lines (comfortable `density` adds nothing); `"compact"`: one line per commit (two in comfortable `density`). Any other value, including the former `"roomy"`, warns and keeps `"spaced"` |
+| `history_graph_style` | `"spaced"` | `"spaced"`: each commit's line, then a spacer line with only the graph's lines (comfortable `density` adds nothing); `"compact"`: one line per commit (two in comfortable `density`). Any other value warns and keeps `"spaced"` |
 | `difftool` | none | command for `O`, run as `<difftool> <old> <new>`, e.g. `"delta"`; a GUI tool needs its wait flag (`"code --wait --diff"`), because the two temp files are removed when the command returns |
 | `[keys]` | | action → key or keys, see above |
 
@@ -435,4 +440,5 @@ Nord (MIT), Atom One Dark and One Light (MIT), Rosé Pine (MIT), Solarized (MIT)
 (MIT and Apache-2.0); the copyright holders and licence text are in
 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). The conflict-marker parsing and resolving
 logic is adapted from the editor [druk](https://github.com/letstri/druk) (MIT, Copyright (c) 2026
-Valerii Strilets).
+Valerii Strilets), and the commit graph's layout and drawing from
+[lazygit](https://github.com/jesseduffield/lazygit) (MIT, Copyright (c) 2018 Jesse Duffield).

@@ -26,8 +26,8 @@ default = ["grammars"]
 grammars = ["gitty-highlight/default"]
 
 [dependencies]
-gitty-core = { path = "../gitty-core", version = "0.1.2" }
-gitty-highlight = { path = "../gitty-highlight", version = "0.1.2", default-features = false }
+gitty-core = { path = "../gitty-core", version = "0.2.0" }
+gitty-highlight = { path = "../gitty-highlight", version = "0.2.0", default-features = false }
 anyhow.workspace = true
 ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "underline-color", "layout-cache"] }
 crossterm = "0.29"
