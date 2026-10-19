@@ -1,0 +1,10 @@
+---
+source: crates/gitty/tests/render.rs
+expression: "highlighted(&b, t.app.theme.ui.selection, r.y..r.y + 6)"
+---
+        @@ -1,4 +1,4 @@
+ 1  1   «alpha                                                                   »
+ 2    - «    beta                                                                »
+    2 + «    BETA 日本                                                           »
+ 3  3   «gamma                                                                   »
+ 4  4   delta

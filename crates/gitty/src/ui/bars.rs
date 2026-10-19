@@ -145,12 +145,12 @@ fn hints(app: &App) -> Vec<(String, String)> {
     }
     let list: &[(&[A], &str)] = if app.tab == Tab::Files {
         match app.focus {
-            Focus::Diff => &[(&[A::Down, A::Up], "scroll"), (&[A::ScrollLeft, A::ScrollRight], "sideways"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::Back], "back"), (&[A::Help], "help")],
-            _ => &[(&[A::Down, A::Up], "move"), (&[A::FilesCollapse, A::FilesExpand], "fold"), (&[A::Open], "open"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit"), (&[A::ToggleIgnored], "ignored")],
+            Focus::Diff => &[(&[A::Down, A::Up], "scroll"), (&[A::ScrollLeft, A::ScrollRight], "sideways"), (&[A::Copy], "copy"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::Back], "back"), (&[A::Help], "help")],
+            _ => &[(&[A::Down, A::Up], "move"), (&[A::FilesCollapse, A::FilesExpand], "fold"), (&[A::Open], "open"), (&[A::OpenEditor], "edit"), (&[A::RevealSecret], "reveal"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit"), (&[A::ToggleIgnored], "ignored"), (&[A::CopyEntryPath], "copy path")],
         }
     } else if app.tab == Tab::Changes {
         match app.focus {
-            Focus::Diff => &[(&[A::Stage], "stage line"), (&[A::LineRange], "range"), (&[A::StageHunk], "hunk"), (&[A::StageAll], "file"), (&[A::Discard], "discard"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Back], "back")],
+            Focus::Diff => &[(&[A::Stage], "stage line"), (&[A::LineRange], "range"), (&[A::StageHunk], "hunk"), (&[A::StageAll], "file"), (&[A::Discard], "discard"), (&[A::Copy], "copy"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Back], "back")],
             Focus::Commit => return vec![("alt+enter".into(), "commit".into()), ("tab".into(), "field".into()), ("esc".into(), "leave".into())],
             _ => &[(&[A::Stage], "stage"), (&[A::StageAll], "all"), (&[A::Discard], "discard"), (&[A::Filter], "filter"), (&[A::Open], "diff"), (&[A::HistoryTab], "history"), (&[A::Help], "help"), (&[A::Quit], "quit")],
         }
@@ -160,7 +160,7 @@ fn hints(app: &App) -> Vec<(String, String)> {
             Focus::History => &[(&[A::Down, A::Up], "move"), (&[A::Open], "files"), (&[A::Search], "search"), (&[A::Range], "range"), (&[A::Compare], "compare"), (&[A::NextPane], "pane"), (&[A::Scope], "scope"), (&[A::Help], "help"), (&[A::Quit], "quit")],
             Focus::Files => &[(&[A::Down, A::Up], "file"), (&[A::Open], "diff"), (&[A::Tree], "tree"), (&[A::Back], "back"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Help], "help"), (&[A::Quit], "quit")],
             Focus::Commit => &[],
-            Focus::Diff => &[(&[A::Down, A::Up], "line"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Expand, A::ExpandFile], "expand"), (&[A::Split], "split"), (&[A::Whitespace], "whitespace"), (&[A::Difftool], "difftool"), (&[A::Fullscreen], "full"), (&[A::Back], "back")],
+            Focus::Diff => &[(&[A::Down, A::Up], "line"), (&[A::PrevHunk, A::NextHunk], "hunk"), (&[A::Copy], "copy"), (&[A::Expand, A::ExpandFile], "expand"), (&[A::Split], "split"), (&[A::Whitespace], "whitespace"), (&[A::Difftool], "difftool"), (&[A::Fullscreen], "full"), (&[A::Back], "back")],
         }
     };
     list.iter()

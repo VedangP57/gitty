@@ -6,6 +6,7 @@ pub mod commit;
 pub mod conflict;
 pub mod branches;
 pub mod compare;
+pub mod copy;
 pub mod net;
 pub mod operation;
 pub mod diffstate;
@@ -114,6 +115,10 @@ pub struct Hits {
     /// (x, width) of the old and new line-number gutters of the (left) diff side.
     pub diff_old_gutter: (u16, u16),
     pub diff_new_gutter: (u16, u16),
+    /// The Files viewer's text lines (None unless a text file is drawn), and the file line
+    /// its first screen line shows.
+    pub viewer_rows: Option<Rect>,
+    pub viewer_first: usize,
     pub tabs: Vec<(Rect, Tab)>,
     /// The `PR #n` badge in the top bar.
     pub pr_badge: Option<Rect>,
@@ -277,6 +282,8 @@ pub struct App {
     /// Escape sequences (OSC 52) for main to write after the next frame.
     pub osc_out: Vec<String>,
     pub hits: Hits,
+    /// Lines selected with the mouse in the Files viewer or a diff (see `copy.rs`).
+    pub text_sel: Option<copy::TextSel>,
 
     pub changes: changes::Changes,
     pub files_tab: files::FilesState,
@@ -415,6 +422,7 @@ impl App {
             outbox: vec![Request::Refs],
             osc_out: Vec::new(),
             hits: Hits::default(),
+            text_sel: None,
             changes: changes::Changes::default(),
             files_tab: files::FilesState::default(),
             focused: false,
@@ -1275,8 +1283,13 @@ impl App {
     }
 
     pub fn copy(&mut self, text: &str) {
+        self.copy_as(text, format!("Copied {text}"));
+    }
+
+    /// Puts `text` on the clipboard (OSC 52) with `what` as the toast.
+    pub fn copy_as(&mut self, text: &str, what: String) {
         self.osc_out.push(format!("\x1b]52;c;{}\x07", base64(text.as_bytes())));
-        self.toast = Some(Toast { what: format!("Copied {text}"), detail: String::new(), error: false });
+        self.toast = Some(Toast { what, detail: String::new(), error: false });
     }
 }
 

@@ -92,8 +92,8 @@ gitty untune [PATH]
 
 The window has a History tab (`2`), a Changes tab (`1`) and a Files tab (`3`). `Tab` moves between
 panes and `?` shows every key. The mouse works throughout: click to select, scroll any pane, drag the diff
-gutter to pick lines, Shift-click for a commit range, and double-click a file or diff line to
-open it in `$EDITOR` at that line.
+gutter to pick lines, drag over text to copy it (see [Copying](#copying)), Shift-click for a commit
+range, and double-click a file or diff line to open it in `$EDITOR` at that line.
 
 ### History
 
@@ -145,6 +145,27 @@ saved.
 Limits: the match is by name, so a secret under an innocent name (or a hard link to one, or a name
 that only looks like one through Unicode lookalikes) is shown as any file. Masking applies to the
 Files tab only: an untracked `.env` still appears in the Changes tab's diff.
+
+### Copying
+
+gitty takes the mouse, so the terminal's own drag-selection does not reach it. Drag over the lines
+of the Files viewer or of a diff instead: whole lines are selected and highlighted, and releasing
+the button copies them to the clipboard through OSC 52 (kitty and most current terminals support
+it; inside tmux it needs `set-clipboard on`). Only the text is copied: no line numbers, no `+`/`-`
+markers, no hunk headers or folded-line rows, a wrapped or sideways-scrolled line as the one whole
+line it is, and in split view only the half you dragged over. In the Changes diff the line numbers
+stage lines, so start the drag on the text. The selection stays, through scrolling, until `Esc`,
+the next click, or a change to what the pane shows (another file, an expansion, split ↔ unified);
+`y` copies it again.
+
+Without a selection, `y` copies the line under the cursor in a diff (in the Changes diff, the `v`
+range if one is open) and the whole file in the Files viewer; `Y` copies the shown file's path. In
+the Files tree `y` copies the selected entry's path relative to the repository and `Y` its absolute
+path. In History's commit and file lists `y` and `Y` still copy the commit's short and full SHA. A
+copy is capped at 1 MiB (the message says when it was cut). A secret file that is not revealed is
+never copied: `y` asks you to press `v` first, and a drag does not select over it. To select with
+the terminal instead (any text on screen, any shape), hold Shift while dragging (kitty and most
+terminals).
 
 ### Merge in progress
 
@@ -289,6 +310,8 @@ reported at startup:
 | `v` | Files: show or hide a secret file (.env, keys…) | `reveal_secret` |
 | `e` | Files: open the file in $EDITOR | `open_editor` |
 | `i` | Files: show or hide ignored files | `toggle_ignored` |
+| `y` | Files: copy the selected entry's path (relative to the repository) | `copy_entry_path` |
+| `Y` | Files: copy the selected entry's absolute path | `copy_entry_abs_path` |
 | `h` `←` | Files: close the directory (or go to its parent) | `files_collapse` |
 | `l` `→` | Files: open the directory | `files_expand` |
 | `/` | search history (text, path:dir) | `search` |
@@ -304,6 +327,8 @@ reported at startup:
 | `D` | date format | `dates` |
 | `z` | row density | `density` |
 | `L` | show or hide the commit graph | `graph` |
+| `y` | copy the selected lines (drag to select); without a selection the cursor's line (Changes: the v range) or the whole viewed file | `copy` |
+| `Y` | copy the shown file's path (relative to the repository) | `copy_path` |
 | `h` `←` | scroll the diff left | `scroll_left` |
 | `l` `→` | scroll the diff right | `scroll_right` |
 | `[` | previous hunk | `prev_hunk` |

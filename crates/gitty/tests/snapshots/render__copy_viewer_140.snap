@@ -1,0 +1,10 @@
+---
+source: crates/gitty/tests/render.rs
+expression: "highlighted(&b, sel, r.y..r.y + 6)"
+---
+ ▾ src/                                   │  1 use std::io;
+     lib.rs                               │  2
+     main.rs                              │  3 «fn main() {                                                                                  »
+ ▸ target/                                │  4 «    step(0);                                                                                 »
+   .env (secret)                          │  5 «    step(1);                                                                                 »
+   .gitignore                             │  6     step(2);

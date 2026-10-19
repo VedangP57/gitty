@@ -6,6 +6,19 @@ All notable changes to gitty are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Copying from the Files viewer and the diffs. Dragging over lines selects them (highlighted) and
+  releasing copies them to the clipboard through OSC 52: the text only, without line numbers or
+  `+`/`-` markers, a wrapped line as one line, and in split view only the dragged half. The
+  selection stays until Esc, the next click, or a change to the pane's content. In the Changes
+  diff a drag on the line numbers still stages lines.
+- `y` in a focused diff or the Files viewer copies the selection; without one, the line under the
+  cursor (the `v` range in the Changes diff) or, in the Files viewer, the whole file. `Y` copies
+  the shown file's path. In the Files tree `y` and `Y` copy the selected entry's relative and
+  absolute path. History's commit and file lists keep `y` and `Y` for the SHA. Copies are capped
+  at 1 MiB, and a hidden secret file is never copied until `v` reveals it.
+
 ## [0.2.0] - 2026-10-19
 
 ### Added

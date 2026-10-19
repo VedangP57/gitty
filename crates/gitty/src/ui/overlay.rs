@@ -18,10 +18,12 @@ const SECTIONS: &[(Ctx, &str)] = &[
     (Ctx::Global, "Everywhere"),
     (Ctx::Nav, "Moving"),
     (Ctx::History, "History"),
+    (Ctx::HistoryList, "History commit and file lists"),
     (Ctx::Compare, "Compare mode"),
     (Ctx::Files, "Files"),
     (Ctx::FilesTree, "Files tree"),
     (Ctx::Diff, "Diff"),
+    (Ctx::Viewer, "Diff or Files viewer, focused"),
     (Ctx::Changes, "Changes"),
     (Ctx::ChangesList, "Changes file list"),
     (Ctx::ChangesDiff, "Changes diff"),
@@ -31,6 +33,7 @@ const FIXED: &[(&str, &str)] = &[
     ("Ctrl-z", "suspend to the shell"),
     ("Alt-Enter", "commit (Ctrl-Enter in kitty)"),
     ("double-click", "open the file in $EDITOR"),
+    ("drag", "select lines in a diff or the Files viewer; release copies them"),
 ];
 
 /// (keys, what) rows of the help, with `None` keys for section titles; from the live keymap.

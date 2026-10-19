@@ -184,6 +184,10 @@ impl App {
                     self.copy(&id.to_hex());
                 }
             }
+            Action::Copy => self.copy_key(),
+            Action::CopyPath => self.copy_path_key(),
+            Action::CopyEntryPath => self.copy_entry_path(false),
+            Action::CopyEntryAbsPath => self.copy_entry_path(true),
             Action::Header => self.header_expanded = !self.header_expanded,
             Action::Dates => self.date_mode = self.date_mode.next(),
             Action::Density => {
@@ -278,6 +282,8 @@ impl App {
                     self.drill_in();
                 }
             }
+            // Esc drops a mouse selection before anything else it does
+            Action::Back if self.clear_text_selection() => {}
             Action::Back if changes && in_diff && self.changes.visual.is_some() => self.changes.visual = None,
             Action::Back if changes && in_diff && !self.fullscreen => self.focus = Focus::Files,
             Action::Back if (changes || files_tab) && !in_diff => {}
@@ -519,8 +525,10 @@ impl App {
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => self.click(x, y, m.modifiers),
             MouseEventKind::Drag(MouseButton::Left) if self.changes.gutter_drag => self.gutter_drag(y),
+            MouseEventKind::Drag(MouseButton::Left) if self.text_sel_dragging() => self.drag_text_sel(y),
             MouseEventKind::Drag(MouseButton::Left) => self.drag(x, y),
             MouseEventKind::Up(MouseButton::Left) => {
+                self.end_text_sel();
                 if self.hits.dragging.take().is_some() {
                     self.save_state();
                 }
@@ -557,13 +565,21 @@ impl App {
             return;
         }
         self.search.bar = None;
+        // any click ends the selection on screen; one in a viewer's text may start the next
+        self.text_sel = None;
         let double = self.note_click(x, y);
         // a double-click on the Files tab edits the file: its first click already selected it
         // (only on a row: elsewhere it is two ordinary clicks, e.g. on a tab)
         if double && self.tab == Tab::Files && self.files_row_at(x, y).is_some() {
             return self.files_double_click(x, y);
         }
+        // before the click acts: a click that expands a gap changes the rows under the pointer
+        // (the selection is then stale, and nothing is selected)
+        self.begin_text_sel(x, y, mods);
         self.click_once(x, y, mods);
+        if self.hits.dragging.is_some() {
+            self.text_sel = None;
+        }
         if !double || self.tab == Tab::Files {
             return;
         }
