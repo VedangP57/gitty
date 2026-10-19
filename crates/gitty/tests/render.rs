@@ -2936,3 +2936,355 @@ fn the_files_footer_at_80_columns_keeps_help_and_quit() {
     let last = text(&b).lines().last().unwrap_or("").to_string();
     assert!(last.contains("? help") && last.contains("q quit"), "{last}");
 }
+
+// ---- copying ----
+
+fn unbase64(s: &str) -> Vec<u8> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => panic!("not base64: {c}"),
+    };
+    let mut out = Vec::new();
+    for chunk in s.as_bytes().chunks(4) {
+        let n = chunk.iter().filter(|&&c| c != b'=').count();
+        let mut acc = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            acc |= u32::from(if c == b'=' { 0 } else { val(c) }) << (18 - 6 * i);
+        }
+        out.extend(acc.to_be_bytes()[1..n].iter());
+    }
+    out
+}
+
+/// What the last OSC 52 sequence put on the clipboard.
+fn clipboard(t: &H) -> Option<String> {
+    let osc = t.app.osc_out.last()?;
+    let b64 = osc.strip_prefix("\x1b]52;c;").and_then(|s| s.strip_suffix('\x07')).expect("an OSC 52 sequence");
+    Some(String::from_utf8(unbase64(b64)).unwrap())
+}
+
+fn toast(t: &H) -> String {
+    t.app.toast.as_ref().map(|t| t.what.clone()).unwrap_or_default()
+}
+
+/// Press at row `from`, drag through every row to `to`, release there; all in column `x`.
+fn drag(t: &mut H, x: u16, from: u16, to: u16) {
+    let ev = |kind, y| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), from));
+    let ys: Vec<u16> = if to >= from { (from..=to).collect() } else { (to..=from).rev().collect() };
+    for y in ys {
+        t.app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), y));
+    }
+    t.app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), to));
+}
+
+/// Screen rows `rows` with the runs of cells on `bg` between « and ».
+fn highlighted(b: &Buffer, bg: Color, rows: std::ops::Range<u16>) -> String {
+    let mut out = String::new();
+    for y in rows {
+        let (mut line, mut on, mut skip) = (String::new(), false, 0);
+        for x in 0..b.area.width {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let c = &b[(x, y)];
+            if (c.bg == bg) != on {
+                on = !on;
+                line.push(if on { '«' } else { '»' });
+            }
+            line.push_str(c.symbol());
+            skip = gitty::text::display_width(c.symbol()).saturating_sub(1);
+        }
+        if on {
+            line.push('»');
+        }
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+#[test]
+fn a_drag_in_the_files_viewer_selects_lines_and_release_copies_them() {
+    let f = files_fixture();
+    for w in [80u16, 140] {
+        let mut t = files_tab(&f, (w, 30));
+        t.key(KeyCode::Enter);
+        pick(&mut t, "main.rs");
+        t.key(KeyCode::Enter);
+        let b = t.render(w, 30);
+        let (x, y) = find(&b, "fn main() {").unwrap_or_else(|| panic!("{w}: {}", text(&b)));
+        drag(&mut t, x + 3, y, y + 2);
+        assert_eq!(clipboard(&t).as_deref(), Some("fn main() {\n    step(0);\n    step(1);"), "{w}: no line numbers, no padding");
+        assert_eq!(toast(&t), "Copied 3 lines");
+        let b = t.render(w, 30);
+        let sel = t.app.theme.ui.selection;
+        let r = t.app.hits.viewer_rows.unwrap();
+        insta::assert_snapshot!(format!("copy_viewer_{w}"), highlighted(&b, sel, r.y..r.y + 6));
+        assert_eq!(b[(x, y)].bg, sel, "the text is highlighted");
+        assert_ne!(b[(r.x + 1, y)].bg, sel, "the line numbers are not");
+        // y copies the selection again; Esc drops it (and only that)
+        t.app.osc_out.clear();
+        t.key(KeyCode::Char('y'));
+        assert_eq!(clipboard(&t).as_deref(), Some("fn main() {\n    step(0);\n    step(1);"));
+        t.key(KeyCode::Esc);
+        assert!(t.app.text_selection().is_none());
+        assert_eq!(t.app.focus, Focus::Diff, "the first Esc only dropped the selection");
+        // a click in place selects and copies nothing
+        t.app.osc_out.clear();
+        t.render(w, 30);
+        t.click(x + 3, y);
+        assert!(t.app.osc_out.is_empty() && t.app.text_selection().is_none());
+    }
+}
+
+#[test]
+fn a_drag_past_the_viewer_bottom_scrolls_and_keeps_selecting() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 16));
+    t.key(KeyCode::Enter);
+    pick(&mut t, "main.rs");
+    let b = t.render(140, 16);
+    let (x, y) = find(&b, "use std::io;").unwrap();
+    let r = t.app.hits.viewer_rows.unwrap();
+    let ev = |kind, y| MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE };
+    t.app.handle_mouse(ev(MouseEventKind::Down(MouseButton::Left), y));
+    for _ in 0..40 {
+        t.app.handle_mouse(ev(MouseEventKind::Drag(MouseButton::Left), r.bottom()));
+    }
+    t.app.handle_mouse(ev(MouseEventKind::Up(MouseButton::Left), r.bottom()));
+    assert!(t.app.files_tab.vscroll > 0, "the viewer scrolled");
+    assert_eq!(clipboard(&t).unwrap(), main_rs(0).trim_end(), "the whole file, past the first screen");
+}
+
+/// One commit changing a tabbed line to one with wide characters, between context lines.
+fn copy_fixture() -> Fixture {
+    let f = Fixture::new();
+    f.write("w.txt", "alpha\n\tbeta\ngamma\ndelta\n");
+    f.commit("base", NOW - DAY);
+    f.write("w.txt", "alpha\n\tBETA 日本\ngamma\ndelta\n");
+    f.commit("wide", NOW - HOUR);
+    f
+}
+
+#[test]
+fn a_drag_in_the_history_diff_copies_lines_without_markers() {
+    let f = copy_fixture();
+    for w in [80u16, 140] {
+        let mut t = H::new(&f, "github-dark", (w, 30));
+        t.app.focus = Focus::Diff;
+        let b = t.render(w, 30);
+        assert!(!t.app.split_active(), "{w}: unified");
+        let (x, y0) = find(&b, "alpha").unwrap_or_else(|| panic!("{w}: {}", text(&b)));
+        let (_, y1) = find(&b, "gamma").unwrap();
+        drag(&mut t, x + 1, y0, y1);
+        assert_eq!(clipboard(&t).as_deref(), Some("alpha\n\tbeta\n\tBETA 日本\ngamma"), "{w}");
+        assert_eq!(toast(&t), "Copied 4 lines");
+        let b = t.render(w, 30);
+        let r = t.app.hits.diff_rows.unwrap();
+        insta::assert_snapshot!(format!("copy_diff_{w}"), highlighted(&b, t.app.theme.ui.selection, r.y..r.y + 6));
+        // a layout change makes the selection stale: it is gone, y copies the cursor's line
+        t.key(KeyCode::Char('s'));
+        assert!(t.app.text_selection().is_none(), "split ↔ unified drops the selection");
+    }
+}
+
+#[test]
+fn y_in_a_diff_without_a_selection_copies_the_cursor_line() {
+    let f = copy_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.focus = Focus::Diff;
+    t.render(140, 30);
+    let d = t.app.diff.as_ref().unwrap();
+    let add = (0..d.rows(false)).find(|&i| matches!(d.vrow(i, false), Some(gitty::app::diffstate::VRow::Row(gitty_core::diff::view::Row::Add { .. })))).unwrap();
+    t.app.diff.as_mut().unwrap().cursor = add;
+    t.key(KeyCode::Char('y'));
+    assert_eq!(clipboard(&t).as_deref(), Some("\tBETA 日本"));
+    assert_eq!(toast(&t), "Copied 1 line");
+    t.key(KeyCode::Char('Y'));
+    assert_eq!(clipboard(&t).as_deref(), Some("w.txt"));
+    // the lists keep y / Y for the commit's SHA
+    t.app.focus = Focus::History;
+    t.key(KeyCode::Char('y'));
+    let short = clipboard(&t).unwrap();
+    assert!(short.len() == 7 && short.chars().all(|c| c.is_ascii_hexdigit()), "{short}");
+    t.app.focus = Focus::Files;
+    t.key(KeyCode::Char('Y'));
+    assert_eq!(clipboard(&t).unwrap().len(), 40);
+}
+
+#[test]
+fn split_view_copies_the_half_that_was_dragged() {
+    let f = Fixture::new();
+    f.write("n.txt", "a\nlet value = 1;\nc\n");
+    f.commit("base", NOW - DAY);
+    f.write("n.txt", "a\nlet value = 2;\nc\n");
+    let mut t = H::new(&f, "github-dark", (220, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("n.txt");
+    let b = t.render(220, 30);
+    assert!(t.app.split_active());
+    let (lx, ly) = find(&b, "let value = 1;").unwrap();
+    let (rx, _) = find(&b, "let value = 2;").unwrap();
+    drag(&mut t, rx + 2, ly - 1, ly + 1);
+    assert_eq!(clipboard(&t).as_deref(), Some("a\nlet value = 2;\nc"), "the new side only");
+    let b = t.render(220, 30);
+    let sel = t.app.theme.ui.selection;
+    assert_eq!(b[(rx, ly)].bg, sel);
+    assert_ne!(b[(lx, ly)].bg, sel, "the other half is not highlighted");
+    drag(&mut t, lx + 2, ly - 1, ly + 1);
+    assert_eq!(clipboard(&t).as_deref(), Some("a\nlet value = 1;\nc"), "the old side only");
+    assert!(f.git(&["diff", "--cached"]).is_empty(), "selecting text stages nothing");
+}
+
+#[test]
+fn a_gutter_drag_in_changes_stages_and_selects_nothing() {
+    let f = Fixture::new();
+    f.write("g.txt", "start\n");
+    f.commit("base", NOW - DAY);
+    f.write("g.txt", "start\none\ntwo\nthree\n");
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("g.txt");
+    let b = t.render(140, 30);
+    let (_, y) = find(&b, "one").unwrap();
+    let gx = t.app.hits.diff_new_gutter.0;
+    drag(&mut t, gx, y, y + 1);
+    t.pump();
+    assert!(t.app.osc_out.is_empty() && t.app.text_selection().is_none(), "the gutter stages, it does not select");
+    let staged = f.git(&["diff", "--cached", "--", "g.txt"]);
+    assert!(staged.contains("+one") && staged.contains("+two") && !staged.contains("+three"), "{staged}");
+}
+
+#[test]
+fn y_in_the_changes_diff_copies_the_v_range() {
+    let f = Fixture::new();
+    f.write("g.txt", "start\n");
+    f.commit("base", NOW - DAY);
+    f.write("g.txt", "start\none\ntwo\nthree\n");
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.key(KeyCode::Char('1'));
+    t.select_change("g.txt");
+    t.app.focus = Focus::Diff;
+    t.render(140, 30);
+    let d = t.app.diff.as_ref().unwrap();
+    let one = (0..d.rows(false)).find(|&i| matches!(d.vrow(i, false), Some(gitty::app::diffstate::VRow::Row(gitty_core::diff::view::Row::Add { new: 1, .. })))).unwrap();
+    t.app.diff.as_mut().unwrap().cursor = one;
+    t.key(KeyCode::Char('v'));
+    t.key(KeyCode::Char('j'));
+    t.key(KeyCode::Char('y'));
+    assert_eq!(clipboard(&t).as_deref(), Some("one\ntwo"));
+    assert!(f.git(&["diff", "--cached"]).is_empty(), "copying stages nothing");
+}
+
+#[test]
+fn a_wrapped_or_scrolled_line_copies_as_one_whole_line() {
+    let f = Fixture::new();
+    let long: String = (0..60).map(|i| format!("w{i:02} ")).collect();
+    f.write("a.txt", "first\nshort\nlast\n");
+    f.commit("one", NOW - DAY);
+    f.write("a.txt", format!("first\n{long}\nlast\n"));
+    f.commit("two", NOW - HOUR);
+    let mut t = H::new(&f, "github-dark", (120, 30));
+    t.app.focus = Focus::Diff;
+    t.key(KeyCode::Char('W'));
+    let b = t.render(120, 30);
+    let (x, y0) = find(&b, "w00").unwrap();
+    let (_, y1) = find(&b, "w59").unwrap();
+    assert!(y1 > y0, "wrapped over several screen lines");
+    drag(&mut t, x, y0, y1);
+    assert_eq!(clipboard(&t).as_deref(), Some(long.as_str()), "one line, not broken at the wrap");
+    // unwrapped and scrolled sideways: still the whole line
+    t.key(KeyCode::Char('W'));
+    for _ in 0..10 {
+        t.key(KeyCode::Char('l'));
+    }
+    let b = t.render(120, 30);
+    assert!(t.app.diff.as_ref().unwrap().hscroll > 0);
+    let (x, y) = find(&b, "w30").unwrap_or_else(|| panic!("{}", text(&b)));
+    drag(&mut t, x, y, y);
+    assert_eq!(clipboard(&t).as_deref(), Some(long.as_str()));
+}
+
+#[test]
+fn a_double_click_in_a_diff_still_opens_the_editor_and_copies_nothing() {
+    use gitty::external::External;
+    let f = editor_fixture();
+    let mut t = H::new(&f, "github-dark", (140, 30));
+    t.app.workdir = Some(f.path().to_path_buf());
+    let b = t.render(140, 30);
+    let (x, y) = find(&b, "+ four").unwrap();
+    t.click(x, y);
+    t.click(x, y);
+    assert_eq!(t.app.external, Some(External::Edit { path: f.path().join("dir with space/f.txt"), line: Some(4) }));
+    assert!(t.app.osc_out.is_empty() && t.app.text_selection().is_none());
+}
+
+#[test]
+fn a_hidden_secret_is_never_copied_until_revealed() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    pick(&mut t, ".env");
+    t.key(KeyCode::Tab);
+    assert_eq!(t.app.focus, Focus::Diff);
+    let b = t.render(140, 30);
+    assert_absent(&b, FAKE_SECRET);
+    let (x, y) = find(&b, "Hidden").unwrap();
+    drag(&mut t, x, y - 1, y + 2);
+    assert!(t.app.text_selection().is_none(), "no selection over a masked file");
+    t.key(KeyCode::Char('y'));
+    assert!(toast(&t).contains("Reveal the file first (v)"), "{}", toast(&t));
+    assert!(t.app.osc_out.is_empty(), "nothing reached the clipboard");
+    t.key(KeyCode::Char('Y'));
+    assert_eq!(clipboard(&t).as_deref(), Some(".env"), "the path is not a secret");
+    t.app.osc_out.clear();
+    // revealed: y copies the file, and a drag its lines
+    t.key(KeyCode::Char('v'));
+    let b = t.render(140, 30);
+    t.key(KeyCode::Char('y'));
+    assert_eq!(clipboard(&t), Some(format!("TOKEN={FAKE_SECRET}\n")));
+    assert!(!toast(&t).contains(FAKE_SECRET), "toasts never carry content: {}", toast(&t));
+    let (x, y) = find(&b, "TOKEN").unwrap();
+    drag(&mut t, x, y, y);
+    assert_eq!(clipboard(&t), Some(format!("TOKEN={FAKE_SECRET}")));
+    // hidden again: the selection is gone and y refuses
+    t.app.osc_out.clear();
+    t.key(KeyCode::Char('v'));
+    assert!(t.app.text_selection().is_none());
+    t.key(KeyCode::Char('y'));
+    assert!(t.app.osc_out.is_empty() && toast(&t).contains("Reveal"));
+    let b = t.render(140, 30);
+    assert_absent(&b, FAKE_SECRET);
+}
+
+#[test]
+fn y_in_the_files_tab_copies_paths_in_the_tree_and_the_file_in_the_viewer() {
+    let f = files_fixture();
+    let mut t = files_tab(&f, (140, 30));
+    t.key(KeyCode::Enter);
+    pick(&mut t, "main.rs");
+    t.key(KeyCode::Char('y'));
+    assert_eq!(clipboard(&t).as_deref(), Some("src/main.rs"));
+    t.key(KeyCode::Char('Y'));
+    assert_eq!(clipboard(&t), Some(f.path().join("src/main.rs").to_string_lossy().into_owned()));
+    t.key(KeyCode::Enter);
+    assert_eq!(t.app.focus, Focus::Diff);
+    t.key(KeyCode::Char('Y'));
+    assert_eq!(clipboard(&t).as_deref(), Some("src/main.rs"));
+    t.key(KeyCode::Char('y'));
+    assert_eq!(clipboard(&t), Some(main_rs(0)), "no selection: the whole file");
+    assert_eq!(toast(&t), "Copied the file (34 lines)");
+    // a binary file has no text to copy
+    t.app.osc_out.clear();
+    t.key(KeyCode::Esc);
+    pick(&mut t, "data.bin");
+    t.key(KeyCode::Tab);
+    t.key(KeyCode::Char('y'));
+    assert!(t.app.osc_out.is_empty());
+    assert_eq!(toast(&t), "Nothing to copy: binary file");
+}

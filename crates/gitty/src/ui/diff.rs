@@ -14,6 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use super::commit_list::title;
 use super::paint::{edge_marks, fill, glyphs, spans, text, width};
+use crate::app::copy::{DiffSide, SelPane, row_line};
 use crate::app::diffstate::VRow;
 use crate::app::{App, Focus, Tab, digits};
 use crate::text::{Glyph, layout, layout_until, wrap_starts};
@@ -329,6 +330,7 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
     d.visible = if split { text_width(mid - x, 1).min(text_width(right.saturating_sub(mid + 1), 1)) } else { text_width(body.width, numbers) };
     // the pane may have been resized since the last scroll: pull the offset back to the new end
     d.hscroll = d.hscroll.min(d.max_hscroll(app.config.tab_size));
+    let selection = app.text_selection();
     let d = app.diff.as_ref().expect("checked above");
     let view = if app.tab == Tab::Changes { app.changes.current.as_ref() } else { None };
     let staged = |line: u32, old: bool| view.is_some_and(|v| v.is_staged(line, old));
@@ -444,6 +446,20 @@ pub fn draw(app: &mut App, buf: &mut Buffer, r: Rect) {
                         divider(buf);
                     }
                 }
+            }
+        }
+    }
+    // the mouse selection: the text of the selected rows on the dragged side
+    if let Some((SelPane::Diff(side), lo, hi)) = selection {
+        let lead = digits + 2;
+        let (from, to) = match side {
+            DiffSide::Unified => (x + numbers * lead + 2, right),
+            DiffSide::Old => (x + lead + 2, mid),
+            DiffSide::New => (mid + 1 + lead + 2, right),
+        };
+        for (k, &i) in screen_rows.iter().enumerate() {
+            if (lo..=hi).contains(&i) && d.vrow(i, split).is_some_and(|v| row_line(&v, side).is_some()) && from < to {
+                buf.set_style(Rect::new(from, body.y + k as u16, to - from, 1), Style::new().bg(ui.selection));
             }
         }
     }

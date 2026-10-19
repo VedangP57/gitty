@@ -31,4 +31,4 @@ expression: s
                                                 │
                                                 │
                                                 │
- j/k line  [/] hunk  e/E expand  s split  w whitespace  O difftool  F full  esc back
+ j/k line  [/] hunk  y copy  e/E expand  s split  w whitespace  O difftool  F full  esc back

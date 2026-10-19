@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use super::changes::status_color;
 use super::commit_list::title;
 use super::paint::{centered, edge_marks, fill, glyphs, spans, text, width};
+use crate::app::copy::SelPane;
 use crate::app::files::{RowKind, Viewing};
 use crate::app::{App, Focus, digits};
 use crate::msg::FileView;
@@ -161,6 +162,12 @@ pub fn draw_viewer(app: &mut App, buf: &mut Buffer, r: Rect) {
     app.files_tab.visible = body.right().saturating_sub(tx);
     app.files_tab.hscroll = app.files_tab.hscroll.min(app.files_tab.max_hscroll());
     let hscroll = u32::from(app.files_tab.hscroll);
+    app.hits.viewer_rows = Some(body);
+    app.hits.viewer_first = app.files_tab.vscroll;
+    let selected = match app.text_selection() {
+        Some((SelPane::Viewer, lo, hi)) => Some(lo..=hi),
+        _ => None,
+    };
     let mut scratch: Vec<Glyph> = Vec::new();
     // clipped, not wrapped: `W` does not apply here, `h` and `l` scroll sideways
     for k in 0..usize::from(body.height) {
@@ -188,5 +195,8 @@ pub fn draw_viewer(app: &mut App, buf: &mut Buffer, r: Rect) {
             }
         });
         edge_marks(buf, tx, y, body.right(), hscroll, &scratch, ui.muted);
+        if selected.as_ref().is_some_and(|s| s.contains(&i)) {
+            buf.set_style(Rect::new(tx, y, body.right().saturating_sub(tx), 1), Style::new().bg(ui.selection));
+        }
     }
 }

@@ -188,3 +188,38 @@ fn files_tab_keys_resolve_where_they_should() {
     let (_, w) = Keymap::from_config(&table("line_range = \"ctrl-y\"\nreveal_secret = \"ctrl-y\"\n"));
     assert!(w.is_empty(), "{w:?}");
 }
+
+#[test]
+fn y_copies_what_the_focused_pane_shows() {
+    let m = Keymap::default();
+    let s = |tab, focus| State { tab, focus, compare: false, conflict: false };
+    let y = ev(KeyCode::Char('y'));
+    let shift_y = ev(KeyCode::Char('Y'));
+    // History's lists keep the SHA
+    for focus in [Focus::History, Focus::Files] {
+        assert_eq!(m.resolve(&y, s(Tab::History, focus)), Some(Action::CopySha));
+        assert_eq!(m.resolve(&shift_y, s(Tab::History, focus)), Some(Action::CopyFullSha));
+    }
+    assert_eq!(m.resolve(&y, State { compare: true, ..history() }), Some(Action::CopySha));
+    // every diff and the Files viewer copy text, and Y the file's path
+    for tab in [Tab::History, Tab::Changes, Tab::Files] {
+        assert_eq!(m.resolve(&y, s(tab, Focus::Diff)), Some(Action::Copy), "{tab:?}");
+        assert_eq!(m.resolve(&shift_y, s(tab, Focus::Diff)), Some(Action::CopyPath), "{tab:?}");
+    }
+    assert_eq!(m.resolve(&y, State { conflict: true, ..s(Tab::Changes, Focus::Diff) }), Some(Action::Copy));
+    // the Files tree copies the entry's path; the Changes list has no y
+    assert_eq!(m.resolve(&y, s(Tab::Files, Focus::Files)), Some(Action::CopyEntryPath));
+    assert_eq!(m.resolve(&shift_y, s(Tab::Files, Focus::Files)), Some(Action::CopyEntryAbsPath));
+    assert_eq!(m.resolve(&y, s(Tab::Changes, Focus::Files)), None);
+    // lists and the focused diff never share a screen: one key for both warns about nothing
+    let (m, w) = Keymap::from_config(&table("copy = \"ctrl-y\"\ncopy_sha = \"ctrl-y\"\ncopy_entry_path = \"ctrl-y\"\n"));
+    assert!(w.is_empty(), "{w:?}");
+    let ctrl_y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+    assert_eq!(m.resolve(&ctrl_y, s(Tab::History, Focus::Diff)), Some(Action::Copy));
+    assert_eq!(m.resolve(&ctrl_y, history()), Some(Action::CopySha));
+    assert_eq!(m.resolve(&ctrl_y, s(Tab::Files, Focus::Files)), Some(Action::CopyEntryPath));
+    assert_eq!(m.resolve(&y, s(Tab::History, Focus::Diff)), None, "a rebound action leaves its default key");
+    // but a diff key and the diff's own copy do share it
+    let (_, w) = Keymap::from_config(&table("copy = \"s\"\n"));
+    assert!(w.iter().any(|w| w.contains("`split` has no key left")), "{w:?}");
+}

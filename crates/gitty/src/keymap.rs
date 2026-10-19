@@ -28,8 +28,12 @@ pub enum Ctx {
     FilesTree,
     /// History tab, any pane.
     History,
+    /// History tab, the commit list or the file list (not the diff).
+    HistoryList,
     /// The diff, from any pane of either tab.
     Diff,
+    /// The focused diff (History or Changes) or Files viewer.
+    Viewer,
     /// Moving around, in every pane.
     Nav,
 }
@@ -56,6 +60,8 @@ impl Ctx {
             Ctx::Files => s.tab == Tab::Files,
             Ctx::FilesTree => s.tab == Tab::Files && s.focus != Focus::Diff,
             Ctx::History => s.tab == Tab::History,
+            Ctx::HistoryList => s.tab == Tab::History && s.focus != Focus::Diff,
+            Ctx::Viewer => s.focus == Focus::Diff,
         }
     }
     /// Whether both can be active at once (a shared key would then hide one of them).
@@ -63,13 +69,16 @@ impl Ctx {
         use Ctx::*;
         let tab = |c: Ctx| match c {
             Conflict | Changes | ChangesList | ChangesDiff => Some(Tab::Changes),
-            History | Compare => Some(Tab::History),
+            History | HistoryList | Compare => Some(Tab::History),
             Files | FilesTree => Some(Tab::Files),
-            Global | Diff | Nav => None,
+            Global | Diff | Viewer | Nav => None,
         };
+        // the list contexts and the focused diff are never active together
+        let list = |c: Ctx| matches!(c, ChangesList | FilesTree | HistoryList | Compare);
+        let diff = |c: Ctx| matches!(c, ChangesDiff | Viewer);
         match (tab(self), tab(other)) {
             (Some(a), Some(b)) if a != b => false,
-            _ => !matches!((self, other), (ChangesList, ChangesDiff) | (ChangesDiff, ChangesList)),
+            _ => !((list(self) && diff(other)) || (diff(self) && list(other))),
         }
     }
 }
@@ -122,6 +131,8 @@ actions! {
     RevealSecret "reveal_secret" Files ["v"] "Files: show or hide a secret file (.env, keys…)",
     OpenEditor "open_editor" Files ["e"] "Files: open the file in $EDITOR",
     ToggleIgnored "toggle_ignored" Files ["i"] "Files: show or hide ignored files",
+    CopyEntryPath "copy_entry_path" FilesTree ["y"] "Files: copy the selected entry's path (relative to the repository)",
+    CopyEntryAbsPath "copy_entry_abs_path" FilesTree ["Y"] "Files: copy the selected entry's absolute path",
     FilesCollapse "files_collapse" FilesTree ["h", "left"] "Files: close the directory (or go to its parent)",
     FilesExpand "files_expand" FilesTree ["l", "right"] "Files: open the directory",
     Search "search" History ["/"] "search history (text, path:dir)",
@@ -131,12 +142,14 @@ actions! {
     Compare "compare" History ["b"] "compare with a branch",
     Tree "tree" History ["t"] "file list as a tree",
     Scope "scope" History ["r"] "branch + upstream ↔ all refs",
-    CopySha "copy_sha" History ["y"] "copy the short SHA",
-    CopyFullSha "copy_full_sha" History ["Y"] "copy the full SHA",
+    CopySha "copy_sha" HistoryList ["y"] "copy the short SHA",
+    CopyFullSha "copy_full_sha" HistoryList ["Y"] "copy the full SHA",
     Header "header" History ["o"] "expand the commit header",
     Dates "dates" History ["D"] "date format",
     Density "density" History ["z"] "row density",
     Graph "graph" History ["L"] "show or hide the commit graph",
+    Copy "copy" Viewer ["y"] "copy the selected lines (drag to select); without a selection the cursor's line (Changes: the v range) or the whole viewed file",
+    CopyPath "copy_path" Viewer ["Y"] "copy the shown file's path (relative to the repository)",
     ScrollLeft "scroll_left" Diff ["h", "left"] "scroll the diff left",
     ScrollRight "scroll_right" Diff ["l", "right"] "scroll the diff right",
     PrevHunk "prev_hunk" Diff ["["] "previous hunk",
