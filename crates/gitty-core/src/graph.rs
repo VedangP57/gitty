@@ -17,7 +17,8 @@
 //! selected commit's lines (the list draws its own selection); and a pipe's colour is not its
 //! commit author's but a lane colour that stays with a branch: a commit's first-parent pipe
 //! keeps the colour of the pipe it took its column from, and a merge's other pipes each open a
-//! new one.
+//! new one. A merge at a branch tip never starts a second parent's pipe in its own column (a
+//! lazygit bug that drops one of the two pipes; see `Lanes::next_pipes`).
 
 use smallvec::SmallVec;
 
@@ -197,8 +198,14 @@ impl Lanes {
         }
         if parents.len() > 1 {
             for &parent in &parents[1..] {
-                // a new pipe may not end on a taken spot, nor on one a continuing pipe traverses
-                let available = (0..).find(|&i| !taken.has(i) && !traversed_by_continuing.has(i)).expect("a free spot");
+                // a new pipe may not end on a taken spot, nor on one a continuing pipe traverses,
+                // nor on the commit's own: a branch tip's column is not taken (no pipe ends in
+                // it), and lazygit's getNextPipes, which lacks this last check, lays a tip merge's
+                // second parent's pipe over its first's when no column to its left is free and
+                // then drops one of them, so that parent shows up later as a tip of its own.
+                // Here it takes the next free column instead: right of the commit's when none to
+                // its left is free (a tip is laid out right of every line going on down).
+                let available = (0..).find(|&i| i != pos && !taken.has(i) && !traversed_by_continuing.has(i)).expect("a free spot");
                 let colour = self.open();
                 new.push(Pipe { from: Some(id), to: Some(parent), from_pos: pos, to_pos: available, kind: PipeKind::Starts, colour, heavy: false });
                 taken.add(available);
@@ -898,6 +905,47 @@ mod tests {
         assert_eq!((f(0), f(1), f(3)), ("│ │".into(), "│ │".into(), "".into()));
     }
 
+    // ---- a merge at a branch tip (a lazygit bug: its second parent's line was dropped) ----
+
+    #[test]
+    fn a_merge_at_a_branch_tip_starts_its_second_parent_line_on_the_right() {
+        // main: P→A (checked out); x: P→X, P→Y, M merges Y into X at x's tip
+        let h: &[(&str, &[&str])] = &[("A", &["P"]), ("M", &["X", "Y"]), ("Y", &["P"]), ("X", &["P"]), ("P", &[])];
+        let (rows, filler) = with_head(h, "A");
+        assert_eq!(rows, ["◎", "┃ ◉─╮", "┃ │ ●", "┃ ● │", "●─┴─╯"]);
+        assert_eq!(filler, ["┃", "┃ │ │", "┃ │ │", "┃ │ │", ""]);
+    }
+
+    #[test]
+    fn an_octopus_merge_at_a_branch_tip_starts_each_line_in_a_column_of_its_own() {
+        let h: &[(&str, &[&str])] = &[("A", &["P"]), ("M", &["X", "Y", "Z"]), ("Z", &["P"]), ("Y", &["P"]), ("X", &["P"]), ("P", &[])];
+        let (rows, filler) = with_head(h, "A");
+        assert_eq!(rows, ["◎", "┃ ◉─┬─╮", "┃ │ │ ●", "┃ │ ● │", "┃ ● │ │", "●─┴─┴─╯"]);
+        assert_eq!(filler, ["┃", "┃ │ │ │", "┃ │ │ │", "┃ │ │ │", "┃ │ │ │", ""]);
+    }
+
+    #[test]
+    fn a_merge_at_a_branch_tip_with_a_free_column_to_its_left_uses_it() {
+        // B and C end in the root R from columns 1 and 2, leaving a gap between A's line in
+        // column 0 and D's in 3; M then goes on the far right, D's line moves left into column
+        // 1 and M's second parent's line into column 2 (as before the fix)
+        let h: &[(&str, &[&str])] = &[
+            ("A", &["Z"]),
+            ("B", &["R"]),
+            ("C", &["R"]),
+            ("D", &["W"]),
+            ("R", &[]),
+            ("M", &["X", "Y"]),
+            ("X", &["Z"]),
+            ("Y", &["W"]),
+            ("W", &["Z"]),
+            ("Z", &[]),
+        ];
+        let (rows, filler) = with_head(h, "A");
+        assert_eq!(rows, ["◎", "┃ ●", "┃ │ ●", "┃ │ │ ●", "┃ ●─╯ │", "┃ ╭─┬─┴─◉", "┃ │ │   ●", "┃ │ ● ╭─╯", "┃ ●─╯ │", "●─┴───╯"]);
+        assert_eq!(filler, ["┃", "┃ │", "┃ │ │", "┃ │ │ │", "┃     │", "┃ │ │   │", "┃ │ │   │", "┃ │ │ │", "┃ │   │", ""]);
+    }
+
     mod props {
         use super::*;
         use proptest::prelude::*;
@@ -914,33 +962,85 @@ mod tests {
             })
         }
 
+        /// A random DAG with many tips, many of them merges: each commit is a tip (no commit
+        /// above has it as a parent) with even odds, and has up to four parents.
+        fn tippy_dag() -> impl Strategy<Value = Vec<Vec<usize>>> {
+            (2usize..40).prop_flat_map(|n| {
+                let parents = (0..n)
+                    .map(move |i| {
+                        let later = (i + 1)..n;
+                        if later.is_empty() { Just(Vec::new()).boxed() } else { proptest::collection::vec(later, 0..5).boxed() }
+                    })
+                    .collect::<Vec<_>>();
+                (parents, proptest::collection::vec(any::<bool>(), n)).prop_map(|(mut parents, tip)| {
+                    for ps in &mut parents {
+                        ps.retain(|&p| !tip[p]);
+                        ps.sort_unstable();
+                        ps.dedup();
+                    }
+                    parents
+                })
+            })
+        }
+
+        /// Lays out `parents` and checks every row: one symbol per commit, a line from each
+        /// commit to each of its parents, and no line lost on the way.
+        fn check(parents: &[Vec<usize>]) -> Result<(), TestCaseError> {
+            let name = |i: usize| id(&format!("c{i}"));
+            let mut lanes = Lanes::default();
+            let mut rows = Rows::default();
+            for (i, ps) in parents.iter().enumerate() {
+                let ps: Vec<CommitId> = ps.iter().map(|&p| name(p)).collect();
+                let open: Vec<Pipe> = lanes.pipes.iter().filter(|p| p.kind != PipeKind::Terminates && p.to.is_some()).copied().collect();
+                lanes.row(name(i), &ps, &mut rows);
+                // every pipe going down from the row above comes into this one and either ends
+                // in this commit or goes on from the column it came in at: none is dropped
+                let mut came: Vec<_> = open.iter().map(|p| (p.from, p.to, p.to_pos, if p.to == Some(name(i)) { PipeKind::Terminates } else { PipeKind::Continues })).collect();
+                let mut went: Vec<_> = lanes.pipes.iter().filter(|p| p.kind != PipeKind::Starts && p.from.is_some()).map(|p| (p.from, p.to, p.from_pos, p.kind)).collect();
+                came.sort();
+                went.sort();
+                prop_assert_eq!(came, went, "row {}: a line from above was dropped or made up", i);
+                // the lines going down from this row each have a column of their own
+                let mut down: Vec<usize> = lanes.pipes.iter().filter(|p| p.kind != PipeKind::Terminates && p.to.is_some()).map(|p| p.to_pos).collect();
+                let n = down.len();
+                down.sort_unstable();
+                down.dedup();
+                prop_assert_eq!(down.len(), n, "row {}: two lines going down in one column", i);
+                // the commit starts a line to each of its parents
+                let mut started: Vec<CommitId> = lanes.pipes.iter().filter(|p| p.kind == PipeKind::Starts).filter_map(|p| p.to).collect();
+                let mut want = ps.clone();
+                started.sort();
+                want.sort();
+                prop_assert_eq!(started, want, "row {}: a parent without a line", i);
+                let row = rows.get(i).unwrap();
+                prop_assert_eq!(row.glyphs().flatten().filter(|g| g.0 == COMMIT_SYMBOL || g.0 == MERGE_SYMBOL).count(), 1);
+                let c = row.0.iter().position(|cell| cell & TYPE_MASK != 0).unwrap();
+                // the lines that end here end in the commit's column
+                let pos = lanes.pipes.iter().find(|p| p.kind == PipeKind::Starts).unwrap().from_pos;
+                prop_assert!(lanes.pipes.iter().filter(|p| p.kind == PipeKind::Terminates).all(|p| p.to_pos == pos));
+                // the commit's line goes on down to its first parent from its own column
+                if let Some(&first) = ps.first() {
+                    prop_assert!(lanes.pipes.iter().any(|p| p.kind == PipeKind::Starts && p.from_pos == c && p.to_pos == c && p.to == Some(first)));
+                    prop_assert!(row.0[c] & DOWN != 0);
+                }
+                // every pipe still open leads to a commit not yet shown
+                for p in lanes.pipes.iter().filter(|p| p.kind != PipeKind::Terminates) {
+                    prop_assert!(p.to.is_none() || (i + 1..parents.len()).any(|j| Some(name(j)) == p.to));
+                }
+            }
+            prop_assert!(lanes.pipes.iter().all(|p| p.kind == PipeKind::Terminates || p.to.is_none()), "pipes left open after the last commit");
+            Ok(())
+        }
+
         proptest! {
             #[test]
-            fn every_commit_has_one_symbol_and_every_parent_a_pipe(parents in dag()) {
-                let name = |i: usize| id(&format!("c{i}"));
-                let mut lanes = Lanes::default();
-                let mut rows = Rows::default();
-                for (i, ps) in parents.iter().enumerate() {
-                    let ps: Vec<CommitId> = ps.iter().map(|&p| name(p)).collect();
-                    lanes.row(name(i), &ps, &mut rows);
-                    let row = rows.get(i).unwrap();
-                    prop_assert_eq!(row.glyphs().flatten().filter(|g| g.0 == COMMIT_SYMBOL || g.0 == MERGE_SYMBOL).count(), 1);
-                    let c = row.0.iter().position(|cell| cell & TYPE_MASK != 0).unwrap();
-                    // the commit's line goes on down to its first parent from its own column
-                    if let Some(&first) = ps.first() {
-                        prop_assert!(lanes.pipes.iter().any(|p| p.kind == PipeKind::Starts && p.from_pos == c && p.to_pos == c && p.to == Some(first)));
-                        prop_assert!(row.0[c] & DOWN != 0);
-                    }
-                    // every parent has a pipe leading down to it
-                    for p in &ps {
-                        prop_assert!(lanes.pipes.iter().any(|q| q.kind != PipeKind::Terminates && q.to == Some(*p)), "parent without a pipe");
-                    }
-                    // every pipe still open leads to a commit not yet shown
-                    for p in lanes.pipes.iter().filter(|p| p.kind != PipeKind::Terminates) {
-                        prop_assert!(p.to.is_none() || (i + 1..parents.len()).any(|j| Some(name(j)) == p.to));
-                    }
-                }
-                prop_assert!(lanes.pipes.iter().all(|p| p.kind == PipeKind::Terminates || p.to.is_none()), "pipes left open after the last commit");
+            fn every_commit_has_one_symbol_and_every_parent_a_line(parents in dag()) {
+                check(&parents)?;
+            }
+
+            #[test]
+            fn many_tips_and_merges_at_tips_lose_no_line(parents in tippy_dag()) {
+                check(&parents)?;
             }
         }
     }

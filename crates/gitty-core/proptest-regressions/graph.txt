@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 3dac19c05cb43022d19e4088d642da1e44c15f09c557ed1f58215dfa2e53cf55 # shrinks to parents = [[], []]
+cc 92f26f65daf55bed84b3a1b4a3354756bdb68d4143fac7401cef8b3b79fb626a # shrinks to parents = [[], [2, 3], [], []]
